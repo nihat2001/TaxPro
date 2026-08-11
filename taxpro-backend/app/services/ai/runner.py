@@ -62,6 +62,12 @@ def _final_message(state: dict) -> str:
 
 def to_run_response(thread_id: str, state: dict) -> AgentRunResponse:
     interrupt = _interrupt_payload(state)
+    # Keçici həll: parser-in atlanan sətirləri sources-a birləşdirilir.
+    # Gələcəkdə AgentRunResponse-a ayrıca errors sahəsi əlavə edilməlidir.
+    sources = list((state.get("retriever") or {}).get("sources", []))
+    skipped = (state.get("parser") or {}).get("skipped", [])
+    if skipped:
+        sources = sources + [str(s) for s in skipped]
     return AgentRunResponse(
         thread_id=thread_id,
         status="interrupt" if interrupt else "done",
@@ -69,5 +75,5 @@ def to_run_response(thread_id: str, state: dict) -> AgentRunResponse:
         interrupt=interrupt,
         analysis=(state.get("bank") or {}).get("analysis"),
         inserted=(state.get("parser") or {}).get("inserted"),
-        sources=(state.get("retriever") or {}).get("sources", []),
+        sources=sources,
     )

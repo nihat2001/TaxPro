@@ -54,13 +54,37 @@ def _config(thread_id: str) -> dict:
     }
 
 
+def _log_history(state: dict, action: str) -> None:
+    messages = state.get("messages") or []
+    for message in messages:
+        msg_type = type(message).__name__
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            for call in tool_calls:
+                logger.info(
+                    "%s | AI tool_call -> %s(%s)",
+                    action,
+                    call.get("name"),
+                    str(call.get("args"))[:200],
+                )
+        content = str(getattr(message, "content", "") or "").strip()
+        if content and msg_type in ("AIMessage", "HumanMessage", "ToolMessage"):
+            logger.info(
+                "%s | %s -> %s", action, msg_type, content[:200].replace("\n", " ")
+            )
+
+
 async def invoke_graph(initial_state: dict, thread_id: str, checkpointer=None) -> dict:
     graph = get_graph(checkpointer=checkpointer)
     state = {**initial_state}
     state.setdefault("remaining_steps", 25)
-    return await graph.ainvoke(state, config=_config(thread_id))
+    result = await graph.ainvoke(state, config=_config(thread_id))
+    _log_history(result, f"graph:{thread_id}")
+    return result
 
 
 async def resume_graph(thread_id: str, value, checkpointer=None) -> dict:
     graph = get_graph(checkpointer=checkpointer)
-    return await graph.ainvoke(Command(resume=value), config=_config(thread_id))
+    result = await graph.ainvoke(Command(resume=value), config=_config(thread_id))
+    _log_history(result, f"resume:{thread_id}")
+    return result

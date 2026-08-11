@@ -59,10 +59,14 @@
   }
 
   function renderDoneExcel(body) {
+    const inserted = body.inserted || 0;
     const errors = body.sources || [];
-    const text = body.message || `${body.inserted || 0} profil əlavə olundu.`;
+    const text =
+      inserted > 0
+        ? `${inserted} profil əlavə olundu.`
+        : "0 profil əlavə olundu. Xəta detalları:";
     return (
-      `<div class="result-box ok">` +
+      `<div class="result-box ${inserted > 0 ? "ok" : "err"}">` +
       `<div>${escapeHtml(text)}</div>` +
       `</div>` +
       renderErrors(errors)

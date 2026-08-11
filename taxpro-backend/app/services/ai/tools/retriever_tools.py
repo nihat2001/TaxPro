@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from langchain_core.tools import InjectedToolCallId, tool
@@ -9,12 +10,14 @@ from app.services.ai.state import AgentState
 from app.services.ai.tools._common import check_try, tool_message
 from app.services.ai.tools.db_retriever_tool import search_documents, search_profiles
 
+logger = logging.getLogger(__name__)
+
 _FIELD_KEYWORDS = {
     "asan_id": ["asan id", "asan", "asandid"],
     "voen": ["voen", "vergi nomresi"],
     "pin1": ["pin1", "pin 1", "pin"],
     "puk": ["puk"],
-    "nomre": ["nomre", "telefon", "mobil"],
+    "nomre": ["nomre", "nomer", "nomresi", "telefon", "tel", "mobil"],
     "bitme_tarixi": ["bitme tarixi", "bitirilme", "etibarliliq"],
     "qeyd": ["qeyd"],
 }
@@ -79,6 +82,12 @@ async def search_profile_data(
             facts = [f"Qeyd: {d.content[:300]}" for d in documents]
 
         sources = [str(p.id) for p in profiles]
+    logger.info(
+        "search_profile_data query=%r profile_id=%r tapildi=%d",
+        query,
+        profile_id,
+        len(profiles),
+    )
 
     if not facts:
         answer = "Bazada uyğun məlumat tapılmadı."
