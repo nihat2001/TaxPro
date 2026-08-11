@@ -1,0 +1,445 @@
+/* TaxPro — popup UI məntiqi. */
+"use strict";
+
+(function () {
+  const api = window.TaxProAPI;
+
+  let portals = [];
+  let profiles = [];
+  let editingProfileId = null;
+
+  const els = {};
+  const $ = (id) => (els[id] = els[id] || document.getElementById(id));
+
+  /* ===== Köməkçilər ===== */
+  function initials(name) {
+    return String(name || "?")
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0] || "")
+      .join("")
+      .toUpperCase();
+  }
+
+  function hostOf(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str == null ? "" : str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function showToast(message, type) {
+    const toast = $("toast");
+    toast.textContent = message;
+    toast.className = "toast " + (type || "");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => {
+      toast.className = "toast hidden";
+    }, 3200);
+  }
+
+  function setStatus(ok, text) {
+    $("apiStatus").className = "status-dot " + (ok ? "ok" : "err");
+    $("apiStatusText").textContent = text;
+  }
+
+  function switchTab(name) {
+    document.querySelectorAll(".tab-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === name);
+    });
+    document.querySelectorAll(".tab-panel").forEach((p) => {
+      p.classList.toggle("active", p.id === "tab-" + name);
+    });
+  }
+
+  /* ===== Saytlar tabı ===== */
+  function renderSites(filter) {
+    const list = $("sitesList");
+    filter = (filter || "").trim().toLowerCase();
+    const shown = portals.filter((p) => {
+      if (!filter) return true;
+      return (
+        p.name.toLowerCase().includes(filter) ||
+        hostOf(p.url).toLowerCase().includes(filter)
+      );
+    });
+
+    if (shown.length === 0) {
+      list.innerHTML = '<div class="empty-state">Portal tapılmadı.</div>';
+      return;
+    }
+
+    const groups = [
+      { key: "dövlət", label: "Dövlət portalları" },
+      { key: "bank", label: "Banklar" },
+      { key: "__other", label: "Digər" },
+    ];
+
+    let html = "";
+    for (const g of groups) {
+      const items =
+        g.key === "__other"
+          ? shown.filter((p) => !["dövlət", "bank"].includes(String(p.category).toLowerCase()))
+          : shown.filter((p) => String(p.category).toLowerCase() === g.key);
+      if (items.length === 0) continue;
+      html += `<div class="sites-group-title">${g.label}</div>`;
+      for (const p of items) {
+        html +=
+          `<button type="button" class="site-row" data-url="${escapeHtml(p.url)}">` +
+          `<span class="site-avatar">${escapeHtml(initials(p.name))}</span>` +
+          `<span class="site-meta">` +
+          `<span class="site-name">${escapeHtml(p.name)}</span>` +
+          `<span class="site-url">${escapeHtml(hostOf(p.url))}</span>` +
+          `</span></button>`;
+      }
+    }
+    list.innerHTML = html;
+  }
+
+  function initSites() {
+    $("siteSearch").addEventListener("input", (e) => renderSites(e.target.value));
+    $("sitesList").addEventListener("click", (e) => {
+      const row = e.target.closest(".site-row");
+      if (!row) return;
+      chrome.tabs.create({ url: row.dataset.url });
+    });
+  }
+
+  /* ===== Profillər tabı ===== */
+  function renderProfiles(filter) {
+    const list = $("profilesList");
+    filter = (filter || "").trim().toLowerCase();
+    const shown = profiles.filter((p) => {
+      if (!filter) return true;
+      return (
+        p.ad_soyad.toLowerCase().includes(filter) ||
+        String(p.voen || "").includes(filter) ||
+        String(p.asan_id || "").toLowerCase().includes(filter)
+      );
+    });
+
+    if (shown.length === 0) {
+      list.innerHTML = '<div class="empty-state">Profil tapılmadı.</div>';
+      return;
+    }
+
+    let html = "";
+    for (const p of shown) {
+      const color = p.reng || "#3b82f6";
+      html +=
+        `<div class="profile-card" data-id="${p.id}">` +
+        `<span class="profile-avatar" style="background:${escapeHtml(color)}">${escapeHtml(initials(p.ad_soyad))}</span>` +
+        `<div class="profile-meta">` +
+        `<div class="profile-name">${escapeHtml(p.ad_soyad)}</div>` +
+        `<div class="profile-sub">VÖEN: ${escapeHtml(p.voen)} · Asan ID: ${escapeHtml(p.asan_id)}</div>` +
+        `</div>` +
+        `<div class="profile-actions">` +
+        `<button type="button" class="icon-btn" data-act="edit" title="Redaktə">&#9998;</button>` +
+        `<button type="button" class="icon-btn" data-act="delete" title="Sil">&#128465;</button>` +
+        `</div></div>`;
+    }
+    list.innerHTML = html;
+  }
+
+  function initProfiles() {
+    $("profileSearch").addEventListener("input", (e) => renderProfiles(e.target.value));
+    $("newProfileBtn").addEventListener("click", () => openProfileModal(null));
+
+    $("profilesList").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      const card = btn.closest(".profile-card");
+      const id = card.dataset.id;
+      const profile = profiles.find((p) => p.id === id);
+      if (!profile) return;
+
+      if (btn.dataset.act === "edit") {
+        openProfileModal(profile);
+      } else if (btn.dataset.act === "delete") {
+        if (!confirm(`"${profile.ad_soyad}" profilini silmək istəyirsiniz?`)) return;
+        try {
+          await api.deleteProfile(id);
+          profiles = profiles.filter((p) => p.id !== id);
+          renderProfiles($("profileSearch").value);
+          showToast("Profil silindi.", "ok");
+        } catch (err) {
+          showToast(err.message, "err");
+        }
+      }
+    });
+  }
+
+  function openProfileModal(profile) {
+    editingProfileId = profile ? profile.id : null;
+    $("profileModalTitle").textContent = profile ? "Profili Redaktə Et" : "Yeni Profil";
+
+    $("pfId").value = profile ? profile.id : "";
+    $("pfAdSoyad").value = profile ? profile.ad_soyad : "";
+    $("pfVoen").value = profile ? profile.voen : "";
+    $("pfNomre").value = profile ? profile.nomre : "";
+    $("pfAsanId").value = profile ? profile.asan_id : "";
+    $("pfPin1").value = "";
+    $("pfPin2").value = "";
+    $("pfPuk").value = "";
+    $("pfBitmeTarixi").value = profile && profile.bitme_tarixi ? profile.bitme_tarixi : "";
+    $("pfQeyd").value = profile && profile.qeyd ? profile.qeyd : "";
+    $("pfReng").value = profile && profile.reng ? profile.reng : "#3b82f6";
+    $("pfIkon").value = profile && profile.ikon ? profile.ikon : "user";
+
+    const pinHints = document.querySelectorAll("#profileForm .hint");
+    pinHints.forEach((h) => {
+      h.style.display = profile ? "" : "none";
+    });
+
+    $("profileModal").classList.remove("hidden");
+    $("pfAdSoyad").focus();
+  }
+
+  function closeProfileModal() {
+    $("profileModal").classList.add("hidden");
+    editingProfileId = null;
+  }
+
+  function collectForm() {
+    const v = (id) => $(id).value;
+    const data = {
+      ad_soyad: v("pfAdSoyad").trim(),
+      voen: v("pfVoen").trim(),
+      nomre: v("pfNomre").trim(),
+      asan_id: v("pfAsanId").trim(),
+      reng: v("pfReng") || "#3b82f6",
+      ikon: v("pfIkon") || "user",
+    };
+
+    const pin1 = v("pfPin1");
+    const pin2 = v("pfPin2");
+    const puk = v("pfPuk");
+    if (pin1) data.pin1 = pin1;
+    if (pin2) data.pin2 = pin2;
+    if (puk) data.puk = puk;
+
+    if (v("pfBitmeTarixi")) data.bitme_tarixi = v("pfBitmeTarixi");
+    if (v("pfQeyd").trim()) data.qeyd = v("pfQeyd").trim();
+
+    return data;
+  }
+
+  function initProfileModal() {
+    $("profileCancelBtn").addEventListener("click", closeProfileModal);
+    $("profileModal").addEventListener("click", (e) => {
+      if (e.target === $("profileModal")) closeProfileModal();
+    });
+
+    $("profileForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = collectForm();
+
+      if (!editingProfileId && (!data.pin1 || !data.pin2 || !data.puk)) {
+        showToast("PIN1, PIN2 və PUK tələb olunur.", "err");
+        return;
+      }
+
+      try {
+        if (editingProfileId) {
+          await api.updateProfile(editingProfileId, data);
+          showToast("Profil yeniləndi.", "ok");
+        } else {
+          await api.createProfile(data);
+          showToast("Profil yaradıldı.", "ok");
+        }
+        closeProfileModal();
+        await loadProfiles();
+        await populateAutofillSelects();
+      } catch (err) {
+        showToast(err.message, "err");
+      }
+    });
+  }
+
+  /* ===== Doldur tabı ===== */
+  function populateProfilesSelect() {
+    const sel = $("autofillProfile");
+    const current = sel.value;
+    sel.innerHTML =
+      '<option value="">— Profil seçin —</option>' +
+      profiles
+        .map((p) => `<option value="${p.id}">${escapeHtml(p.ad_soyad)}</option>`)
+        .join("");
+    if (current) sel.value = current;
+    updateAutofillBtn();
+  }
+
+  function populatePortalsSelect(preferredPortalId) {
+    const sel = $("autofillPortal");
+    const groups = ["dövlət", "bank"];
+    const ordered = [...portals].sort(
+      (a, b) =>
+        groups.indexOf(String(a.category).toLowerCase()) -
+          groups.indexOf(String(b.category).toLowerCase()) ||
+        String(a.name).localeCompare(String(b.name))
+    );
+    sel.innerHTML =
+      '<option value="">— Portal seçin —</option>' +
+      ordered
+        .map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`)
+        .join("");
+    if (preferredPortalId) sel.value = preferredPortalId;
+    updateAutofillBtn();
+  }
+
+  function matchPortalByUrl(tabUrl) {
+    if (!tabUrl) return null;
+    const host = hostOf(tabUrl).toLowerCase();
+    if (!host) return null;
+    return (
+      portals.find((p) => {
+        const ph = hostOf(p.url).toLowerCase();
+        return ph && (host === ph || host.endsWith("." + ph));
+      }) || null
+    );
+  }
+
+  function updateAutofillBtn() {
+    $("autofillBtn").disabled = !$("autofillProfile").value || !$("autofillPortal").value;
+  }
+
+  async function loadActiveTab() {
+    const info = $("activeTabInfo");
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" });
+      const tab = resp && resp.tab;
+      if (!tab) {
+        info.textContent = "Aktiv tab tapılmadı.";
+        info.className = "active-tab-info muted";
+        return;
+      }
+      const matched = matchPortalByUrl(tab.url);
+      if (matched) {
+        info.textContent = `${matched.name} (${hostOf(tab.url)})`;
+        info.className = "active-tab-info";
+        $("autofillPortal").value = matched.id;
+      } else {
+        info.textContent = `${tab.title || hostOf(tab.url) || "Səhifə"} — tanınmış portal deyil`;
+        info.className = "active-tab-info muted";
+      }
+      updateAutofillBtn();
+    } catch (err) {
+      info.textContent = "Aktiv tab oxunmadı.";
+      info.className = "active-tab-info muted";
+    }
+  }
+
+  function initAutofill() {
+    $("autofillProfile").addEventListener("change", updateAutofillBtn);
+    $("autofillPortal").addEventListener("change", updateAutofillBtn);
+
+    $("autofillBtn").addEventListener("click", async () => {
+      const profileId = $("autofillProfile").value;
+      const portalId = $("autofillPortal").value;
+      const resultBox = $("autofillResult");
+      resultBox.className = "result-box hidden";
+
+      if (!profileId || !portalId) return;
+
+      try {
+        const payload = await api.getPortalAutoFill(portalId, profileId);
+        const fieldCount = Object.keys(payload.fields || {}).length;
+        if (fieldCount === 0) {
+          resultBox.className = "result-box err";
+          resultBox.textContent = "Bu portal üçün doldurulacaq sahə yoxdur.";
+          resultBox.classList.remove("hidden");
+          return;
+        }
+
+        const outcome = await chrome.runtime.sendMessage({
+          type: "AUTOFILL",
+          fields: payload.fields,
+        });
+
+        if (!outcome.ok) {
+          resultBox.className = "result-box err";
+          resultBox.textContent = outcome.error || "Doldurma uğursuz oldu.";
+          resultBox.classList.remove("hidden");
+          return;
+        }
+
+        const r = outcome.result;
+        const missingCount = r.missing ? r.missing.length : 0;
+        let text = `${r.filled}/${r.total} sahə dolduruldu.`;
+        if (missingCount > 0) {
+          text += ` ${missingCount} sahə tapılmadı (sayt DOM-u fərqli ola bilər).`;
+        }
+        resultBox.className = "result-box " + (missingCount === 0 ? "ok" : "err");
+        resultBox.textContent = text;
+        resultBox.classList.remove("hidden");
+      } catch (err) {
+        resultBox.className = "result-box err";
+        resultBox.textContent = err.message;
+        resultBox.classList.remove("hidden");
+      }
+    });
+  }
+
+  async function populateAutofillSelects() {
+    populateProfilesSelect();
+    if (!$("autofillPortal").value) populatePortalsSelect();
+  }
+
+  /* ===== Yükləmə ===== */
+  async function loadPortals() {
+    portals = await api.getPortals();
+    renderSites($("siteSearch").value);
+    populatePortalsSelect();
+  }
+
+  async function loadProfiles() {
+    profiles = await api.listProfiles();
+    renderProfiles($("profileSearch").value);
+    populateProfilesSelect();
+  }
+
+  async function checkHealth() {
+    try {
+      await api.health();
+      const base = await api.getBaseUrl();
+      setStatus(true, base);
+    } catch (err) {
+      setStatus(false, "Backend əlçatmaz");
+    }
+  }
+
+  async function init() {
+    initSites();
+    initProfiles();
+    initProfileModal();
+    initAutofill();
+
+    document.querySelectorAll(".tab-btn").forEach((b) => {
+      b.addEventListener("click", () => switchTab(b.dataset.tab));
+    });
+    $("optionsBtn").addEventListener("click", () => {
+      chrome.runtime.openOptionsPage();
+    });
+
+    await checkHealth();
+    try {
+      await Promise.all([loadPortals(), loadProfiles()]);
+    } catch (err) {
+      showToast(err.message, "err");
+    }
+    await loadActiveTab();
+  }
+
+  document.addEventListener("DOMContentLoaded", init);
+})();

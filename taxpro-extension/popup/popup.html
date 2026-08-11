@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="az">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>TaxPro</title>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-logo">T</span>
+        <div class="brand-text">
+          <h1>TaxPro</h1>
+          <p class="status-line">
+            <span id="apiStatus" class="status-dot"></span>
+            <span id="apiStatusText">Yoxlanılır…</span>
+          </p>
+        </div>
+      </div>
+      <button id="optionsBtn" class="icon-btn" type="button" title="Tənzimləmələr">&#9881;</button>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="sites" type="button">Saytlar</button>
+      <button class="tab-btn" data-tab="profiles" type="button">Profillər</button>
+      <button class="tab-btn" data-tab="autofill" type="button">Doldur</button>
+    </nav>
+
+    <main>
+      <!-- Saytlar -->
+      <section id="tab-sites" class="tab-panel active">
+        <div class="search-box">
+          <input type="search" id="siteSearch" placeholder="Portal axtar…" />
+        </div>
+        <div id="sitesList" class="sites-list"></div>
+      </section>
+
+      <!-- Profillər -->
+      <section id="tab-profiles" class="tab-panel">
+        <div class="panel-toolbar">
+          <input type="search" id="profileSearch" placeholder="Profil axtar…" />
+          <button id="newProfileBtn" class="btn primary" type="button">+ Yeni</button>
+        </div>
+        <div id="profilesList" class="profiles-list"></div>
+      </section>
+
+      <!-- Doldur -->
+      <section id="tab-autofill" class="tab-panel">
+        <div class="card">
+          <div class="card-label">Aktiv tab</div>
+          <div id="activeTabInfo" class="active-tab-info">Yüklənir…</div>
+        </div>
+
+        <div class="form-group">
+          <label for="autofillProfile">Profil</label>
+          <select id="autofillProfile"></select>
+        </div>
+        <div class="form-group">
+          <label for="autofillPortal">Portal</label>
+          <select id="autofillPortal"></select>
+        </div>
+
+        <button id="autofillBtn" class="btn primary block" type="button" disabled>Doldur</button>
+        <div id="autofillResult" class="result-box hidden"></div>
+      </section>
+    </main>
+
+    <!-- Profil modalı -->
+    <div id="profileModal" class="modal-overlay hidden">
+      <div class="modal">
+        <h2 id="profileModalTitle">Yeni Profil</h2>
+        <form id="profileForm" autocomplete="off">
+          <input type="hidden" id="pfId" />
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="pfAdSoyad">Ad Soyad *</label>
+              <input type="text" id="pfAdSoyad" required maxlength="255" />
+            </div>
+            <div class="form-group">
+              <label for="pfVoen">VÖEN *</label>
+              <input type="text" id="pfVoen" required maxlength="50" />
+            </div>
+            <div class="form-group">
+              <label for="pfNomre">Telefon *</label>
+              <input type="text" id="pfNomre" required maxlength="50" />
+            </div>
+            <div class="form-group">
+              <label for="pfAsanId">Asan ID *</label>
+              <input type="text" id="pfAsanId" required maxlength="50" />
+            </div>
+            <div class="form-group">
+              <label for="pfPin1">PIN1</label>
+              <input type="password" id="pfPin1" maxlength="100" autocomplete="new-password" />
+              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
+            </div>
+            <div class="form-group">
+              <label for="pfPin2">PIN2</label>
+              <input type="password" id="pfPin2" maxlength="100" autocomplete="new-password" />
+              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
+            </div>
+            <div class="form-group">
+              <label for="pfPuk">PUK</label>
+              <input type="password" id="pfPuk" maxlength="100" autocomplete="new-password" />
+              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
+            </div>
+            <div class="form-group">
+              <label for="pfBitmeTarixi">Bitmə tarixi</label>
+              <input type="date" id="pfBitmeTarixi" />
+            </div>
+            <div class="form-group">
+              <label for="pfReng">Rəng</label>
+              <input type="color" id="pfReng" value="#3b82f6" />
+            </div>
+            <div class="form-group">
+              <label for="pfIkon">İkon</label>
+              <select id="pfIkon">
+                <option value="user">İstifadəçi</option>
+                <option value="briefcase">Portfel</option>
+                <option value="building">Bina</option>
+                <option value="bank">Bank</option>
+                <option value="star">Ulduz</option>
+                <option value="shield">Qalxan</option>
+                <option value="certificate">Sertifikat</option>
+                <option value="home">Ev</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="pfQeyd">Qeyd</label>
+            <textarea id="pfQeyd" rows="2" maxlength="500"></textarea>
+          </div>
+          <div class="modal-actions">
+            <button type="button" id="profileCancelBtn" class="btn">Ləğv</button>
+            <button type="submit" id="profileSaveBtn" class="btn primary">Saxla</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="../lib/api.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

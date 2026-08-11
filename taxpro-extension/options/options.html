@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="az">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="options.css" />
+    <title>TaxPro — Tənzimləmələr</title>
+  </head>
+  <body>
+    <div class="card">
+      <h1>TaxPro Tənzimləmələri</h1>
+
+      <div class="form-group">
+        <label for="baseUrl">Backend ünvanı (API base URL)</label>
+        <input type="url" id="baseUrl" placeholder="http://localhost:8000" />
+        <small class="hint">
+          Defolt: <code>http://localhost:8000</code>. İşlək backend-i göstərin.
+        </small>
+      </div>
+
+      <div class="form-group">
+        <label for="status">Vəziyyət</label>
+        <div id="status" class="status muted">Hazır.</div>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="saveBtn" class="btn primary">Saxla</button>
+        <button type="button" id="testBtn" class="btn">Əlaqəni yoxla</button>
+      </div>
+
+      <div class="note">
+        <p>
+          <strong>Qeyd:</strong> Backend ünvanını dəyişsəniz, həmin host
+          <code>manifest.json</code> <code>host_permissions</code> siyahısına
+          əlavə edilməlidir (məs. <code>https://api.example.com/*</code>), əks halda
+          fetch bloklanır. Yerli <code>localhost</code> artıq icazəlidir.
+        </p>
+      </div>
+    </div>
+
+    <script src="../lib/api.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
