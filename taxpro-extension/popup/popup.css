@@ -20,14 +20,23 @@
   padding: 0;
 }
 
+html,
 body {
-  width: 380px;
-  max-height: 600px;
-  overflow-y: auto;
+  width: 100%;
+  height: 100%;
+  min-width: 340px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ===== Header ===== */
@@ -119,10 +128,26 @@ body {
   font-weight: 600;
 }
 
-main { padding: 12px; }
+main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 12px;
+}
 
 .tab-panel { display: none; }
-.tab-panel.active { display: block; }
+.tab-panel.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.sites-list,
+.profiles-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#tab-autofill { overflow-y: auto; }
 
 /* ===== Saytlar ===== */
 .search-box,
@@ -166,6 +191,7 @@ main { padding: 12px; }
   border-radius: var(--radius);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
   color: var(--text);
 }
 .site-row:hover {
@@ -188,17 +214,14 @@ main { padding: 12px; }
 
 .site-meta { flex: 1; min-width: 0; }
 .site-name {
+  display: block;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .site-url {
-  font-size: 11px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: none;
 }
 
 .empty-state {
@@ -369,22 +392,24 @@ main { padding: 12px; }
 }
 .result-box.ok { background: rgba(45, 212, 167, 0.12); color: var(--success); }
 .result-box.err { background: rgba(255, 92, 108, 0.12); color: var(--danger); }
-.hidden { display: none; }
+.hidden, [hidden] { display: none !important; }
 
 /* ===== Modal ===== */
 .modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 16px;
   z-index: 20;
 }
 .modal {
-  width: 92%;
+  margin: auto;
+  width: 100%;
   max-width: 360px;
-  max-height: 560px;
-  overflow-y: auto;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 14px;

@@ -14,6 +14,8 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab || null;

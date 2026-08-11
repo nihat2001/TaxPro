@@ -7,6 +7,7 @@
   let portals = [];
   let profiles = [];
   let editingProfileId = null;
+  let currentView = "tabs"; // "tabs" | "profileForm"
 
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
@@ -96,12 +97,11 @@
       html += `<div class="sites-group-title">${g.label}</div>`;
       for (const p of items) {
         html +=
-          `<button type="button" class="site-row" data-url="${escapeHtml(p.url)}">` +
+          `<a class="site-row" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer">` +
           `<span class="site-avatar">${escapeHtml(initials(p.name))}</span>` +
           `<span class="site-meta">` +
           `<span class="site-name">${escapeHtml(p.name)}</span>` +
-          `<span class="site-url">${escapeHtml(hostOf(p.url))}</span>` +
-          `</span></button>`;
+          `</span></a>`;
       }
     }
     list.innerHTML = html;
@@ -109,11 +109,6 @@
 
   function initSites() {
     $("siteSearch").addEventListener("input", (e) => renderSites(e.target.value));
-    $("sitesList").addEventListener("click", (e) => {
-      const row = e.target.closest(".site-row");
-      if (!row) return;
-      chrome.tabs.create({ url: row.dataset.url });
-    });
   }
 
   /* ===== Profillər tabı ===== */
@@ -202,12 +197,14 @@
       h.style.display = profile ? "" : "none";
     });
 
-    $("profileModal").classList.remove("hidden");
+    currentView = "profileForm";
+    $("profileModal").hidden = false;
     $("pfAdSoyad").focus();
   }
 
   function closeProfileModal() {
-    $("profileModal").classList.add("hidden");
+    currentView = "tabs";
+    $("profileModal").hidden = true;
     editingProfileId = null;
   }
 
@@ -239,6 +236,11 @@
     $("profileCancelBtn").addEventListener("click", closeProfileModal);
     $("profileModal").addEventListener("click", (e) => {
       if (e.target === $("profileModal")) closeProfileModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && currentView === "profileForm") {
+        closeProfileModal();
+      }
     });
 
     $("profileForm").addEventListener("submit", async (e) => {
@@ -280,38 +282,94 @@
     updateAutofillBtn();
   }
 
-  function populatePortalsSelect(preferredPortalId) {
-    const sel = $("autofillPortal");
-    const groups = ["dövlət", "bank"];
-    const ordered = [...portals].sort(
-      (a, b) =>
-        groups.indexOf(String(a.category).toLowerCase()) -
-          groups.indexOf(String(b.category).toLowerCase()) ||
-        String(a.name).localeCompare(String(b.name))
-    );
-    sel.innerHTML =
-      '<option value="">— Portal seçin —</option>' +
-      ordered
-        .map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`)
-        .join("");
-    if (preferredPortalId) sel.value = preferredPortalId;
-    updateAutofillBtn();
+  const STOPWORDS = new Set([
+    "bank", "banks", "az", "gov", "com", "net", "org", "ltd", "llc",
+    "official", "portal", "portalı",
+  ]);
+
+  function normalizeHost(host) {
+    return String(host || "")
+      .toLowerCase()
+      .replace(/^www\./, "")
+      .replace(/social/g, "sosial");
+  }
+
+  function portalKeywords(p) {
+    const keys = new Set();
+    let host = "";
+    try {
+      host = new URL(p.url).hostname.toLowerCase().replace(/^www\./, "");
+    } catch (err) {
+      host = "";
+    }
+
+    const hostNorm = normalizeHost(host);
+    keys.add(hostNorm);
+    const hostNoTld = hostNorm.split(".").slice(0, -1).join(".");
+    if (hostNoTld) keys.add(hostNoTld);
+    for (const seg of hostNorm.split(/[.-]/)) {
+      if (seg.length >= 4 && !STOPWORDS.has(seg)) keys.add(seg);
+    }
+
+    const nameTokens = String(p.name || "")
+      .toLowerCase()
+      .split(/[^a-z0-9əöüçşğı]+/);
+    for (const t of nameTokens) {
+      const tok = t.replace(/social/g, "sosial");
+      if (tok.length >= 4 && !STOPWORDS.has(tok)) keys.add(tok);
+    }
+    return keys;
   }
 
   function matchPortalByUrl(tabUrl) {
     if (!tabUrl) return null;
-    const host = hostOf(tabUrl).toLowerCase();
-    if (!host) return null;
-    return (
-      portals.find((p) => {
-        const ph = hostOf(p.url).toLowerCase();
-        return ph && (host === ph || host.endsWith("." + ph));
-      }) || null
-    );
+    let tabHost = "";
+    let tabPath = "";
+    try {
+      const u = new URL(tabUrl);
+      tabHost = normalizeHost(u.hostname);
+      tabPath = u.pathname.toLowerCase();
+    } catch (err) {
+      return null;
+    }
+    if (!tabHost) return null;
+
+    let best = null;
+    for (const p of portals) {
+      let ph = "";
+      let pp = "";
+      try {
+        const pu = new URL(p.url);
+        ph = normalizeHost(pu.hostname);
+        pp = (pu.pathname || "/").toLowerCase();
+      } catch (err) {
+        continue;
+      }
+      if (!ph) continue;
+
+      let score = 0;
+      if (tabHost === ph) {
+        score = 4;
+      } else if (tabHost.endsWith("." + ph)) {
+        score = 3;
+      } else if (p._keywords && [...p._keywords].some((k) => tabHost.includes(k))) {
+        score = 2;
+      }
+
+      if (score === 0) continue;
+
+      const hasDeepPath = pp !== "/" && pp !== "";
+      if (hasDeepPath && tabPath.startsWith(pp)) score += 1;
+
+      if (!best || score > best.score) {
+        best = { portal: p, score };
+      }
+    }
+    return best ? best.portal : null;
   }
 
   function updateAutofillBtn() {
-    $("autofillBtn").disabled = !$("autofillProfile").value || !$("autofillPortal").value;
+    $("autofillBtn").disabled = !$("autofillProfile").value;
   }
 
   async function loadActiveTab() {
@@ -328,7 +386,6 @@
       if (matched) {
         info.textContent = `${matched.name} (${hostOf(tab.url)})`;
         info.className = "active-tab-info";
-        $("autofillPortal").value = matched.id;
       } else {
         info.textContent = `${tab.title || hostOf(tab.url) || "Səhifə"} — tanınmış portal deyil`;
         info.className = "active-tab-info muted";
@@ -342,18 +399,33 @@
 
   function initAutofill() {
     $("autofillProfile").addEventListener("change", updateAutofillBtn);
-    $("autofillPortal").addEventListener("change", updateAutofillBtn);
 
     $("autofillBtn").addEventListener("click", async () => {
       const profileId = $("autofillProfile").value;
-      const portalId = $("autofillPortal").value;
       const resultBox = $("autofillResult");
       resultBox.className = "result-box hidden";
 
-      if (!profileId || !portalId) return;
+      if (!profileId) return;
+
+      let activeTab = null;
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" });
+        activeTab = resp && resp.tab;
+      } catch (err) {
+        activeTab = null;
+      }
+
+      const portal = activeTab ? matchPortalByUrl(activeTab.url) : null;
+      if (!portal) {
+        resultBox.className = "result-box err";
+        resultBox.textContent =
+          "Zəhmət olmasa, əvvəlcə Saytlar tabından portalın daxilolma səhifəsinə keçin.";
+        resultBox.classList.remove("hidden");
+        return;
+      }
 
       try {
-        const payload = await api.getPortalAutoFill(portalId, profileId);
+        const payload = await api.getPortalAutoFill(portal.id, profileId);
         const fieldCount = Object.keys(payload.fields || {}).length;
         if (fieldCount === 0) {
           resultBox.className = "result-box err";
@@ -393,14 +465,15 @@
 
   async function populateAutofillSelects() {
     populateProfilesSelect();
-    if (!$("autofillPortal").value) populatePortalsSelect();
   }
 
   /* ===== Yükləmə ===== */
   async function loadPortals() {
     portals = await api.getPortals();
+    portals.forEach((p) => {
+      p._keywords = portalKeywords(p);
+    });
     renderSites($("siteSearch").value);
-    populatePortalsSelect();
   }
 
   async function loadProfiles() {
@@ -420,6 +493,9 @@
   }
 
   async function init() {
+    currentView = "tabs";
+    $("profileModal").hidden = true;
+
     initSites();
     initProfiles();
     initProfileModal();
@@ -438,6 +514,11 @@
     } catch (err) {
       showToast(err.message, "err");
     }
+
+    chrome.tabs.onActivated.addListener(() => loadActiveTab());
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (changeInfo.url) loadActiveTab();
+    });
     await loadActiveTab();
   }
 

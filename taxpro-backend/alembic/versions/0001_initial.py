@@ -36,28 +36,28 @@ _STANDARD_MAPPING = {
 
 def _portals() -> list[dict]:
     state = [
-        ("e-Vergi (yeni)", "https://evergi.gov.az"),
-        ("e-Sosial", "https://esosial.az"),
-        ("e-customs", "https://e.customs.gov.az"),
-        ("Statistika", "https://www.stat.gov.az"),
-        ("Vergi xidməti", "https://www.taxes.gov.az"),
-        ("e-Vergi (köhnə)", "https://e-taxes.gov.az"),
-        ("AYNA", "https://ayna.gov.az"),
-        ("myGov", "https://my.gov.az"),
+        ("e-Vergi (yeni)", "https://new.e-taxes.gov.az/eportal/login"),
+        ("e-Sosial", "https://mygovid.gov.az/auth"),
+        ("e-customs", "https://e.customs.gov.az/auth/login"),
+        ("Statistika", "https://www.stat.gov.az/"),
+        ("Vergi xidməti", "https://www.taxes.gov.az/az"),
+        ("e-Vergi (köhnə)", "https://new.e-taxes.gov.az/eportal/login"),
+        ("AYNA", "https://mygovid.gov.az/auth"),
+        ("myGov", "https://mygovid.gov.az/auth"),
         ("MyGovID", "https://mygovid.gov.az"),
-        ("Asan İmza Portalı", "https://asan-imza.az"),
+        ("Asan İmza Portalı", "https://portal.asxm.gov.az/login"),
     ]
     banks = [
-        ("Access Bank", "https://www.accessbank.az"),
-        ("AFB Bank", "https://www.afbbank.az"),
-        ("ABB", "https://www.abb-bank.az"),
-        ("Azər-Türk Bank", "https://www.azer-turkbank.com"),
-        ("Bank Avrasiya", "https://www.avrasiya.com"),
+        ("Access Bank", "https://www.accessbank.az/az/requests/onlayn-kredit?utm_source=Website_slider"),
+        ("AFB Bank", "https://business.afb.az/login"),
+        ("ABB", "https://abb-bank.az/"),
+        ("Azər-Türk Bank", "https://atb.az"),
+        ("Bank Avrasiya", "https://bankavrasiya.az/"),
         ("Bank of Baku", "https://www.bankofbaku.com"),
         ("Bank Respublika", "https://www.bankrespublika.az"),
         ("Birbank Biznes", "https://birbank.az"),
         ("BMI Baku", "https://www.bmibaku.az"),
-        ("BTB Bank", "https://www.btbbank.az"),
+        ("BTB Bank", "https://btb.az"),
         ("Expressbank", "https://www.expressbank.az"),
         ("PashaBank Digital", "https://www.pashabank.digital"),
         ("Premium Bank", "https://www.premiumbank.az"),
@@ -68,7 +68,7 @@ def _portals() -> list[dict]:
         ("Xalq Bank", "https://www.xalqbank.az"),
         ("Yapı Kredi Bank", "https://www.yapikredi.com.az"),
         ("Yelo Bank", "https://www.yelo.az"),
-        ("Ziraat Bank", "https://www.ziraatbank.com.az"),
+        ("Ziraat Bank", "https://ziraatbank.az"),
     ]
 
     rows: list[dict] = []
