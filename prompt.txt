@@ -146,7 +146,7 @@ Bütün cavablar **təmiz JSON**, bütün endpoint-lərdə **CORS aktiv** (Chrom
 - Hər endpoint üçün Pydantic v2 ilə **sərt input/output validasiyası**.
 - Mərkəzləşdirilmiş **error handling** (FastAPI exception handler-lər) — bütün xətalar strukturlaşdırılmış JSON formatında qaytarılmalı.
 - **Logging** (structlog və ya standard logging, request-id ilə).
-- `.env` vasitəsilə konfiqurasiya (`DB_URL`, `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, `ENCRYPTION_KEY`).
+- `.env` vasitəsilə konfiqurasiya (`DB_URL`, `GROQ_API_KEY`/`ANTHROPIC_API_KEY`, `ENCRYPTION_KEY`).
 - Test qatı: `pytest` + `pytest-asyncio` ilə minimum smoke testlər (CRUD, autofill, agent routing).
 
 ---

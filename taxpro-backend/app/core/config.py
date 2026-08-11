@@ -17,11 +17,11 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:8000"
 
-    llm_provider: Literal["openai", "anthropic"] = "openai"
-    llm_model: str = "gpt-4o-mini"
+    llm_provider: Literal["groq", "anthropic"] = "groq"
+    groq_model: str = "llama-3.3-70b-versatile"
     anthropic_model: str = "claude-3-5-haiku-latest"
     embedding_model: str = "text-embedding-3-small"
-    openai_api_key: str = ""
+    groq_api_key: str = ""
     anthropic_api_key: str = ""
 
     log_level: str = "INFO"
@@ -34,8 +34,8 @@ class Settings(BaseSettings):
 
     @property
     def llm_is_configured(self) -> bool:
-        if self.llm_provider == "openai":
-            return bool(self.openai_api_key)
+        if self.llm_provider == "groq":
+            return bool(self.groq_api_key)
         return bool(self.anthropic_api_key)
 
 
