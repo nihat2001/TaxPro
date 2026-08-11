@@ -1,0 +1,90 @@
+import io
+
+import pandas as pd
+import pytest
+
+from app.services.deterministic.excel_parser import (
+    detect_standard,
+    parse_standard,
+)
+
+
+def _bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return buf.read()
+
+
+def test_detect_standard_full_headers():
+    headers = ["Ad Soyad", "VÖEN", "Nömrə", "Asan ID", "PIN1", "PIN2", "PUK"]
+    assert detect_standard(headers) is True
+
+
+def test_detect_standard_missing_headers():
+    assert detect_standard(["Ad Soyad", "VÖEN"]) is False
+
+
+def test_detect_standard_aliases():
+    headers = ["Ad Soyad", "VERGİ NÖMRƏSİ", "Telefon", "AsanID", "PIN", "PIN2", "PUK"]
+    assert detect_standard(headers) is True
+
+
+def test_parse_standard_normalizes_values():
+    df = pd.DataFrame(
+        [
+            {
+                "Ad Soyad": "Ehmed Eliyev",
+                "VÖEN": 1234567890,
+                "Nömrə": "0501234567",
+                "Asan ID": "AA123",
+                "PIN1": 1234,
+                "PIN2": "5678",
+                "PUK": "9999",
+            }
+        ]
+    )
+    rows = parse_standard(_bytes(df))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["voen"] == "1234567890"
+    assert row["nomre"] == "+994501234567"
+    assert row["asan_id"] == "AA123"
+    assert row["pin1"] == "1234"
+    assert row["pin2"] == "5678"
+
+
+def test_parse_standard_skips_empty_rows():
+    df = pd.DataFrame(
+        [
+            {"Ad Soyad": "A", "VÖEN": 1, "Nömrə": "0501111111", "Asan ID": "X", "PIN1": "1", "PIN2": "2", "PUK": "3"},
+            {"Ad Soyad": None, "VÖEN": None, "Nömrə": None, "Asan ID": None, "PIN1": None, "PIN2": None, "PUK": None},
+        ]
+    )
+    rows = parse_standard(_bytes(df))
+    assert len(rows) == 1
+
+
+def test_parse_standard_invalid_raises():
+    df = pd.DataFrame([{"foo": 1, "bar": 2}])
+    with pytest.raises(ValueError):
+        parse_standard(_bytes(df))
+
+
+def test_parse_standard_date_normalization():
+    df = pd.DataFrame(
+        [
+            {
+                "Ad Soyad": "A",
+                "VÖEN": 1,
+                "Nömrə": "0501111111",
+                "Asan ID": "X",
+                "PIN1": "1",
+                "PIN2": "2",
+                "PUK": "3",
+                "Bitme Tarixi": "12.08.2026",
+            }
+        ]
+    )
+    rows = parse_standard(_bytes(df))
+    assert rows[0]["bitme_tarixi"].isoformat() == "2026-08-12"
