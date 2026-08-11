@@ -9,6 +9,13 @@
   let editingProfileId = null;
   let currentView = "tabs"; // "tabs" | "profileForm"
 
+  let recordActive = false;
+  let recordPortalId = null;
+  let recordMap = {};
+  let recordPendingSelector = null;
+
+  let activePortal = null;
+
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
 
@@ -369,7 +376,15 @@
   }
 
   function updateAutofillBtn() {
-    $("autofillBtn").disabled = !$("autofillProfile").value;
+    const profileOk = !!$("autofillProfile").value;
+    const nonePortal = activePortal && activePortal.auth_type === "none";
+    $("autofillBtn").disabled = !profileOk || !!nonePortal;
+    if (nonePortal) {
+      const resultBox = $("autofillResult");
+      resultBox.className = "result-box err";
+      resultBox.textContent = "Bu sayt üçün auto-fill tələb olunmur/dəstəklənmir.";
+      resultBox.classList.remove("hidden");
+    }
   }
 
   async function loadActiveTab() {
@@ -383,6 +398,7 @@
         return;
       }
       const matched = matchPortalByUrl(tab.url);
+      activePortal = matched || null;
       if (matched) {
         info.textContent = `${matched.name} (${hostOf(tab.url)})`;
         info.className = "active-tab-info";
@@ -407,6 +423,13 @@
 
       if (!profileId) return;
 
+      if (activePortal && activePortal.auth_type === "none") {
+        resultBox.className = "result-box err";
+        resultBox.textContent = "Bu sayt üçün auto-fill tələb olunmur/dəstəklənmir.";
+        resultBox.classList.remove("hidden");
+        return;
+      }
+
       let activeTab = null;
       try {
         const resp = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" });
@@ -426,8 +449,14 @@
 
       try {
         const payload = await api.getPortalAutoFill(portal.id, profileId);
-        const fieldCount = Object.keys(payload.fields || {}).length;
-        if (fieldCount === 0) {
+        const fields = Object.entries(payload.fields || {}).map(
+          ([selector, value]) => ({
+            field: (payload.field_map && payload.field_map[selector]) || selector,
+            selector,
+            value,
+          })
+        );
+        if (fields.length === 0) {
           resultBox.className = "result-box err";
           resultBox.textContent = "Bu portal üçün doldurulacaq sahə yoxdur.";
           resultBox.classList.remove("hidden");
@@ -436,7 +465,7 @@
 
         const outcome = await chrome.runtime.sendMessage({
           type: "AUTOFILL",
-          fields: payload.fields,
+          fields,
         });
 
         if (!outcome.ok) {
@@ -465,6 +494,147 @@
 
   async function populateAutofillSelects() {
     populateProfilesSelect();
+  }
+
+  /* ===== Qeydiyyat rejimi (Record Mode) ===== */
+  const RECORD_FIELD_LABELS = {
+    asan_id: "Asan ID",
+    nomre: "Telefon",
+    voen: "VÖEN",
+    ad_soyad: "Ad Soyad",
+    pin1: "PIN1",
+    pin2: "PIN2",
+    puk: "PUK",
+    qeyd: "Qeyd",
+  };
+
+  function renderRecordList() {
+    const list = $("recordList");
+    const fields = Object.keys(recordMap);
+    if (fields.length === 0) {
+      list.innerHTML = '<div class="empty-state">Hələ sahə tutulmayıb.</div>';
+      return;
+    }
+    list.innerHTML = fields
+      .map(
+        (f) =>
+          `<div class="record-row" data-field="${escapeHtml(f)}">` +
+          `<span class="record-row-field">${escapeHtml(RECORD_FIELD_LABELS[f] || f)}</span>` +
+          `<code class="record-row-selector">${escapeHtml(recordMap[f])}</code>` +
+          `<button type="button" class="icon-btn" data-remove="${escapeHtml(f)}" title="Sil">&#10005;</button>` +
+          `</div>`
+      )
+      .join("");
+  }
+
+  async function startRecordMode() {
+    if (recordActive) return;
+    let activeTab = null;
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" });
+      activeTab = resp && resp.tab;
+    } catch (err) {
+      activeTab = null;
+    }
+    const portal = activeTab ? matchPortalByUrl(activeTab.url) : null;
+    if (!portal) {
+      showToast("Əvvəlcə portalın daxilolma səhifəsində olun.", "err");
+      return;
+    }
+
+    const resp = await chrome.runtime.sendMessage({ type: "START_RECORD" });
+    if (!resp || !resp.ok) {
+      showToast((resp && resp.error) || "Qeydiyyat rejimi başlamadı.", "err");
+      return;
+    }
+
+    recordActive = true;
+    recordPortalId = portal.id;
+    recordMap = {};
+    recordPendingSelector = null;
+    $("recordPortalName").textContent = portal.name;
+    $("recordPanel").hidden = false;
+    $("recordPending").hidden = true;
+    $("recordModeBtn").textContent = "🎯 Qeydiyyat rejimi: Aktiv";
+    renderRecordList();
+  }
+
+  async function stopRecordMode() {
+    if (recordActive) {
+      try {
+        await chrome.runtime.sendMessage({ type: "STOP_RECORD" });
+      } catch (err) {
+        // background cavabı vacib deyil
+      }
+    }
+    recordActive = false;
+    recordPortalId = null;
+    recordMap = {};
+    recordPendingSelector = null;
+    $("recordPanel").hidden = true;
+    $("recordModeBtn").textContent = "🎯 Qeydiyyat rejimi";
+  }
+
+  function initRecordMode() {
+    $("recordModeBtn").addEventListener("click", () => {
+      if (recordActive) {
+        stopRecordMode();
+      } else {
+        startRecordMode();
+      }
+    });
+
+    $("recordAddBtn").addEventListener("click", () => {
+      if (!recordPendingSelector) return;
+      const field = $("recordField").value;
+      recordMap[field] = recordPendingSelector;
+      recordPendingSelector = null;
+      $("recordPending").hidden = true;
+      renderRecordList();
+      showToast("Sahə əlavə olundu.", "ok");
+    });
+
+    $("recordList").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-remove]");
+      if (!btn) return;
+      delete recordMap[btn.dataset.remove];
+      renderRecordList();
+    });
+
+    $("recordCancelBtn").addEventListener("click", stopRecordMode);
+
+    $("recordSaveBtn").addEventListener("click", async () => {
+      if (!recordPortalId) return;
+      const body = {
+        selector_mapping: recordMap,
+        auth_type: $("recordAuthType").value,
+      };
+      try {
+        await api.updateSelectorMapping(recordPortalId, body);
+        const p = portals.find((x) => x.id === recordPortalId);
+        if (p) {
+          p.selector_mapping = recordMap;
+          p.auth_type = body.auth_type;
+        }
+        showToast("Yadda saxlandı.", "ok");
+        await stopRecordMode();
+      } catch (err) {
+        showToast(err.message, "err");
+      }
+    });
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg || msg.type !== "FIELD_CAPTURED") return;
+      if (!recordActive) {
+        console.warn("[TaxPro panel] FIELD_CAPTURED while record inactive");
+        return;
+      }
+      console.log("[TaxPro panel] received FIELD_CAPTURED", msg.selector);
+      recordPendingSelector = msg.selector;
+      $("recordPendingSelector").textContent = msg.selector;
+      $("recordField").value = "asan_id";
+      $("recordPending").hidden = false;
+    });
   }
 
   /* ===== Yükləmə ===== */
@@ -500,6 +670,7 @@
     initProfiles();
     initProfileModal();
     initAutofill();
+    initRecordMode();
 
     document.querySelectorAll(".tab-btn").forEach((b) => {
       b.addEventListener("click", () => switchTab(b.dataset.tab));

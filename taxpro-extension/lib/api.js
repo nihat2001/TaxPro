@@ -94,6 +94,11 @@
 
     /* ===== Portallar ===== */
     getPortals: () => api("/api/v1/portals"),
+    updateSelectorMapping: (portalId, data) =>
+      api(`/api/v1/portals/${portalId}/selector-mapping`, {
+        method: "PATCH",
+        body: data,
+      }),
 
     /* ===== Profillər ===== */
     listProfiles: () => api("/api/v1/profiles"),

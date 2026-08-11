@@ -426,6 +426,52 @@ main {
   margin-top: 14px;
 }
 
+/* ===== Qeydiyyat rejimi ===== */
+.record-panel { margin-top: 10px; }
+.record-panel .card { padding: 12px; }
+.record-selector {
+  display: block;
+  padding: 6px 8px;
+  margin: 6px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  word-break: break-all;
+}
+.record-pending { margin-bottom: 10px; }
+.record-list { margin-bottom: 10px; }
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+}
+.record-row-field {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--text);
+}
+.record-row-selector {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.record-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ===== Toast ===== */
 .toast {
   position: fixed;

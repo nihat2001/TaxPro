@@ -59,6 +59,48 @@
 
         <button id="autofillBtn" class="btn primary block" type="button" disabled>Doldur</button>
         <div id="autofillResult" class="result-box hidden"></div>
+
+        <button id="recordModeBtn" class="btn block" type="button">&#127919; Qeydiyyat rejimi</button>
+        <div id="recordPanel" class="record-panel" hidden>
+          <div class="card">
+            <div class="card-label">Portal: <span id="recordPortalName"></span></div>
+
+            <div id="recordPending" class="record-pending" hidden>
+              <div class="card-label">Tutulmuş sahə</div>
+              <code id="recordPendingSelector" class="record-selector"></code>
+              <div class="form-group">
+                <label for="recordField">Bu sahə hansı profil sahəsidir?</label>
+                <select id="recordField">
+                  <option value="asan_id">Asan ID</option>
+                  <option value="nomre">Telefon</option>
+                  <option value="voen">VÖEN</option>
+                  <option value="ad_soyad">Ad Soyad</option>
+                  <option value="pin1">PIN1</option>
+                  <option value="pin2">PIN2</option>
+                  <option value="puk">PUK</option>
+                  <option value="qeyd">Qeyd</option>
+                </select>
+              </div>
+              <button id="recordAddBtn" class="btn primary" type="button">Əlavə et</button>
+            </div>
+
+            <div class="card-label">Tutulmuş sahələr</div>
+            <div id="recordList" class="record-list"></div>
+
+            <div class="form-group">
+              <label for="recordAuthType">Auth növü</label>
+              <select id="recordAuthType">
+                <option value="asan_id_form">Login formu var (asan_id_form)</option>
+                <option value="none">Login formu yoxdur (none)</option>
+              </select>
+            </div>
+
+            <div class="record-actions">
+              <button id="recordCancelBtn" class="btn" type="button">Bağla</button>
+              <button id="recordSaveBtn" class="btn primary" type="button">Yadda saxla</button>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
 

@@ -61,6 +61,7 @@ async def build_autofill_payload(
     selector_mapping = portal.selector_mapping or {}
 
     fields: dict[str, str] = {}
+    field_map: dict[str, str] = {}
     for field, selector in selector_mapping.items():
         value = values.get(field)
         if value is None:
@@ -68,6 +69,7 @@ async def build_autofill_payload(
         if not isinstance(selector, str):
             selector = str(selector)
         fields[selector] = value
+        field_map[selector] = field
 
     logger.info(
         "Auto-fill payload hazırlandı",
@@ -78,4 +80,5 @@ async def build_autofill_payload(
         portal_id=portal_id,
         portal_name=portal.name,
         fields=fields,
+        field_map=field_map,
     )

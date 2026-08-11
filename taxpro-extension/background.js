@@ -32,6 +32,15 @@ async function ensureContentScript(tabId) {
   }
 }
 
+async function sendToContent(tabId, msg) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, msg);
+  } catch (err) {
+    await ensureContentScript(tabId);
+    return await chrome.tabs.sendMessage(tabId, msg);
+  }
+}
+
 async function runAutofill(tab, fields) {
   let result = null;
   try {
@@ -82,6 +91,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       const outcome = await runAutofill(tab, msg.fields || {});
       sendResponse({ ...outcome, tab: { id: tab.id, url: tab.url } });
+    }
+
+    if (msg.type === "START_RECORD" || msg.type === "STOP_RECORD") {
+      const tab = await getActiveTab();
+      if (!tab) {
+        sendResponse({ ok: false, error: "Aktiv tab tapılmadı." });
+        return;
+      }
+      try {
+        await sendToContent(tab.id, { type: msg.type });
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: "Səhifəyə giriş mümkün olmadı." });
+      }
+    }
+
+    if (msg.type === "FIELD_CAPTURED") {
+      console.log("[TaxPro bg] forwarding FIELD_CAPTURED", msg.selector);
+      const payload = {
+        type: "FIELD_CAPTURED",
+        selector: msg.selector,
+        tabId: sender.tab ? sender.tab.id : null,
+        tabUrl: sender.tab ? sender.tab.url : null,
+      };
+      chrome.runtime.sendMessage(payload).catch(() => {});
+      sendResponse({ ok: true });
     }
   })();
   return true; // async sendResponse üçün kanalı açıq saxlayırıq

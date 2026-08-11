@@ -18,4 +18,7 @@ class Portal(Base):
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     selector_mapping: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    auth_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unknown", server_default="unknown"
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

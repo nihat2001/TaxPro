@@ -1,3 +1,5 @@
+from typing import Literal
+
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -12,7 +14,13 @@ class PortalRead(BaseModel):
     category: str
     logo_url: str | None
     selector_mapping: dict
+    auth_type: str
     sort_order: int
+
+
+class SelectorMappingUpdate(BaseModel):
+    selector_mapping: dict
+    auth_type: Literal["asan_id_form", "none", "unknown"]
 
 
 class AutoFillPayload(BaseModel):
@@ -20,3 +28,4 @@ class AutoFillPayload(BaseModel):
     portal_id: UUID
     portal_name: str
     fields: dict[str, str]
+    field_map: dict[str, str] = {}

@@ -131,6 +131,29 @@ async def test_portals_autofill(client):
     assert body["fields"]["input#pin1"] == "1111"
 
 
+async def test_portal_selector_mapping_update(client):
+    portal = await _seed_portal(client)
+    assert portal["auth_type"] == "unknown"
+
+    resp = await client.patch(
+        f"/api/v1/portals/{portal['id']}/selector-mapping",
+        json={
+            "selector_mapping": {"asan_id": "input#asanid", "nomre": "input#phone"},
+            "auth_type": "asan_id_form",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["auth_type"] == "asan_id_form"
+    assert body["selector_mapping"]["asan_id"] == "input#asanid"
+
+    resp = await client.patch(
+        f"/api/v1/portals/{portal['id']}/selector-mapping",
+        json={"selector_mapping": {}, "auth_type": "bogus"},
+    )
+    assert resp.status_code == 422
+
+
 async def test_import_excel_standard(client):
     files = {"file": ("profiles.xlsx", _profile_excel(), XLSX_MIME)}
     resp = await client.post("/api/v1/import/excel", files=files)
