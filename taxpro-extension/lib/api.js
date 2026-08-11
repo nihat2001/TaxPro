@@ -112,18 +112,27 @@
     getPortalAutoFill: (portalId, profileId) =>
       api(`/api/v1/portals/${portalId}/autofill/${profileId}`),
 
-    /* ===== Faza 2 (AI) — yer saxlanılır ===== */
+    /* ===== Faza 2 (AI) ===== */
     importExcel: (file) =>
-      api("/api/v1/import/excel", { method: "POST", body: file }),
+      api("/api/v1/import/excel", { method: "POST", body: fileForm(file) }),
     importSmart: (file) =>
-      api("/api/v1/import/smart", { method: "POST", body: file }),
+      api("/api/v1/import/smart", { method: "POST", body: fileForm(file) }),
     analyzeBankStatement: (file) =>
-      api("/api/v1/bank-statements/analyze", { method: "POST", body: file }),
-    chat: (message, profileId) =>
-      api("/api/v1/chat", { method: "POST", body: { message, profile_id: profileId || null } }),
+      api("/api/v1/bank-statements/analyze", { method: "POST", body: fileForm(file) }),
+    chat: (message, profileId, threadId) =>
+      api("/api/v1/chat", {
+        method: "POST",
+        body: { message, profile_id: profileId || null, thread_id: threadId || null },
+      }),
     resume: (threadId, decision) =>
       api("/api/v1/resume", { method: "POST", body: { thread_id: threadId, decision } }),
   };
+
+  function fileForm(file) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fd;
+  }
 
   global.TaxProAPI = TaxProAPI;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -222,3 +222,68 @@ async def test_chat_retriever(client):
     body = resp.json()
     assert body["status"] == "done"
     assert body["thread_id"]
+
+
+async def test_chat_thread_continuity(client):
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import MemorySaver
+
+    import app.services.ai.graph as graph_mod
+    from app.services.ai.graph import build_graph
+    from tests.fakes import ScriptedModel
+
+    class CountingModel(ScriptedModel):
+        def _decide(self, messages):
+            agent = self._identify(messages)
+            called = [m.name for m in messages if getattr(m, "type", "") == "tool"]
+            if agent == "supervisor":
+                if any(n.startswith("transfer_to_") for n in called):
+                    human_count = sum(
+                        1 for m in messages if getattr(m, "type", "") in ("user", "human")
+                    )
+                    return AIMessage(content=f"Mesaj sayi: {human_count}")
+                user_text = " ".join(
+                    (m.content or "")
+                    for m in messages
+                    if getattr(m, "type", "") in ("user", "human")
+                    and isinstance(m.content, str)
+                ).lower()
+                if any(k in user_text for k in ("bank", "cixaris", "çıxarış")):
+                    name = "transfer_to_bank_vat_agent"
+                elif any(k in user_text for k in ("excel", "fayl", "idxal")):
+                    name = "transfer_to_unstructured_parser_agent"
+                else:
+                    name = "transfer_to_profile_data_retriever_agent"
+                return AIMessage(
+                    content="",
+                    tool_calls=[{"name": name, "args": {}, "id": "call_sup"}],
+                )
+            return super()._decide(messages)
+
+    graph_mod._graph = build_graph(
+        checkpointer=MemorySaver(), model=CountingModel()
+    )
+
+    try:
+        first = await client.post("/api/v1/chat", json={"message": "Salam"})
+        assert first.status_code == 200
+        body1 = first.json()
+        thread_id = body1["thread_id"]
+        assert body1["status"] == "done"
+        assert "1" in body1["message"]
+
+        second = await client.post(
+            "/api/v1/chat",
+            json={"message": "Necəsiniz?", "thread_id": thread_id},
+        )
+        assert second.status_code == 200
+        body2 = second.json()
+        assert body2["thread_id"] == thread_id
+        assert "2" in body2["message"]
+
+        fresh = await client.post("/api/v1/chat", json={"message": "Salam"})
+        body3 = fresh.json()
+        assert body3["thread_id"] != thread_id
+        assert "1" in body3["message"]
+    finally:
+        graph_mod._graph = None

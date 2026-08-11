@@ -9,7 +9,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=AgentRunResponse)
 async def chat(payload: ChatRequest):
-    thread_id = new_thread_id()
+    thread_id = payload.thread_id or new_thread_id()
     profile_id = str(payload.profile_id) if payload.profile_id else None
     state = await run_chat(thread_id, payload.message, profile_id)
     return to_run_response(thread_id, state)
