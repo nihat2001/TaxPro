@@ -28,6 +28,7 @@ services:
       - ./taxpro-backend/.env
     environment:
       DB_URL: postgresql+asyncpg://${POSTGRES_USER:-taxpro}:${POSTGRES_PASSWORD:-taxpro}@db:5432/${POSTGRES_DB:-taxpro}
+      APP_ENV: production
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:

@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     log_level: str = "INFO"
+    recursion_limit: int = 25
+    app_env: Literal["development", "production"] = "development"
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decrypt_value
 from app.models.portal import Portal
 from app.schemas.portal import AutoFillPayload
+from app.schemas.profile import ProfileAutoFill
 from app.services.deterministic.profile_service import get_profile
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,24 @@ def _decrypted_values(profile) -> dict[str, str | None]:
         "pin2": decrypt_value(profile.pin2),
         "puk": decrypt_value(profile.puk),
     }
+
+
+async def get_autofill_profile(session: AsyncSession, profile_id: uuid.UUID) -> ProfileAutoFill | None:
+    profile = await get_profile(session, profile_id)
+    if profile is None:
+        return None
+    return ProfileAutoFill(
+        id=profile.id,
+        ad_soyad=profile.ad_soyad,
+        voen=profile.voen,
+        nomre=profile.nomre,
+        asan_id=profile.asan_id,
+        bitme_tarixi=profile.bitme_tarixi,
+        qeyd=profile.qeyd,
+        pin1=decrypt_value(profile.pin1),
+        pin2=decrypt_value(profile.pin2),
+        puk=decrypt_value(profile.puk),
+    )
 
 
 async def build_autofill_payload(
