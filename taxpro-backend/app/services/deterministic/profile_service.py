@@ -4,7 +4,7 @@ import uuid
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decrypt_value, encrypt_value
+from app.core.security import encrypt_value
 from app.models.profile import Profile
 from app.schemas.profile import ProfileCreate, ProfileUpdate
 
@@ -70,19 +70,3 @@ async def delete_profile(session: AsyncSession, profile_id: uuid.UUID) -> bool:
     )
     await session.commit()
     return bool(result.rowcount)
-
-
-def decrypted_values(profile: Profile) -> dict[str, str | None]:
-    return {
-        "ad_soyad": profile.ad_soyad,
-        "voen": profile.voen,
-        "nomre": profile.nomre,
-        "asan_id": profile.asan_id,
-        "bitme_tarixi": (
-            profile.bitme_tarixi.isoformat() if profile.bitme_tarixi else None
-        ),
-        "qeyd": profile.qeyd,
-        "pin1": decrypt_value(profile.pin1),
-        "pin2": decrypt_value(profile.pin2),
-        "puk": decrypt_value(profile.puk),
-    }
