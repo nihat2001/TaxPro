@@ -1,0 +1,156 @@
+# TaxPro Backend — AI Kodlaşdırma Aləti üçün Prompt
+
+> Bu faylı olduğu kimi kopyalayıb Claude Code, Cursor və ya digər AI kodlaşdırma alətinə yapışdıra bilərsən.
+
+---
+
+## 0. Rol və Məqsəd
+
+Sən **Senior Python & LangGraph Engineer**-sən. Tapşırığın: **TaxPro** — Azərbaycan dövlət vergi/bank portalları üçün Chrome Extension-la işləyən, **async, modulyar, istehsalata-hazır (production-ready)** Python backend qurmaqdır.
+
+Backend-in əsas vəzifəsi: istifadəçinin əvvəlcədən saxladığı profil məlumatlarını (VÖEN, Asan ID, PIN/PUK və s.) Chrome Extension vasitəsilə rəsmi bank/vergi saytlarının giriş formalarına **avtomatik doldurmaq (auto-fill)** üçün təmiz JSON API təqdim etməkdir. Bundan əlavə, Excel idxalı və bank çıxarışı təhlili üçün AI agent qatı var.
+
+---
+
+## 1. Dəstəklənən Portallar və Banklar (Service Enum — 31 ədəd)
+
+**Dövlət Portalları (10):**
+`e-Vergi (yeni)`, `e-Sosial`, `e-customs`, `Statistika`, `Vergi xidməti`, `e-Vergi (köhnə)`, `AYNA`, `myGov`, `MyGovID`, `Asan İmza Portalı`
+
+**Banklar və Maliyyə Qurumları (21):**
+`Access Bank`, `AFB Bank`, `ABB`, `Azər-Türk Bank`, `Azərpoçt`, `Bank Avrasiya`, `Bank of Baku`, `Bank Respublika`, `Birbank Biznes`, `BMI Baku`, `BTB Bank`, `Expressbank`, `PashaBank Digital`, `Premium Bank`, `Rabitabank`, `Turanbank`, `Unibank`, `VTB Bank`, `Xalq Bank`, `Yapı Kredi Bank`, `Yelo Bank`, `Ziraat Bank`
+
+Bu siyahı `PortalEnum` kimi Python `Enum` və DB-də `portals` cədvəli olaraq modelləşdirilməlidir; hər elementin `name`, `url`, `logo`, `category` (`dövlət` / `bank`) və `selector_mapping` (auto-fill üçün CSS selector-lar) sahələri olmalıdır.
+
+---
+
+## 2. Texnoloji Stek
+
+| Qat | Texnologiya |
+|---|---|
+| API | Asinxron **FastAPI** |
+| Validasiya | **Pydantic v2** (sərt validation) |
+| ORM | Asinxron **SQLAlchemy v2** |
+| DB | **PostgreSQL** + **pgvector** |
+| AI Orkestrasiya | **LangGraph** (Supervisor arxitekturası) |
+| LLM köməkçiləri | **LangChain** |
+
+**RAG Qaydası (Sərt Məhdudiyyət):** RAG **YALNIZ** PostgreSQL-dəki `profiles`, qeydlər və yüklənmiş sənədlər daxilində axtarış aparır. Xarici vergi məcəlləsi mətnləri və ya internet axtarışı **işlədilmir**. Cavablar 100% DB-yə əsaslanmalı, hallüsinasiya 0% olmalıdır.
+
+---
+
+## 3. İkiqat İcra Rejimi
+
+### 3.1 Deterministik Rejim (AI çağırılmır ❌)
+- Profil yaratmaq / redaktə etmək / silmək / siyahılamaq (CRUD).
+- Portallar siyahısını vermək və auto-fill payload-u hazırlamaq.
+- **Standart şablona uyğun** Excel/CSV oxumaq və birbaşa DB-yə yazmaq (Pandas/OpenPyXL).
+
+### 3.2 AI / Agent Rejimi (yalnız lazım olduqda 🤖)
+- Sütunları/forması **pozulmuş** Excel faylı → `unstructured_parser_agent`.
+- Bank çıxarışı (PDF/Excel) → `bank_vat_agent`.
+- Çat pəncərəsində sual → `profile_data_retriever_agent`.
+
+Router qaydası: gələn sorğu əvvəlcə "bu standart əməliyyatdırmı?" testindən keçir → əgər bəli, AI **heç çağırılmır**; əgər xeyr, `supervisor_agent` işə düşür.
+
+---
+
+## 4. LangGraph Supervisor Arxitekturası — Texniki Tələblər
+
+1. **Supervisor pattern**: `supervisor_agent` gələn sorğunu analiz edir və `Command(goto=...)` ilə müvafiq worker agent-ə yönləndirir (handoff, tool-call formatında).
+2. Hər worker agent işini bitirdikdə **yenidən `goto="supervisor"`** ilə nəzarəti qaytarır (round-trip pattern).
+3. **State**: Nested `TypedDict` strukturu istifadə et (məs. `AgentState(TypedDict)` içində `messages`, `current_agent`, `attempt_count: dict[str, int]`, `task_result` sahələri).
+4. **Recursion limit**: Graph invoke zamanı `recursion_limit` konfiqurasiya edilməli (məs. 25) — sonsuz dövrənin qarşısını almaq üçün.
+5. **Max cəhd sayğacı**: Hər agent üçün `TypedDict` daxilində cəhd sayğacı saxla; müəyyən agent N dəfədən çox uğursuz olarsa, graph avtomatik `error_handler` node-una yönləndirilməlidir.
+6. **Human-in-the-loop (HITL)**: Həssas əməliyyatlar üçün (məs. bank çıxarışı əsasında profil məlumatlarının avtomatik dəyişdirilməsi) `interrupt_before=["sensitive_write_node"]` konfiqurasiyası tətbiq et ki, istifadəçi təsdiqi olmadan yazma baş verməsin.
+7. Bütün agent icrası **asinxron** (`async def`) olmalıdır.
+
+---
+
+## 5. Agentlərin Vəzifə Bölgüsü
+
+| Agent | Vəzifə |
+|---|---|
+| `supervisor_agent` | Sorğunu analiz edir, `goto` ilə uyğun worker-ə yönləndirir |
+| `unstructured_parser_agent` | Sütun adları qarışıq Excel/CSV-ni semantik anlayır (məs. "Vergi Nömrəsi" / "VÖEN kodu" → `voen`), Pydantic modelinə map edir, DB-yə yazır |
+| `bank_vat_agent` | Bank çıxarışını (PDF/Excel) analiz edir, ƏDV-yə cəlb olunan və xərcə silinən məbləğləri kateqoriyalaşdırır |
+| `profile_data_retriever_agent` | Çatdakı sualları (məs. "Əhmədin Asan ID-si nədir?") pgvector/SQL sorğusu ilə tapıb dəqiq cavablandırır |
+
+---
+
+## 6. Verilənlər Bazası Modelləri
+
+### `Profile` (Asan İmza Pro ekran görüntüsündəki sahələrə uyğun)
+```
+id: UUID (PK)
+ad_soyad: str
+voen: str
+nomre: str            # telefon nömrəsi
+asan_id: str
+bitme_tarixi: date | None
+qeyd: str | None       # "yenilənib / gözləyir"
+pin1: str (encrypted)
+pin2: str (encrypted)
+puk: str (encrypted)
+rəng: str              # profil rəngi (UI üçün)
+ikon: str              # profil ikonu (UI üçün)
+created_at, updated_at: datetime
+```
+⚠️ **Təhlükəsizlik tələbi**: `pin1`, `pin2`, `puk` sahələri DB-də **şifrələnmiş** (məs. Fernet/AES) saxlanmalı, API cavabında maskalanmalıdır (`****`), yalnız auto-fill sorğusunda extension-a açıq göndərilməlidir (HTTPS üzərindən).
+
+### `Portal`
+```
+id, name, url, category (dövlət/bank), logo_url, selector_mapping (JSON)
+```
+
+### `VectorDocument` (pgvector)
+```
+id, profile_id (FK, nullable), content, embedding (vector), source_type (note/excel/bank_statement)
+```
+
+---
+
+## 7. API Endpoint-lər (Nümunə Kontrakt)
+
+```
+POST   /api/v1/profiles                → Yeni profil yarat (deterministik)
+GET    /api/v1/profiles                → Profil siyahısı
+PUT    /api/v1/profiles/{id}           → Redaktə et
+DELETE /api/v1/profiles/{id}           → Sil
+
+GET    /api/v1/portals                 → Bütün portal/bank siyahısı (Extension üçün)
+GET    /api/v1/autofill/{profile_id}/{portal_id}  → Auto-fill payload (JSON, field→value)
+
+POST   /api/v1/import/excel            → Excel yüklə (avtomatik deterministik/AI seçimi backend-də edilir)
+POST   /api/v1/bank-statements/analyze → Bank çıxarışı təhlili (AI)
+
+POST   /api/v1/chat                    → RAG çat sorğusu (profile_data_retriever_agent)
+```
+
+Bütün cavablar **təmiz JSON**, bütün endpoint-lərdə **CORS aktiv** (Chrome Extension origin-ləri üçün).
+
+---
+
+## 8. Chrome Extension İnteqrasiya Qaydası
+
+1. Extension `GET /api/v1/portals` ilə saytlar siyahısını çəkir, "Saytlar" bölməsində göstərir.
+2. İstifadəçi saytın üstünə kliklədikdə rəsmi portal **yeni tabda** açılır (bu, backend-də deyil, extension-da həyata keçirilir — backend yalnız `url` verir).
+3. İstifadəçi "Doldur" düyməsinə basdıqda extension `GET /api/v1/autofill/{profile_id}/{portal_id}` çağırır, qaytarılan `field → value` map-ini portal `selector_mapping`-i ilə uzlaşdırıb aktiv tab-dakı input-lara yazır (`content script`).
+4. Profil yaratma/redaktə formaları birbaşa `POST/PUT /api/v1/profiles` çağırır.
+
+---
+
+## 9. Qeyri-funksional Tələblər
+
+- Bütün servis və agent kodları **modul-modul** ayrılmalı (bax fayl strukturu sənədi).
+- Hər endpoint üçün Pydantic v2 ilə **sərt input/output validasiyası**.
+- Mərkəzləşdirilmiş **error handling** (FastAPI exception handler-lər) — bütün xətalar strukturlaşdırılmış JSON formatında qaytarılmalı.
+- **Logging** (structlog və ya standard logging, request-id ilə).
+- `.env` vasitəsilə konfiqurasiya (`DB_URL`, `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, `ENCRYPTION_KEY`).
+- Test qatı: `pytest` + `pytest-asyncio` ilə minimum smoke testlər (CRUD, autofill, agent routing).
+
+---
+
+## 10. Tapşırıq
+
+Yuxarıdakı tələblərə əsasən, aşağıdakı fayl strukturuna (bax `02_TaxPro_Fayl_Strukturu.md`) uyğun **tam işlək backend kodu** yaz. Kodu addım-addım (əvvəlcə `core`/`models`/`schemas`, sonra `deterministic services`, sonra `AI/LangGraph` qatı, ən sonda `api/endpoints` və `main.py`) qur və hər addımdan sonra qısa izah ver.

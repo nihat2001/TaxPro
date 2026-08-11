@@ -1,0 +1,45 @@
+# TaxPro Layihəsi — İzah (Sadə Dildə)
+
+## Layihə nədir?
+
+TaxPro — sənin biznesin üçün Azərbaycandakı dövlət vergi/sosial/gömrük portalları (10 ədəd) və bankların biznes portalları (21 ədəd), cəmi **31 sayt** üçün, əvvəlcədən saxladığın giriş məlumatlarını (VÖEN, Asan ID, PIN1, PIN2, PUK və s.) **bir kliklə avtomatik doldurmağa** imkan verən bir Chrome Extension + Backend sistemidir. Ekran görüntülərindəki "Asan İmza Pro" oxşar bir alət — sənin quracağın sistem bunun məntiqini təkrarlayır, amma öz backend-in üzərində.
+
+## Sistem iki hissədən ibarətdir
+
+1. **Backend (indi qurulacaq hissə)** — Python (FastAPI) ilə yazılan, bütün məlumatları PostgreSQL bazasında saxlayan, Chrome Extension-a JSON API verən server.
+2. **Chrome Extension (gələcəkdə, backend bitdikdən sonra)** — İstifadəçi interfeysi: profil siyahısı, "Redaktə", "Doldur", "Saytlar" bölmələri. Bu hazırkı tapşırığın hissəsi deyil, amma backend ona uyğun (CORS açıq, təmiz JSON) qurulur.
+
+## Backend nə edir?
+
+### 1. Profil idarəetməsi (ən sadə hissə)
+İstifadəçi yeni profil yaradır (Ad Soyad, VÖEN, Nömrə, Asan ID, PIN1, PIN2, PUK, Bitmə tarixi, Qeyd) — bu, adi bir "əlavə et / redaktə et / sil" əməliyyatıdır, **süni intellekt işə düşmür**, birbaşa bazaya yazılır.
+
+### 2. Saytlar siyahısı və Auto-fill
+Backend 31 saytın siyahısını (ad, link, hansı sahəyə hansı məlumat yazılmalıdır) Extension-a verir. İstifadəçi saytı açıb "Doldur" düyməsinə basanda, Extension backend-dən "bu profil üçün bu sayta uyğun məlumatlar" sorğusu edir və cavabı sayt formasına köçürür.
+
+### 3. Excel idxalı (ağıllı hissə)
+Əgər çoxlu profili olan Excel faylı standart formatdadırsa, sistem sadəcə oxuyub bazaya yazır (AI-sız). Əgər fayl "qarışıqdırsa" (sütun adları fərqlidir, sıra dəyişikdir), **süni intellekt aqenti** bunu anlayıb düzgün formaya salır.
+
+### 4. Bank çıxarışı analizi
+Bank çıxarışı (PDF/Excel) yükləndikdə, başqa bir AI aqenti bunu təhlil edir, ƏDV-yə aid məbləğləri və xərcləri ayırd edir.
+
+### 5. AI Çat (sual-cavab)
+İstifadəçi çatda "Əhmədin Asan ID-si nədir?" kimi sual verəndə, sistem bunu bazadakı öz məlumatlarında axtarır (heç vaxt internetdə və ya xarici mənbədə axtarmır) və dəqiq cavab verir — uydurma (hallüsinasiya) riski olmadan.
+
+## Niyə "iki rejim" var?
+
+Çünki hər əməliyyat üçün AI çağırmaq həm **bahalı**, həm **yavaş**, həm də **lazımsız risklidir**. Adi CRUD (profil yaratmaq, standart Excel oxumaq) üçün sadə Python kodu kifayətdir. AI yalnız *məlumat qarışıq/strukturlaşdırılmamış* olanda və ya *sərbəst sual* veriləndə işə düşür. Bu, həm sürəti, həm də xərcləri optimallaşdırır.
+
+## LangGraph Supervisor nə üçün lazımdır?
+
+AI tərəfində 3 ayrı "mütəxəssis" aqent var (Excel düzəldən, bank çıxarışı oxuyan, sual cavablandıran). Bunları idarə etmək üçün bir "rəhbər" aqent (`supervisor`) lazımdır ki, gələn sorğunu düzgün mütəxəssisə yönləndirsin, mütəxəssis işini bitirəndə nəzarəti geri alsın, xəta olarsa müəyyən sayda cəhddən sonra dayansın, və həssas əməliyyatlarda (məs. bazaya avtomatik yazma) istifadəçidən təsdiq gözləsin.
+
+## Təhlükəsizlik qeydi
+
+Ekran görüntülərində gördüyüm PIN1/PIN2/PUK kimi sahələr çox həssasdır — bunlar bank girişi üçün əsas açardır. Prompt-a bazada **şifrələnmiş saxlama** tələbini əlavə etdim (bu, orijinal təsvirində açıq deyildi, amma bu cür məlumatlar üçün vacibdir). İstəsən, bu tələbi çıxara və ya sadələşdirə bilərsən.
+
+## Növbəti addım
+
+`01_TaxPro_AI_Prompt.md` faylını olduğu kimi Claude Code / Cursor kimi bir AI kodlaşdırma alətinə ver — `02` və `03` fayllarındakı struktur və workflow ona istinad kimi daxil edilib, ayrıca yapışdırmağa ehtiyac yoxdur (prompt daxilində referans var).
+
+Səs mesajlarında əlavə/fərqli tələblər varsa, mənə yazılı şəkildə bildirsən, prompt-u dərhal yeniləyə bilərəm.

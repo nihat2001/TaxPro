@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: taxpro_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-taxpro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taxpro}
+      POSTGRES_DB: ${POSTGRES_DB:-taxpro}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taxpro} -d ${POSTGRES_DB:-taxpro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./taxpro-backend
+      dockerfile: Dockerfile
+    container_name: taxpro_backend
+    env_file:
+      - ./taxpro-backend/.env
+    environment:
+      DB_URL: postgresql+asyncpg://${POSTGRES_USER:-taxpro}:${POSTGRES_PASSWORD:-taxpro}@db:5432/${POSTGRES_DB:-taxpro}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

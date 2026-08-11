@@ -1,0 +1,30 @@
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# === Env faylları ===
+.env
+.env.*
+!.env.example
+
+# === Testlər ===
+.pytest_cache/
+htmlcov/
+.coverage
+
+# === Docker ===
+pgdata/
+
+# === IDE / Redaktor ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === Əməliyyat sistemi ===
+Thumbs.db
+.DS_Store
