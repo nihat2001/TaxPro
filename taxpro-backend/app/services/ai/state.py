@@ -1,4 +1,3 @@
-from operator import add
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
@@ -41,5 +40,5 @@ class AgentState(BaseAgentState):
     parser: Annotated[ParserState, _merge_dict]
     bank: Annotated[BankVatState, _merge_dict]
     retriever: Annotated[RetrieverState, _merge_dict]
-    try_count: Annotated[int, add]
+    try_count: int
     max_try: int

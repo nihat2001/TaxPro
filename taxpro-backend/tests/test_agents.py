@@ -147,3 +147,27 @@ async def test_retriever_returns_db_answer(fake_model):
     retriever = result.get("retriever") or {}
     assert retriever.get("answer")
     assert "AA123" in retriever["answer"]
+
+
+async def test_no_synthetic_handoff_back_in_multiturn_state(fake_model):
+    graph = build_graph(checkpointer=MemorySaver(), model=fake_model)
+    thread = "t_multiturn_clean"
+    for text in (
+        "salam nömrəni yaz",
+        "Orxan Oğuzlu",
+        "Orxan Oğuzlunun nömrəsini yaz",
+    ):
+        state = {
+            "messages": [HumanMessage(content=text)],
+            "parser": {},
+            "bank": {},
+            "retriever": {},
+            "try_count": 0,
+            "max_try": 3,
+        }
+        result = await graph.ainvoke(state, config=_config(thread))
+
+    for message in result["messages"]:
+        tool_calls = getattr(message, "tool_calls", None) or []
+        for call in tool_calls:
+            assert call["name"] != "transfer_back_to_supervisor"

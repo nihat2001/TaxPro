@@ -25,4 +25,5 @@ def build_supervisor(agents, model=None):
         model=model or get_chat_model(),
         prompt=_SUPERVISOR_PROMPT,
         state_schema=AgentState,
+        add_handoff_back_messages=False,
     )

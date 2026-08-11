@@ -287,3 +287,106 @@ async def test_chat_thread_continuity(client):
         assert "1" in body3["message"]
     finally:
         graph_mod._graph = None
+
+
+async def test_chat_multiturn_clarification(client):
+    first = await client.post("/api/v1/chat", json={"message": "salam nömrəni yaz"})
+    assert first.status_code == 200
+    body1 = first.json()
+    assert body1["status"] == "done"
+    thread_id = body1["thread_id"]
+    assert thread_id
+
+    second = await client.post(
+        "/api/v1/chat",
+        json={"message": "Orxan Oğuzlu", "thread_id": thread_id},
+    )
+    assert second.status_code == 200
+    body2 = second.json()
+    assert body2["thread_id"] == thread_id
+    assert body2["status"] == "done"
+    assert body2["message"]
+
+    third = await client.post(
+        "/api/v1/chat",
+        json={"message": "Orxan Oğuzlunun nömrəsini yaz", "thread_id": thread_id},
+    )
+    assert third.status_code == 200
+    body3 = third.json()
+    assert body3["thread_id"] == thread_id
+    assert body3["status"] == "done"
+    assert body3["message"]
+
+
+async def test_chat_multiturn_retriever_re_searches_db(client, monkeypatch):
+    import app.services.ai.graph as graph_mod
+    import app.services.ai.tools.retriever_tools as retriever_tools
+    from langchain_core.messages import AIMessage
+    from langgraph.checkpoint.memory import MemorySaver
+    from app.services.ai.graph import build_graph
+    from tests.fakes import ScriptedModel
+
+    class ReDelegateModel(ScriptedModel):
+        def _decide(self, messages):
+            agent = self._identify(messages)
+            if agent != "supervisor":
+                return super()._decide(messages)
+            last_transfer_idx = max(
+                (
+                    i
+                    for i, m in enumerate(messages)
+                    if getattr(m, "type", "") == "tool"
+                    and str(getattr(m, "name", "")).startswith("transfer_")
+                ),
+                default=-1,
+            )
+            last_human_idx = max(
+                (
+                    i
+                    for i, m in enumerate(messages)
+                    if getattr(m, "type", "") in ("human", "user")
+                ),
+                default=-1,
+            )
+            if last_human_idx > last_transfer_idx:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "transfer_to_profile_data_retriever_agent",
+                            "args": {},
+                            "id": "call_sup",
+                        }
+                    ],
+                )
+            return AIMessage(content="Yekun cavab")
+
+    calls = {"n": 0}
+    original = retriever_tools.search_profiles
+
+    async def counting_search(session, query, profile_id=None, limit=5):
+        calls["n"] += 1
+        return await original(session, query, profile_id, limit)
+
+    monkeypatch.setattr(retriever_tools, "search_profiles", counting_search)
+
+    graph_mod._graph = build_graph(
+        checkpointer=MemorySaver(), model=ReDelegateModel()
+    )
+    try:
+        thread_id = None
+        for message in ("salam nömrəni yaz", "Orxan Oğuzlu", "Orxan Oğuzlunun nömrəsini yaz"):
+            payload = {"message": message}
+            if thread_id:
+                payload["thread_id"] = thread_id
+            resp = await client.post("/api/v1/chat", json=payload)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["status"] == "done"
+            thread_id = body["thread_id"]
+        assert calls["n"] >= 3, (
+            "Hər turda axtarış yenidən icra olunmalıdır; try_count limiti "
+            "keçmiş turn-dan daşınmamalıdır"
+        )
+    finally:
+        graph_mod._graph = None
