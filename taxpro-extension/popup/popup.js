@@ -95,9 +95,10 @@
     }, 3200);
   }
 
-  function setStatus(ok, text) {
+  function setStatus(ok, text, host) {
     $("apiStatus").className = "status-dot " + (ok ? "ok" : "err");
     $("apiStatusText").textContent = text;
+    $("connStatus").title = host || "";
   }
 
   function switchTab(name) {
@@ -702,9 +703,9 @@
     try {
       await api.health();
       const base = await api.getBaseUrl();
-      setStatus(true, base);
+      setStatus(true, "Qoşulu", base);
     } catch (err) {
-      setStatus(false, "Backend əlçatmaz");
+      setStatus(false, "Əlaqə yoxdur");
     }
   }
 

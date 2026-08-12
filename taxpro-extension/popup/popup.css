@@ -39,45 +39,29 @@ body {
   flex-direction: column;
 }
 
-/* ===== Header ===== */
+/* ===== Header (status zolağı) ===== */
 .app-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  background: var(--bg-soft);
+  padding: 8px 12px;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand-logo {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, var(--accent), #7a5cff);
-  color: #fff;
-  font-weight: 700;
-  font-size: 17px;
-}
-
-.brand-text h1 {
-  font-size: 15px;
-  line-height: 1.2;
-}
-
-.status-line {
+.conn-status {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  font-size: 12px;
   color: var(--text-muted);
-  font-size: 11px;
+}
+
+.conn-status #apiStatusText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -85,6 +69,7 @@ body {
   height: 8px;
   border-radius: 50%;
   background: var(--text-muted);
+  flex: 0 0 8px;
 }
 .status-dot.ok { background: var(--success); }
 .status-dot.err { background: var(--danger); }
