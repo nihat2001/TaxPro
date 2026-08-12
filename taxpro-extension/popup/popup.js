@@ -66,7 +66,7 @@
   }
 
   function renderSiteAvatar(portal) {
-    const url = faviconUrl(portal.url);
+    const url = portal.logo_url || faviconUrl(portal.url);
     const inner = url
       ? `<img class="site-logo" src="${escapeHtml(url)}" alt="" loading="lazy" data-initials="${escapeHtml(initials(portal.name))}">`
       : `<span class="site-avatar-initials">${escapeHtml(initials(portal.name))}</span>`;
@@ -74,7 +74,7 @@
   }
 
   function portalLogoImg(portal) {
-    const url = faviconUrl(portal.url);
+    const url = portal.logo_url || faviconUrl(portal.url);
     if (!url) return null;
     const img = document.createElement("img");
     img.className = "site-logo";
