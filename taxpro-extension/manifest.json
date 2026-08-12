@@ -5,7 +5,8 @@
   "description": "Azərbaycan dövlət və bank portallarının giriş formalarını seçilmiş profil məlumatları ilə avtomatik doldurur.",
   "permissions": ["storage", "activeTab", "tabs", "scripting", "sidePanel"],
   "host_permissions": [
-    "http://localhost:8000/*"
+    "http://localhost:8000/*",
+    "https://www.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"

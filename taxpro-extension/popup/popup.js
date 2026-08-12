@@ -47,6 +47,44 @@
       .replace(/'/g, "&#39;");
   }
 
+  function faviconUrl(portalUrl, size = 64) {
+    try {
+      const domain = new URL(portalUrl).hostname;
+      return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size}`;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function attachLogoFallback(img) {
+    img.onerror = () => {
+      const span = document.createElement("span");
+      span.className = "site-avatar-initials";
+      span.textContent = img.dataset.initials || "?";
+      img.replaceWith(span);
+    };
+  }
+
+  function renderSiteAvatar(portal) {
+    const url = faviconUrl(portal.url);
+    const inner = url
+      ? `<img class="site-logo" src="${escapeHtml(url)}" alt="" loading="lazy" data-initials="${escapeHtml(initials(portal.name))}">`
+      : `<span class="site-avatar-initials">${escapeHtml(initials(portal.name))}</span>`;
+    return `<span class="site-avatar">${inner}</span>`;
+  }
+
+  function portalLogoImg(portal) {
+    const url = faviconUrl(portal.url);
+    if (!url) return null;
+    const img = document.createElement("img");
+    img.className = "site-logo";
+    img.src = url;
+    img.alt = "";
+    img.dataset.initials = initials(portal.name);
+    attachLogoFallback(img);
+    return img;
+  }
+
   function showToast(message, type) {
     const toast = $("toast");
     toast.textContent = message;
@@ -105,13 +143,14 @@
       for (const p of items) {
         html +=
           `<a class="site-row" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer">` +
-          `<span class="site-avatar">${escapeHtml(initials(p.name))}</span>` +
+          renderSiteAvatar(p) +
           `<span class="site-meta">` +
           `<span class="site-name">${escapeHtml(p.name)}</span>` +
           `</span></a>`;
       }
     }
     list.innerHTML = html;
+    list.querySelectorAll("img.site-logo").forEach(attachLogoFallback);
   }
 
   function initSites() {
@@ -400,7 +439,10 @@
       const matched = matchPortalByUrl(tab.url);
       activePortal = matched || null;
       if (matched) {
-        info.textContent = `${matched.name} (${hostOf(tab.url)})`;
+        info.textContent = "";
+        const logo = portalLogoImg(matched);
+        if (logo) info.appendChild(logo);
+        info.append(document.createTextNode(`${matched.name} (${hostOf(tab.url)})`));
         info.className = "active-tab-info";
       } else {
         info.textContent = `${tab.title || hostOf(tab.url) || "Səhifə"} — tanınmış portal deyil`;
@@ -552,7 +594,11 @@
     recordPortalId = portal.id;
     recordMap = {};
     recordPendingSelector = null;
-    $("recordPortalName").textContent = portal.name;
+    const recName = $("recordPortalName");
+    recName.textContent = "";
+    const recLogo = portalLogoImg(portal);
+    if (recLogo) recName.appendChild(recLogo);
+    recName.append(document.createTextNode(portal.name));
     $("recordPanel").hidden = false;
     $("recordPending").hidden = true;
     $("recordModeBtn").textContent = "🎯 Qeydiyyat rejimi: Aktiv";
