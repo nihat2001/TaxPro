@@ -2,11 +2,72 @@ import base64
 import io
 
 import pandas as pd
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from app.services.ai.graph import build_graph
+from app.services.ai.middleware.retriever_guard import SAFE_MESSAGE
+from tests.fakes import ScriptedModel
+
+
+class HallucinatingRetrieverModel(ScriptedModel):
+    """Retriever tool-u çağırır, sonra uydurma rəqəm olan cavab verir."""
+
+    def _decide(self, messages):
+        agent = self._identify(messages)
+        if agent == "retriever":
+            called = [m.name for m in messages if getattr(m, "type", "") == "tool"]
+            if "search_profile_data" not in called:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "search_profile_data", "args": {}, "id": "call_ret"}
+                    ],
+                )
+            return AIMessage(content="Ehmed Eliyev VÖEN-i 5555512345-dir.")
+        return super()._decide(messages)
+
+
+class NoToolRetrieverModel(ScriptedModel):
+    """Retriever cari turda tool çağırmadan birbaşa rəqəmli cavab verir."""
+
+    def _decide(self, messages):
+        agent = self._identify(messages)
+        if agent == "retriever":
+            return AIMessage(content="Ehmedin VÖEN-i 1234567890-dir.")
+        return super()._decide(messages)
+
+
+async def _create_test_profile() -> None:
+    from app.core.database import async_session_maker
+    from app.schemas.profile import ProfileCreate
+    from app.services.deterministic.profile_service import create_profile
+
+    async with async_session_maker() as session:
+        await create_profile(
+            session,
+            ProfileCreate(
+                ad_soyad="Ehmed Eliyev",
+                voen="1234567890",
+                nomre="+994501234567",
+                asan_id="AA123",
+                pin1="1234",
+                pin2="5678",
+                puk="9999",
+            ),
+        )
+
+
+def _retriever_state(text: str) -> dict:
+    return {
+        "messages": [HumanMessage(content=text)],
+        "retriever": {"query": text, "profile_id": None},
+        "parser": {},
+        "bank": {},
+        "try_count": 0,
+        "max_try": 3,
+    }
 
 
 def _bank_excel_b64() -> str:
@@ -171,3 +232,25 @@ async def test_no_synthetic_handoff_back_in_multiturn_state(fake_model):
         tool_calls = getattr(message, "tool_calls", None) or []
         for call in tool_calls:
             assert call["name"] != "transfer_back_to_supervisor"
+
+
+async def test_retriever_guard_blocks_hallucinated_numbers():
+    await _create_test_profile()
+    graph = build_graph(checkpointer=MemorySaver(), model=HallucinatingRetrieverModel())
+    result = await graph.ainvoke(
+        _retriever_state("Ehmedin VÖEN-i nədir?"), config=_config("t_guard_halluc")
+    )
+    contents = [str(m.content) for m in result["messages"]]
+    assert any(SAFE_MESSAGE in content for content in contents), contents
+    assert not any("5555512345" in content for content in contents), contents
+
+
+async def test_retriever_guard_blocks_answer_without_fresh_tool_call():
+    await _create_test_profile()
+    graph = build_graph(checkpointer=MemorySaver(), model=NoToolRetrieverModel())
+    result = await graph.ainvoke(
+        _retriever_state("Ehmedin VÖEN-i nədir?"), config=_config("t_guard_stale")
+    )
+    contents = [str(m.content) for m in result["messages"]]
+    assert any(SAFE_MESSAGE in content for content in contents), contents
+    assert not any("1234567890" in content for content in contents), contents
