@@ -7,6 +7,7 @@ from app.core.security import decrypt_value
 from app.models.portal import Portal
 from app.schemas.portal import AutoFillPayload
 from app.schemas.profile import ProfileAutoFill
+from app.services.deterministic.phone import normalize_phone
 from app.services.deterministic.profile_service import get_profile
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ def _decrypted_values(profile) -> dict[str, str | None]:
     return {
         "ad_soyad": profile.ad_soyad,
         "voen": profile.voen,
-        "nomre": profile.nomre,
+        "nomre": normalize_phone(profile.nomre),
         "asan_id": profile.asan_id,
         "bitme_tarixi": (
             profile.bitme_tarixi.isoformat() if profile.bitme_tarixi else None
@@ -36,7 +37,7 @@ async def get_autofill_profile(session: AsyncSession, profile_id: uuid.UUID) -> 
         id=profile.id,
         ad_soyad=profile.ad_soyad,
         voen=profile.voen,
-        nomre=profile.nomre,
+        nomre=normalize_phone(profile.nomre),
         asan_id=profile.asan_id,
         bitme_tarixi=profile.bitme_tarixi,
         qeyd=profile.qeyd,

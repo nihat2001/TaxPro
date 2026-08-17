@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from app.services.deterministic.phone import normalize_phone
+
 REQUIRED_FIELDS = {
     "ad_soyad",
     "voen",
@@ -101,14 +103,7 @@ def detect_standard(headers: list[str]) -> bool:
 
 
 def _normalize_phone(value: str) -> str:
-    digits = re.sub(r"\D", "", value)
-    if digits.startswith("994") and len(digits) == 12:
-        return "+" + digits
-    if len(digits) == 10 and digits.startswith("0"):
-        return "+994" + digits[1:]
-    if len(digits) == 9:
-        return "+994" + digits
-    return value
+    return normalize_phone(value)
 
 
 def _to_scalar(value: Any) -> Any:

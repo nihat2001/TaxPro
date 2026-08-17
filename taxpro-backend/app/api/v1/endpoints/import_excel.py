@@ -78,7 +78,7 @@ async def excel_template():
             {
                 "Ad Soyad": "Ehmed Eliyev",
                 "VÖEN": 1234567890,
-                "Nömrə": "0501234567",
+                "Nömrə": "501234567",
                 "Asan ID": "AA123",
                 "PIN1": "1234",
                 "PIN2": "5678",

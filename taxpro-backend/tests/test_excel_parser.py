@@ -8,6 +8,7 @@ from app.services.deterministic.excel_parser import (
     missing_required_fields,
     parse_standard,
 )
+from app.services.deterministic.phone import normalize_phone
 
 
 def _bytes(df: pd.DataFrame) -> bytes:
@@ -43,6 +44,16 @@ def test_missing_required_fields_lists_columns():
     ]
 
 
+def test_normalize_phone_variants():
+    assert normalize_phone("0501234567") == "501234567"
+    assert normalize_phone("+994501234567") == "501234567"
+    assert normalize_phone("994701234567") == "701234567"
+    assert normalize_phone("703889246") == "703889246"
+    assert normalize_phone("050-123-45-67") == "501234567"
+    assert normalize_phone(None) == ""
+    assert normalize_phone("012345678") == "012345678"
+
+
 def test_detect_standard_aliases():
     headers = ["Ad Soyad", "VERGİ NÖMRƏSİ", "Telefon", "AsanID", "PIN", "PIN2", "PUK"]
     assert detect_standard(headers) is True
@@ -66,7 +77,7 @@ def test_parse_standard_normalizes_values():
     assert len(rows) == 1
     row = rows[0]
     assert row["voen"] == "1234567890"
-    assert row["nomre"] == "+994501234567"
+    assert row["nomre"] == "501234567"
     assert row["asan_id"] == "AA123"
     assert row["pin1"] == "1234"
     assert row["pin2"] == "5678"
@@ -112,7 +123,7 @@ def test_parse_standard_csv():
     rows = parse_standard(_csv_bytes(df))
     assert len(rows) == 1
     assert rows[0]["voen"] == "1234567890"
-    assert rows[0]["nomre"] == "+994501234567"
+    assert rows[0]["nomre"] == "501234567"
     assert rows[0]["pin1"] == "1234"
 
 

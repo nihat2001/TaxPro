@@ -91,3 +91,19 @@ async def test_build_autofill_payload_missing_portal(session):
 
     with pytest.raises(ValueError):
         await build_autofill_payload(session, profile.id, uuid.uuid4())
+
+
+async def test_build_autofill_payload_normalizes_phone(session):
+    profile = await _profile(session)
+    portal = Portal(
+        name="Phone Bank",
+        url="https://phone.test",
+        category="bank",
+        selector_mapping={"nomre": "input[name=phone]"},
+    )
+    session.add(portal)
+    await session.commit()
+    await session.refresh(portal)
+
+    payload = await build_autofill_payload(session, profile.id, portal.id)
+    assert payload.fields["input[name=phone]"] == "501234567"
