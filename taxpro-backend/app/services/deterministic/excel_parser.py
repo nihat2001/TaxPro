@@ -16,6 +16,11 @@ REQUIRED_FIELDS = {
     "puk",
 }
 
+_REQUIRED_ORDER = ["ad_soyad", "voen", "nomre", "asan_id", "pin1", "pin2", "puk"]
+
+_XLSX_MAGIC = b"\x50\x4b"  # PK (zip/xlsx)
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0"  # OLE2 (xls)
+
 _HEADER_ALIASES = {
     "adsoyad": "ad_soyad",
     "adsoyadsoyad": "ad_soyad",
@@ -86,9 +91,13 @@ def _map_headers(headers: list[str]) -> dict[str, str]:
     return mapping
 
 
-def detect_standard(headers: list[str]) -> bool:
+def missing_required_fields(headers: list[str]) -> list[str]:
     mapped = set(_map_headers(headers).values())
-    return REQUIRED_FIELDS.issubset(mapped)
+    return [field for field in _REQUIRED_ORDER if field not in mapped]
+
+
+def detect_standard(headers: list[str]) -> bool:
+    return not missing_required_fields(headers)
 
 
 def _normalize_phone(value: str) -> str:
@@ -150,18 +159,32 @@ def _clean_row(row: dict[str, Any], field_map: dict[str, str]) -> dict[str, Any]
     return cleaned
 
 
+def _read_dataframe(file_bytes: bytes) -> pd.DataFrame:
+    if file_bytes.startswith(_XLSX_MAGIC) or file_bytes.startswith(_XLS_MAGIC):
+        return pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+    return pd.read_csv(io.BytesIO(file_bytes))
+
+
 def parse_standard(file_bytes: bytes) -> list[dict[str, Any]]:
-    data = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+    try:
+        data = _read_dataframe(file_bytes)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Fayl oxunmadı (Excel/CSV gözlənilir): {exc}")
+
     if data.empty:
         return []
 
     headers = [str(col) for col in data.columns]
-    field_map = _map_headers(headers)
-    if not detect_standard(headers):
+    missing = missing_required_fields(headers)
+    if missing:
         raise ValueError(
-            "Fayl standart şablona uyğun deyil: tələb olunan sütunlar tam deyil."
+            "Fayl standart şablona uyğun deyil. "
+            f"Əskik sütunlar: {', '.join(missing)}"
         )
 
+    field_map = _map_headers(headers)
     rows: list[dict[str, Any]] = []
     for _, raw in data.iterrows():
         cleaned = _clean_row(dict(raw), field_map)

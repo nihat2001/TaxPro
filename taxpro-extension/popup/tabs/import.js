@@ -76,6 +76,9 @@
     try {
       const body = await api.importExcel(file);
       resultBox.innerHTML = renderDoneExcel(body);
+      if ((body.inserted || 0) > 0) {
+        window.dispatchEvent(new CustomEvent("taxpro:profiles-changed"));
+      }
     } catch (err) {
       resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
     } finally {
@@ -85,9 +88,29 @@
     }
   }
 
+  async function downloadTemplate() {
+    try {
+      const blob = await api.downloadExcelTemplate();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "taxpro_profil_sablonu.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showToast(err.message, "err");
+    }
+  }
+
   function init() {
     if (!window.TaxProAPI || !document.getElementById("importExcelFile")) return;
     $("importExcelUploadBtn").addEventListener("click", runUpload);
+    $("importTemplateBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      downloadTemplate();
+    });
   }
 
   document.addEventListener("DOMContentLoaded", init);

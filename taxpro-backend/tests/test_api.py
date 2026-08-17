@@ -62,7 +62,22 @@ def _profile_excel() -> bytes:
     )
 
 
+def _profile_csv() -> bytes:
+    df = pd.DataFrame(
+        [
+            ["Ehmed Eliyev", 1234567890, "0501234567", "AA123", "1234", "5678", "9999"],
+            ["Aysel Quliyeva", 9876543210, "0551234567", "BB456", "4321", "8765", "1111"],
+        ],
+        columns=["Ad Soyad", "VÖEN", "Nömrə", "Asan ID", "PIN1", "PIN2", "PUK"],
+    )
+    buf = io.BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+    return buf.read()
+
+
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+CSV_MIME = "text/csv"
 
 
 async def test_health(client):
@@ -158,3 +173,23 @@ async def test_import_excel_invalid_headers(client):
     files = {"file": ("bad.xlsx", _excel_bytes(["foo", "bar"], [[1, 2]]), XLSX_MIME)}
     resp = await client.post("/api/v1/import/excel", files=files)
     assert resp.status_code == 422
+    assert "Əskik sütunlar" in resp.json()["detail"]
+
+
+async def test_import_excel_csv(client):
+    files = {"file": ("profiles.csv", _profile_csv(), CSV_MIME)}
+    resp = await client.post("/api/v1/import/excel", files=files)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "done"
+    assert body["inserted"] == 2
+
+    listed = await client.get("/api/v1/profiles")
+    assert len(listed.json()) == 2
+
+
+async def test_import_excel_template(client):
+    resp = await client.get("/api/v1/import/excel-template")
+    assert resp.status_code == 200
+    assert "spreadsheetml" in resp.headers["content-type"]
+    assert "attachment" in resp.headers.get("content-disposition", "")

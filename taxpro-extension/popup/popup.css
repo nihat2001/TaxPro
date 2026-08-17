@@ -525,6 +525,19 @@ main {
 
 /* ===== İdxal tab ===== */
 .import-result { margin-top: 10px; }
+.import-toolbar {
+  margin-top: 6px;
+}
+.template-link {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.template-link:hover {
+  text-decoration: underline;
+}
 .import-errors { margin-top: 10px; }
 .import-error {
   font-size: 11px;

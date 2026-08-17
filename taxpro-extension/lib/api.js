@@ -115,6 +115,12 @@
     /* ===== İdxal (standart Excel) ===== */
     importExcel: (file) =>
       api("/api/v1/import/excel", { method: "POST", body: fileForm(file) }),
+    downloadExcelTemplate: async () => {
+      const base = await getBaseUrl();
+      const res = await fetch(base + "/api/v1/import/excel-template");
+      if (!res.ok) throw apiError(res, await res.text().catch(() => null));
+      return res.blob();
+    },
   };
 
   function fileForm(file) {

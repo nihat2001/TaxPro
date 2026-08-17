@@ -737,6 +737,7 @@
     chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       if (changeInfo.url) loadActiveTab();
     });
+    window.addEventListener("taxpro:profiles-changed", () => loadProfiles());
     await loadActiveTab();
   }
 
