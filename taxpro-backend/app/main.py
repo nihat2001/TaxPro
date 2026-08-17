@@ -7,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router
 from app.core.config import get_settings
 from app.core.logging import setup_logging
-from app.services.ai.checkpointer import close_checkpointer, init_checkpointer
 
 logger = logging.getLogger(__name__)
 
@@ -16,22 +15,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
-    try:
-        await init_checkpointer()
-        logger.info("Checkpointer hazırdır (AsyncPostgresSaver)")
-    except Exception as exc:
-        if settings.app_env == "production":
-            logger.critical(
-                "Production mühitində checkpointer başladılmadı, app dayandırılır: %s",
-                exc,
-            )
-            raise
-        logger.warning(
-            "Checkpointer başladılmadı (development), MemorySaver istifadə olunacaq: %s",
-            exc,
-        )
     yield
-    await close_checkpointer()
 
 
 app = FastAPI(

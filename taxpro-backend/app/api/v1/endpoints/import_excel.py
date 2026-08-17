@@ -1,19 +1,16 @@
-import base64
-
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.schemas.ai import AgentRunResponse
+from app.schemas.imports import ImportExcelResponse
 from app.schemas.profile import ProfileCreate
-from app.services.ai.runner import new_thread_id, run_import, to_run_response
 from app.services.deterministic.excel_parser import parse_standard
 from app.services.deterministic.profile_service import create_profile
 
 router = APIRouter(prefix="/import", tags=["import"])
 
 
-@router.post("/excel", response_model=AgentRunResponse)
+@router.post("/excel", response_model=ImportExcelResponse)
 async def import_standard_excel(
     file: UploadFile = File(...), db: AsyncSession = Depends(get_db)
 ):
@@ -46,26 +43,8 @@ async def import_standard_excel(
         await create_profile(db, data)
         inserted += 1
 
-    thread_id = new_thread_id()
-    return AgentRunResponse(
-        thread_id=thread_id,
-        status="done",
+    return ImportExcelResponse(
         message=f"{inserted} profil idxal edildi; {len(errors)} sətir atlandı.",
         inserted=inserted,
         sources=errors,
     )
-
-
-@router.post("/smart", response_model=AgentRunResponse)
-async def import_smart_excel(
-    file: UploadFile = File(...),
-):
-    raw = await file.read()
-    thread_id = new_thread_id()
-    file_b64 = base64.b64encode(raw).decode()
-    state = await run_import(
-        thread_id,
-        file_b64,
-        source_name=file.filename or "upload.xlsx",
-    )
-    return to_run_response(thread_id, state)

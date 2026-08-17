@@ -12,7 +12,6 @@ from app.core.database import Base
 
 import app.models.profile  # noqa: F401
 import app.models.portal  # noqa: F401
-import app.models.vector_store  # noqa: F401
 
 config = context.config
 

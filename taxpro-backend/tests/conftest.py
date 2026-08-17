@@ -11,11 +11,7 @@ os.environ.setdefault(
 
 import pytest
 import pytest_asyncio
-from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import text
-
-from app.services.ai.graph import build_graph
-from tests.fakes import ScriptedModel
 
 ADMIN_DB_URL = "postgresql+asyncpg://taxpro:taxpro@localhost:5432/taxpro"
 TEST_DB_NAME = "taxpro_test"
@@ -53,7 +49,6 @@ def _setup_database():
     yield
 
 
-
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_tables():
     from app.core.database import async_session_maker
@@ -62,30 +57,17 @@ async def _clean_tables():
 
     async with async_session_maker() as session:
         await session.execute(
-            text("TRUNCATE vector_documents, profiles, portals CASCADE")
+            text("TRUNCATE profiles, portals CASCADE")
         )
         await session.commit()
 
 
-@pytest.fixture
-def fake_model():
-    return ScriptedModel()
-
-
-@pytest.fixture
-def fake_graph(fake_model):
-    return build_graph(checkpointer=MemorySaver(), model=fake_model)
-
-
 @pytest_asyncio.fixture
-async def client(fake_graph):
+async def client():
     import httpx
 
-    import app.services.ai.graph as graph_mod
     from app.core.database import async_session_maker, get_db
     from app.main import app
-
-    graph_mod._graph = fake_graph
 
     async def _override_db():
         async with async_session_maker() as session:
@@ -100,4 +82,3 @@ async def client(fake_graph):
         yield c
 
     app.dependency_overrides.clear()
-    graph_mod._graph = None

@@ -20,7 +20,6 @@
       <button class="tab-btn" data-tab="profiles" type="button">Profillər</button>
       <button class="tab-btn" data-tab="autofill" type="button">Doldur</button>
       <button class="tab-btn" data-tab="import" type="button">İdxal</button>
-      <button class="tab-btn" data-tab="chat" type="button">Çat</button>
     </nav>
 
     <main>
@@ -101,59 +100,14 @@
 
       <!-- İdxal -->
       <section id="tab-import" class="tab-panel">
-        <div class="import-modes">
-          <button id="importExcelBtn" class="import-mode-btn active" type="button">Excel</button>
-          <button id="importBankBtn" class="import-mode-btn" type="button">Bank çıxarışı</button>
-        </div>
-
-        <div id="importExcelPanel">
-          <div class="card">
-            <div class="card-label">Excel idxalı</div>
-            <div class="form-group">
-              <label class="file-label" for="importExcelFile">Fayl seçin (.xlsx, .xls, .csv)</label>
-              <input type="file" id="importExcelFile" accept=".xlsx,.xls,.csv" />
-            </div>
-            <div class="form-group">
-              <label class="check-row">
-                <input type="checkbox" id="importSmartToggle" />
-                <span>Qarışıq fayl (AI ilə)</span>
-              </label>
-              <small id="importSmartHint" class="hint" hidden>
-                Standart şablona uymayan sütunlar AI ilə təhlil edilir və yazmadan əvvəl təsdiq istənilir.
-              </small>
-            </div>
-            <button id="importExcelUploadBtn" class="btn primary block" type="button">Yüklə</button>
-            <div id="importExcelResult" class="import-result" hidden></div>
+        <div class="card">
+          <div class="card-label">Excel idxalı</div>
+          <div class="form-group">
+            <label class="file-label" for="importExcelFile">Fayl seçin (.xlsx, .xls, .csv)</label>
+            <input type="file" id="importExcelFile" accept=".xlsx,.xls,.csv" />
           </div>
-        </div>
-
-        <div id="importBankPanel" hidden>
-          <div class="card">
-            <div class="card-label">Bank çıxarışı analizi</div>
-            <div class="form-group">
-              <label class="file-label" for="importBankFile">Fayl seçin (.xlsx, .pdf)</label>
-              <input type="file" id="importBankFile" accept=".xlsx,.xls,.csv,.pdf" />
-              <small id="importBankFileName" class="hint" hidden></small>
-            </div>
-            <button id="importBankUploadBtn" class="btn primary block" type="button">Analiz et</button>
-            <div id="importBankResult" class="import-result" hidden></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Çat -->
-      <section id="tab-chat" class="tab-panel">
-        <div class="chat-wrap">
-          <div id="chatList" class="chat-list"></div>
-          <div class="chat-input-bar">
-            <select id="chatProfile" class="chat-profile">
-              <option value="">— Kontekst yoxdur —</option>
-            </select>
-            <div class="chat-row">
-              <input type="text" id="chatInput" placeholder="Sualınızı yazın…" autocomplete="off" />
-              <button id="chatSendBtn" class="btn primary" type="button">Göndər</button>
-            </div>
-          </div>
+          <button id="importExcelUploadBtn" class="btn primary block" type="button">Yüklə</button>
+          <div id="importExcelResult" class="import-result" hidden></div>
         </div>
       </section>
     </main>
@@ -233,9 +187,7 @@
     <div id="toast" class="toast hidden"></div>
 
     <script src="../lib/api.js"></script>
-    <script src="../lib/hitl.js"></script>
     <script src="tabs/import.js"></script>
-    <script src="tabs/chat.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

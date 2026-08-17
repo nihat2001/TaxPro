@@ -1,11 +1,10 @@
-/* TaxPro — İdxal tab-ı (Excel idxal + Bank çıxarışı analizi).
+/* TaxPro — İdxal tab-ı (standart Excel idxalı).
  * Görünmə yalnız `hidden` atributu ilə idarə olunur (class="hidden" yox!).
  */
 (function () {
   "use strict";
 
   const api = window.TaxProAPI;
-  const hitl = window.TaxProHITL;
 
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
@@ -13,7 +12,6 @@
   const MSG = {
     needFile: "Fayl seçin.",
     uploading: "Yüklənir…",
-    noError: "Xəta yoxdur.",
   };
 
   function escapeHtml(str) {
@@ -25,10 +23,6 @@
       .replace(/'/g, "&#39;");
   }
 
-  function money(v) {
-    return hitl ? hitl.money(v) : String(v);
-  }
-
   function showToast(message, type) {
     const toast = document.getElementById("toast");
     if (!toast) return;
@@ -38,11 +32,6 @@
     showToast._t = setTimeout(() => {
       toast.className = "toast hidden";
     }, 3200);
-  }
-
-  function setBusy(btn, busy, label) {
-    btn.disabled = busy;
-    btn.textContent = busy ? MSG.uploading : label;
   }
 
   function renderErrors(errors) {
@@ -73,132 +62,32 @@
     );
   }
 
-  function renderDoneBank(body) {
-    const a = body.analysis || {};
-    const cats = a.categories || {};
-    const catNames = {
-      edv: "ƏDV",
-      xerc: "Xərc",
-      medaxil: "Gəlir",
-      diger: "Digər",
-    };
-    return (
-      `<div class="result-box ok bank-result">` +
-      `<div class="bank-grid">` +
-      `<div class="bank-cell"><span class="card-label">Ümumi</span><span class="bank-val">${money(a.total_amount)}</span></div>` +
-      `<div class="bank-cell"><span class="card-label">ƏDV</span><span class="bank-val">${money(a.vat_amount)}</span></div>` +
-      `<div class="bank-cell"><span class="card-label">Xərc</span><span class="bank-val">${money(a.expense_amount)}</span></div>` +
-      `<div class="bank-cell"><span class="card-label">Gəlir</span><span class="bank-val">${money(a.income_amount)}</span></div>` +
-      `</div>` +
-      (Object.keys(cats).length
-        ? `<div class="bank-cats">` +
-          Object.entries(cats)
-            .map(
-              ([k, v]) =>
-                `<div class="bank-cat"><span>${escapeHtml(catNames[k] || k)}</span><span>${money(v)}</span></div>`
-            )
-            .join("") +
-          `</div>`
-        : "") +
-      `</div>`
-    );
-  }
-
-  async function runUpload(endpoint, file, resultBox, btn, renderDone) {
+  async function runUpload() {
+    const file = $("importExcelFile").files[0];
+    const btn = $("importExcelUploadBtn");
+    const resultBox = $("importExcelResult");
     resultBox.hidden = true;
     if (!file) {
       showToast(MSG.needFile, "err");
       return;
     }
-    setBusy(btn, true);
+    btn.disabled = true;
+    btn.textContent = MSG.uploading;
     try {
-      const body = await endpoint(file);
-      if (body.status === "interrupt") {
-        hitl.renderInterruptBlock(resultBox, {
-          threadId: body.thread_id,
-          interrupt: body.interrupt,
-          onDone: (res) => {
-            if (res.status === "interrupt") {
-              hitl.renderInterruptBlock(resultBox, {
-                threadId: res.thread_id,
-                interrupt: res.interrupt,
-                onDone: (res2) => runUploadFinal(resultBox, res2, renderDone),
-              });
-            } else {
-              runUploadFinal(resultBox, res, renderDone);
-            }
-          },
-        });
-      } else if (body.status === "done") {
-        resultBox.innerHTML = renderDone(body);
-      } else {
-        resultBox.innerHTML =
-          `<div class="result-box err">${escapeHtml(body.message || "Uğursuz oldu.")}</div>`;
-      }
+      const body = await api.importExcel(file);
+      resultBox.innerHTML = renderDoneExcel(body);
     } catch (err) {
       resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
     } finally {
-      setBusy(btn, false);
+      btn.disabled = false;
+      btn.textContent = "Yüklə";
       resultBox.hidden = false;
     }
   }
 
-  function runUploadFinal(resultBox, body, renderDone) {
-    if (body.status === "done") {
-      resultBox.innerHTML = renderDone(body);
-    } else {
-      resultBox.innerHTML =
-        `<div class="result-box err">${escapeHtml(body.message || "Uğursuz oldu.")}</div>`;
-    }
-  }
-
-  function switchImportMode(name) {
-    $("importExcelPanel").hidden = name !== "excel";
-    $("importBankPanel").hidden = name !== "bank";
-    $("importExcelBtn").classList.toggle("active", name === "excel");
-    $("importBankBtn").classList.toggle("active", name === "bank");
-  }
-
   function init() {
     if (!window.TaxProAPI || !document.getElementById("importExcelFile")) return;
-
-    $("importExcelBtn").addEventListener("click", () => switchImportMode("excel"));
-    $("importBankBtn").addEventListener("click", () => switchImportMode("bank"));
-
-    $("importSmartToggle").addEventListener("change", (e) => {
-      $("importSmartHint").hidden = !e.target.checked;
-    });
-
-    $("importExcelUploadBtn").addEventListener("click", async () => {
-      const file = $("importExcelFile").files[0];
-      const smart = $("importSmartToggle").checked;
-      await runUpload(
-        smart ? api.importSmart.bind(api) : api.importExcel.bind(api),
-        file,
-        $("importExcelResult"),
-        $("importExcelUploadBtn"),
-        renderDoneExcel
-      );
-    });
-
-    $("importBankUploadBtn").addEventListener("click", async () => {
-      const file = $("importBankFile").files[0];
-      await runUpload(
-        api.analyzeBankStatement.bind(api),
-        file,
-        $("importBankResult"),
-        $("importBankUploadBtn"),
-        renderDoneBank
-      );
-    });
-
-    $("importBankFile").addEventListener("change", (e) => {
-      const name = e.target.files[0] ? e.target.files[0].name : "";
-      $("importBankFileName").textContent = name;
-      $("importBankFileName").hidden = !name;
-    });
-
-    switchImportMode("excel");
+    $("importExcelUploadBtn").addEventListener("click", runUpload);
   }
 
   document.addEventListener("DOMContentLoaded", init);
