@@ -51,3 +51,21 @@ class BankStatementSummary(BaseModel):
     diger_sirket_odenisleri: BankStatementCategorySummary = Field(
         default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
     )
+
+
+class BankStatementUnclassifiedRow(BaseModel):
+    """Kateqoriyasız qalmış sətir (manual təsnifat üçün)."""
+
+    row_index: int
+    sender: str = ""
+    detail: str = ""
+    kredit: str | None = None
+    debit: str | None = None
+
+
+class BankStatementCategorizeResult(BaseModel):
+    """Mərhələ 1 cavabı: summary + tanınmamış sətirlər + fayl (base64)."""
+
+    summary: BankStatementSummary
+    unclassified: list[BankStatementUnclassifiedRow] = []
+    file_base64: str

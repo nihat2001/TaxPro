@@ -34,6 +34,13 @@
     return JSON.parse(new TextDecoder("utf-8").decode(bytes));
   }
 
+  function base64ToBlob(b64, mime) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime || "application/octet-stream" });
+  }
+
   function apiError(res, data) {
     let detail = `HTTP ${res.status}`;
     if (data) {
@@ -129,12 +136,46 @@
       return res.blob();
     },
 
-    /* ===== Bank çıxarışı kateqoriyalaşdırması ===== */
+    /* ===== Bank çıxarışı kateqoriyalaşdırması (JSON-based axın) ===== */
     categorizeBankStatement: async (file) => {
       const base = await getBaseUrl();
       const res = await fetch(
         base + "/api/v1/import/bank-statement/categorize",
         { method: "POST", body: fileForm(file) }
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => null);
+        let data = null;
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (err) {
+            data = text;
+          }
+        }
+        throw apiError(res, data);
+      }
+      const data = await res.json();
+      const blob = base64ToBlob(
+        data.file_base64,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      return {
+        blob,
+        summary: data.summary || null,
+        unclassified: Array.isArray(data.unclassified) ? data.unclassified : [],
+      };
+    },
+
+    /* ===== Bank çıxarışı finalize (manual təsnifat override) ===== */
+    finalizeBankStatement: async (file, selections) => {
+      const base = await getBaseUrl();
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("selections", JSON.stringify(selections || {}));
+      const res = await fetch(
+        base + "/api/v1/import/bank-statement/finalize",
+        { method: "POST", body: fd }
       );
       if (!res.ok) {
         const text = await res.text().catch(() => null);

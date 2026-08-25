@@ -149,6 +149,12 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _cell_display(value: Any) -> str | None:
+    """Hücrə dəyəri: boş/NaN → None, əks halda mətn."""
+    text = _cell_text(value)
+    return text if text else None
+
+
 def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | None:
     """Sətir kontekstini prioritet sırası ilə kateqoriyalaşdırır.
 
@@ -394,6 +400,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     ws.cell(row=header_row_idx + 1, column=amount_col, value=_AMOUNT_COLUMN_TITLE)
 
     summary = _empty_summary()
+    unclassified: list[dict] = []
     for row in ws.iter_rows(min_row=header_row_idx + 2):
         detail = row[details_col].value
         sender = row[sender_col].value if sender_col is not None else None
@@ -401,6 +408,15 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         debit = row[debit_col].value
         category = _match_category(sender, detail, kredit, debit)
         if category is None:
+            unclassified.append(
+                {
+                    "row_index": row[0].row,
+                    "sender": _cell_display(sender) or "",
+                    "detail": _cell_display(detail) or "",
+                    "kredit": _cell_display(kredit),
+                    "debit": _cell_display(debit),
+                }
+            )
             continue
         ws.cell(row=row[0].row, column=cat_col).value = category
         entry = summary[category]
@@ -418,7 +434,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return buf.getvalue(), summary
+    return buf.getvalue(), summary, unclassified
 
 
 def _decode_csv(raw_bytes: bytes) -> str:
@@ -457,6 +473,7 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     target_cols = max(max_cols, amount_col_1)
 
     summary = _empty_summary()
+    unclassified: list[dict] = []
     wb = Workbook()
     ws = wb.active
     ws.title = "Çıxarış"
@@ -487,6 +504,15 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             debit_value = values[debit_col] if debit_col < len(values) else None
             category = _match_category(sender, detail, kredit, debit_value)
             if category is None:
+                unclassified.append(
+                    {
+                        "row_index": r_idx + 1,
+                        "sender": _cell_display(sender) or "",
+                        "detail": _cell_display(detail) or "",
+                        "kredit": _cell_display(kredit),
+                        "debit": _cell_display(debit_value),
+                    }
+                )
                 continue
             ws.cell(row=r_idx + 1, column=cat_col_1, value=category)
             entry = summary[category]
@@ -505,14 +531,16 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    return buf.getvalue(), summary
+    return buf.getvalue(), summary, unclassified
 
 
-def categorize_statement(raw_bytes: bytes) -> tuple[bytes, dict]:
+def categorize_statement_verbose(raw_bytes: bytes) -> tuple[bytes, dict, list[dict]]:
     """Bank çıxarışını kateqoriyalaşdırır.
 
-    Qaytarır: (kateqoriyalaşdırılmış .xlsx bytes, summary dict)
-    Summary: {"KOMİSİYA": {"cem": float, "say": int}, ...} — hər 3 kateqoriya.
+    Qaytarır: (kateqoriyalaşdırılmış .xlsx bytes, summary dict, unclassified)
+    Summary: 10 kateqoriya üzrə {"cem": float, "say": int}.
+    Unclassified: kateqoriyasız sətirlərin siyahısı
+        [{row_index, sender, detail, kredit, debit}].
     Başlıq sətri tapılmazsa ValueError (→ endpoint 422).
     """
     fmt = detect_format(raw_bytes)
@@ -521,3 +549,89 @@ def categorize_statement(raw_bytes: bytes) -> tuple[bytes, dict]:
     if fmt == "csv":
         return _categorize_csv(raw_bytes)
     raise ValueError(".xls faylları dəstəklənmir; yalnız .xlsx və .csv yükləyin.")
+
+
+def categorize_statement(raw_bytes: bytes) -> tuple[bytes, dict]:
+    """categorize_statement_verbose-in 2-lik (bytes, summary) wrapper-i."""
+    out, summary, _ = categorize_statement_verbose(raw_bytes)
+    return out, summary
+
+
+def _locate_columns(wb):
+    """Kateqoriyalaşdırılmış çıxış faylında lazımi sütunları tapır.
+
+    Qaytarır: (ws, header_row(1-əsaslı), cat_col, amount_col,
+    debit_col(1-əsaslı|None), kredit_col(1-əsaslı|None)).
+    """
+    for sheet in wb.worksheets:
+        rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
+        found = _find_header_row(rows)
+        if found is not None:
+            header_row_idx, col_map = found
+            header_row = header_row_idx + 1
+            cat_col = col_map["kateqoriya"] + 1
+            amount_col = cat_col + 1
+            debit_col = col_map["debit"] + 1
+            kredit = col_map.get("kredit")
+            kredit_col = kredit + 1 if kredit is not None else None
+            return sheet, header_row, cat_col, amount_col, debit_col, kredit_col
+    raise ValueError("Kateqoriyalaşdırılmış faylda başlıq sətri tapılmadı.")
+
+
+def _summarize_sheet(ws, header_row: int, cat_col: int, amount_col: int) -> dict:
+    """Sheet-dəki Kateqoriya + İcmal sütunlarından summary-nı yenidən qurur."""
+    summary = _empty_summary()
+    for row in ws.iter_rows(min_row=header_row + 1):
+        category = row[cat_col - 1].value
+        if not category or category not in summary:
+            continue
+        entry = summary[category]
+        entry["say"] = int(entry["say"]) + 1
+        amount = row[amount_col - 1].value
+        if isinstance(amount, (int, float)):
+            entry["cem"] = float(entry["cem"]) + abs(amount)
+    return summary
+
+
+def finalize_statement(raw_bytes: bytes, selections: dict[int, str]) -> tuple[bytes, dict]:
+    """Kateqoriyalaşdırılmış fayla istifadəçi override-larını tətbiq edir.
+
+    selections: {row_index: kateqoriya} — boş string "kateqoriyasız qalsın"
+    deməkdir. Hər row_index tanınmamış sətir olmalıdır; qeyri-boş kateqoriya
+    _CATEGORY_ORDER-dan olmalıdır. Yekun fayl (Kateqoriya+İcmal dolmuş,
+    Xülasə yenidən hesablanmış) və yeni summary qaytarılır.
+    """
+    out_bytes, _, unclassified = categorize_statement_verbose(raw_bytes)
+    unclassified_indexes = {r["row_index"] for r in unclassified}
+
+    parsed: dict[int, str] = {}
+    for key, value in selections.items():
+        row_index = int(key)
+        category = (value or "").strip()
+        if row_index not in unclassified_indexes:
+            raise ValueError(f"Sətir {row_index} tanınmamış sətir deyil.")
+        if category and category not in _CATEGORY_ORDER:
+            raise ValueError(f"Keçərsiz kateqoriya: {category}")
+        parsed[row_index] = category
+
+    wb = load_workbook(io.BytesIO(out_bytes))
+    ws, header_row, cat_col, amount_col, debit_col, kredit_col = _locate_columns(wb)
+
+    for row_index, category in parsed.items():
+        if not category:
+            continue  # "kateqoriyasız qalsın"
+        ws.cell(row=row_index, column=cat_col).value = category
+        debit = ws.cell(row=row_index, column=debit_col).value if debit_col else None
+        kredit = ws.cell(row=row_index, column=kredit_col).value if kredit_col else None
+        amount = _row_amount(debit, kredit)
+        if amount is not None:
+            ws.cell(row=row_index, column=amount_col).value = amount
+
+    new_summary = _summarize_sheet(ws, header_row, cat_col, amount_col)
+    del wb[_SUMMARY_SHEET_NAME]
+    _add_summary_sheet(wb, new_summary)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue(), new_summary

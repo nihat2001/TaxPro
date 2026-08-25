@@ -3,14 +3,22 @@ import io
 import json
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.schemas.imports import BankStatementSummary, ImportExcelResponse
+from app.schemas.imports import (
+    BankStatementCategorizeResult,
+    BankStatementSummary,
+    BankStatementUnclassifiedRow,
+    ImportExcelResponse,
+)
 from app.schemas.profile import ProfileCreate
-from app.services.deterministic.bank_statement_categorizer import categorize_statement
+from app.services.deterministic.bank_statement_categorizer import (
+    categorize_statement_verbose,
+    finalize_statement,
+)
 from app.services.deterministic.excel_parser import parse_standard
 from app.services.deterministic.profile_service import create_profile
 
@@ -74,15 +82,42 @@ async def import_standard_excel(
     )
 
 
-@router.post("/bank-statement/categorize")
+@router.post("/bank-statement/categorize", response_model=BankStatementCategorizeResult)
 async def categorize_bank_statement(file: UploadFile = File(...)):
     raw = await file.read()
     try:
-        out_bytes, summary = categorize_statement(raw)
+        out_bytes, summary, unclassified = categorize_statement_verbose(raw)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     validated = BankStatementSummary.model_validate(summary)
+    return BankStatementCategorizeResult(
+        summary=validated,
+        unclassified=[BankStatementUnclassifiedRow(**row) for row in unclassified],
+        file_base64=base64.b64encode(out_bytes).decode("ascii"),
+    )
+
+
+@router.post("/bank-statement/finalize")
+async def finalize_bank_statement(
+    file: UploadFile = File(...),
+    selections: str = Form(...),
+):
+    raw = await file.read()
+    try:
+        parsed = json.loads(selections or "{}")
+        if not isinstance(parsed, dict):
+            raise ValueError("Selections JSON obyekti olmalıdır.")
+        selections_map = {int(k): str(v) for k, v in parsed.items()}
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Selections keçərsizdir: {exc}")
+
+    try:
+        out_bytes, new_summary = finalize_statement(raw, selections_map)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    validated = BankStatementSummary.model_validate(new_summary)
     encoded = base64.b64encode(
         json.dumps(validated.model_dump(by_alias=True), ensure_ascii=False).encode(
             "utf-8"
@@ -94,7 +129,7 @@ async def categorize_bank_statement(file: UploadFile = File(...)):
         media_type=_XLSX_MIME,
         headers={
             "Content-Disposition": (
-                'attachment; filename="taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx"'
+                'attachment; filename="taxpro_bank_cizarsisi_yekun.xlsx"'
             ),
             "X-Summary": encoded,
         },

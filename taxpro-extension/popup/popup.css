@@ -573,6 +573,54 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
+.review-section {
+  margin-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.review-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.review-meta {
+  flex: 1;
+  min-width: 0;
+}
+.review-detail {
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.review-sender {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.review-amount {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.review-select {
+  max-width: 160px;
+  font-size: 12px;
+}
+
 .file-label {
   display: block;
   margin-bottom: 4px;

@@ -6,6 +6,8 @@ from openpyxl import Workbook, load_workbook
 from app.services.deterministic.bank_statement_categorizer import (
     _match_category,
     categorize_statement,
+    categorize_statement_verbose,
+    finalize_statement,
 )
 
 STD_HEADER = [
@@ -543,3 +545,91 @@ def test_output_formatting():
     assert xs.cell(row=total_row, column=1).font.bold is True
     assert xs.cell(row=total_row, column=1).border.top.style is not None
     assert xs.cell(row=total_row, column=1).value == "CƏMİ"
+
+
+# ===== Human-in-the-loop: verbose + finalize =====
+
+
+def test_categorize_verbose_unclassified():
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1"),
+        _row("ATM XIRDALAN BIZIM M", "-1000.00", "2"),
+        _row("PIN YENI UCRET", "-2.00", "3"),
+        _row("MAAŞ PAKET", "-100.00", "4"),
+    ]
+    out, summary, unclassified = categorize_statement_verbose(
+        _xlsx_bytes(META, STD_HEADER, rows)
+    )
+    assert summary["KOMİSİYA"]["say"] == 1
+    assert summary["MAAŞ MƏXARİC"]["say"] == 1
+    idxs = {r["row_index"] for r in unclassified}
+    assert idxs == {7, 8}  # meta 1-4, header 5, data 6-9
+    atm = next(r for r in unclassified if r["row_index"] == 7)
+    assert atm["detail"] == "ATM XIRDALAN BIZIM M"
+    assert atm["debit"] == "-1000.00"
+    assert atm["kredit"] is None
+    assert atm["sender"] == ""
+
+
+def test_all_recognized_unclassified_empty():
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1"),
+        _row("MAAŞ PAKET", "-100.00", "2"),
+    ]
+    _, _, unclassified = categorize_statement_verbose(_xlsx_bytes(META, STD_HEADER, rows))
+    assert unclassified == []
+
+
+def test_finalize_applies_overrides():
+    rows = [
+        _row("ATM XIRDALAN BIZIM M", "-1000.00", "1"),
+        _row("PIN YENI UCRET", "-2.00", "2"),
+        _row("Com. bank komissiyası", "-5.50", "3"),
+    ]
+    raw = _xlsx_bytes(META, STD_HEADER, rows)
+    _, _, unclassified = categorize_statement_verbose(raw)
+    row_atm = next(r for r in unclassified if "ATM" in r["detail"])["row_index"]
+    row_pin = next(r for r in unclassified if "PIN" in r["detail"])["row_index"]
+
+    out, summary = finalize_statement(
+        raw,
+        {
+            row_atm: "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+            row_pin: "",  # "kateqoriyasız qalsın"
+        },
+    )
+    wb = _reload(out)
+    main = wb["Sheet"]
+    assert main.cell(row=row_atm, column=9).value == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert main.cell(row=row_atm, column=10).value == 1000.0
+    assert main.cell(row=row_pin, column=9).value is None
+    assert main.cell(row=row_pin, column=10).value is None
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1000.0, "say": 1}
+    assert summary["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+    # Xülasə sheet-i yenidən hesablanmış
+    xs = wb["Xülasə"]
+    cats = [r[0] for r in xs.iter_rows(values_only=True)]
+    assert "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ" in cats
+    assert cats[-1] == "CƏMİ"
+
+
+def test_finalize_invalid_row_raises():
+    raw = _xlsx_bytes(META, STD_HEADER, [_row("ATM XIRDALAN", "-100.00", "1")])
+    with pytest.raises(ValueError, match="tanınmamış sətir"):
+        finalize_statement(raw, {999: "KOMİSİYA"})
+
+
+def test_finalize_invalid_category_raises():
+    raw = _xlsx_bytes(META, STD_HEADER, [_row("ATM XIRDALAN", "-100.00", "1")])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    idx = unclassified[0]["row_index"]
+    with pytest.raises(ValueError, match="Keçərsiz kateqoriya"):
+        finalize_statement(raw, {idx: "BOGUS"})
+
+
+def test_finalize_empty_selections():
+    raw = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+    wb = _reload(out)
+    assert wb.active.title == "Xülasə"

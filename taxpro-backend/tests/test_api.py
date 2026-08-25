@@ -193,3 +193,113 @@ async def test_import_excel_template(client):
     assert resp.status_code == 200
     assert "spreadsheetml" in resp.headers["content-type"]
     assert "attachment" in resp.headers.get("content-disposition", "")
+
+
+# ===== Bank çıxarışı kateqoriyalaşdırma (HTTP) =====
+
+
+def _bank_statement_bytes() -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    headers = [
+        "Əməliyyat Tarixi",
+        "Həyata Keçmə Tarixi",
+        "Göndərən/Alıcı Məlumatları",
+        "Əməliyyat Detalları",
+        "Əməliyyat No",
+        "Kredit",
+        "Debit",
+        "Balans",
+        "Kateqoriya",
+    ]
+    rows = [
+        ["01.01.2026", "01.01.2026", "", "ATM XIRDALAN BIZIM M", "1", "", "-1000.00", "9000.00", ""],
+        ["02.01.2026", "02.01.2026", "", "PIN YENI UCRET", "2", "", "-2.00", "8998.00", ""],
+        ["03.01.2026", "03.01.2026", "", "Com. bank komissiyası", "3", "", "-5.50", "8992.50", ""],
+    ]
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Qurum Adı", "X Bank"])
+    ws.append(headers)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+XLSX_MIME_BS = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+async def test_categorize_bank_statement_json(client):
+    resp = await client.post(
+        "/api/v1/import/bank-statement/categorize",
+        files={"file": ("bs.xlsx", _bank_statement_bytes(), XLSX_MIME_BS)},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "KOMİSİYA" in body["summary"]
+    assert body["summary"]["KOMİSİYA"]["cem"] == 5.5
+    assert len(body["unclassified"]) == 2
+    assert body["unclassified"][0]["row_index"] == 3
+    assert body["unclassified"][0]["detail"] == "ATM XIRDALAN BIZIM M"
+    # file_base64 → valid xlsx
+    import base64
+
+    raw = base64.b64decode(body["file_base64"])
+    assert raw[:2] == b"PK"
+
+
+async def test_finalize_bank_statement(client):
+    import base64
+    import json
+
+    raw = _bank_statement_bytes()
+    r1 = await client.post(
+        "/api/v1/import/bank-statement/categorize",
+        files={"file": ("bs.xlsx", raw, XLSX_MIME_BS)},
+    )
+    unclassified = r1.json()["unclassified"]
+    atm = next(u for u in unclassified if "ATM" in u["detail"])["row_index"]
+    pin = next(u for u in unclassified if "PIN" in u["detail"])["row_index"]
+
+    selections = json.dumps({atm: "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ", pin: ""})
+    resp = await client.post(
+        "/api/v1/import/bank-statement/finalize",
+        files={"file": ("bs.xlsx", raw, XLSX_MIME_BS)},
+        data={"selections": selections},
+    )
+    assert resp.status_code == 200
+    assert "spreadsheetml" in resp.headers["content-type"]
+    summary = json.loads(base64.b64decode(resp.headers["x-summary"]).decode("utf-8"))
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"]["cem"] == 1000.0
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"]["say"] == 1
+    assert summary["KOMİSİYA"]["say"] == 1
+    # override sütunlara tətbiq olunub
+    from openpyxl import load_workbook
+
+    wb = load_workbook(__import__("io").BytesIO(resp.content))
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=atm, column=9).value == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert main.cell(row=pin, column=9).value is None
+
+
+async def test_finalize_bank_statement_invalid(client):
+    import json
+
+    resp = await client.post(
+        "/api/v1/import/bank-statement/finalize",
+        files={"file": ("bs.xlsx", _bank_statement_bytes(), XLSX_MIME_BS)},
+        data={"selections": json.dumps({999: "KOMİSİYA"})},
+    )
+    assert resp.status_code == 422
+
+    resp = await client.post(
+        "/api/v1/import/bank-statement/finalize",
+        files={"file": ("bs.xlsx", _bank_statement_bytes(), XLSX_MIME_BS)},
+        data={"selections": "not-json"},
+    )
+    assert resp.status_code == 422
