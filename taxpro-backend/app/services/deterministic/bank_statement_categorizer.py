@@ -4,7 +4,7 @@ AI/ML yoxdur — yalnız sabit, konfiqurasiya edilə bilən pattern-matching.
 Giriş: meta sətirləri + dinamik başlıq sətri olan .xlsx/.csv çıxarış.
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə abs(debit) dəyəri ilə
-"Hesablanan Məbləğ" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i + summary dict.
+"İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i + summary dict.
 
 Kateqoriyalar (yalnız 3, yoxsa boş qalır):
   - "Nağd çəkim komissiyası"  (öncəlik 1: KOMİSİYA-ya düşməməli)
@@ -18,6 +18,8 @@ import io
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 from app.services.deterministic.excel_parser import detect_format, normalize_text
 
@@ -69,7 +71,19 @@ _KOMISIYA_PREFIXES = ("com.", "comm-")
 _SUMMARY_SHEET_NAME = "Xülasə"
 
 # Kateqoriya sütununun dərhal sağında əlavə olunan sətir-üzrə məbləğ sütunu.
-_AMOUNT_COLUMN_TITLE = "Hesablanan Məbləğ"
+_AMOUNT_COLUMN_TITLE = "İcmal"
+
+# ===== Formatlaşdırma =====
+_HEADER_FILL = PatternFill(
+    start_color="E8E8E8", end_color="E8E8E8", fill_type="solid"
+)
+_HEADER_FONT = Font(bold=True)
+_MONEY_FORMAT = "#,##0.00"
+_MONEY_ALIGNMENT = Alignment(horizontal="right")
+_TOP_BORDER = Border(top=Side(style="thin", color="000000"))
+_AUTO_FIT_MIN = 8
+_AUTO_FIT_MAX = 50
+_AUTO_FIT_PADDING = 2
 
 
 def _cell_text(value: Any) -> str:
@@ -155,6 +169,35 @@ def _empty_summary() -> dict[str, dict[str, float | int]]:
     return {name: {"cem": 0.0, "say": 0} for name, _ in CATEGORY_RULES}
 
 
+def _style_header_row(ws, row_idx: int, last_col: int) -> None:
+    """Başlıq sətrini bold + açıq boz fon ilə vurğulayır."""
+    for col in range(1, last_col + 1):
+        cell = ws.cell(row=row_idx, column=col)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+
+
+def _auto_fit_columns(ws) -> None:
+    """Sütun enlərini ən uzun mətnə görə hesablayır (auto-fit)."""
+    for col in range(1, ws.max_column + 1):
+        max_len = _AUTO_FIT_MIN
+        for row in range(1, ws.max_row + 1):
+            value = ws.cell(row=row, column=col).value
+            if value is None:
+                continue
+            max_len = max(max_len, len(str(value)))
+        width = min(max_len + _AUTO_FIT_PADDING, _AUTO_FIT_MAX)
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def _style_amount_column(ws, col: int, start_row: int, end_row: int) -> None:
+    """Məbləğ sütununu #,##0.00 formatı ilə sağa düzləndirir."""
+    for row in range(start_row, end_row + 1):
+        cell = ws.cell(row=row, column=col)
+        cell.number_format = _MONEY_FORMAT
+        cell.alignment = _MONEY_ALIGNMENT
+
+
 def _add_summary_sheet(wb: Workbook, summary: dict) -> None:
     ws = wb.create_sheet(_SUMMARY_SHEET_NAME)
     ws.append(["Kateqoriya", "Əməliyyat sayı", "Cəm (Debit, abs)"])
@@ -167,6 +210,22 @@ def _add_summary_sheet(wb: Workbook, summary: dict) -> None:
         total_say += say
         total_cem += cem
     ws.append(["CƏMİ", total_say, round(total_cem, 2)])
+
+    # Başlıq bold + fon; Cəm sütunu formatla; CƏMİ sətri bold + yuxarı border.
+    _style_header_row(ws, 1, 3)
+    for row in range(2, ws.max_row + 1):
+        cell = ws.cell(row=row, column=3)
+        cell.number_format = _MONEY_FORMAT
+        cell.alignment = _MONEY_ALIGNMENT
+    total_row = ws.max_row
+    for col in range(1, 4):
+        cell = ws.cell(row=total_row, column=col)
+        cell.font = _HEADER_FONT
+        cell.border = _TOP_BORDER
+    _auto_fit_columns(ws)
+
+    # Fayl açılanda Xülasə görünsün — defolt aktiv sheet.
+    wb.active = wb.sheetnames.index(_SUMMARY_SHEET_NAME)
 
 
 def _last_column(ws) -> int:
@@ -215,6 +274,10 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         if amount is not None:
             entry["cem"] = float(entry["cem"]) + abs(amount)
             ws.cell(row=row[0].row, column=amount_col).value = abs(amount)
+
+    _style_header_row(ws, header_row_idx + 1, amount_col)
+    _style_amount_column(ws, amount_col, header_row_idx + 2, ws.max_row)
+    _auto_fit_columns(ws)
 
     _add_summary_sheet(wb, summary)
     buf = io.BytesIO()
@@ -285,6 +348,10 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             if amount is not None:
                 entry["cem"] = float(entry["cem"]) + abs(amount)
                 ws.cell(row=r_idx + 1, column=amount_col_1, value=abs(amount))
+
+    _style_header_row(ws, header_row_idx + 1, amount_col_1)
+    _style_amount_column(ws, amount_col_1, header_row_idx + 2, ws.max_row)
+    _auto_fit_columns(ws)
 
     _add_summary_sheet(wb, summary)
     buf = io.BytesIO()

@@ -116,10 +116,10 @@ def test_categorize_xlsx_sums_absolute_debits():
     assert summary["Nağd çəkim komissiyası"] == {"cem": 0.0, "say": 0}
     assert summary["BANK FAİZ XƏRCİ"] == {"cem": 0.0, "say": 0}
 
-    # Sətir-üzrə Hesablanan Məbləğ sütunu (Kateqoriya-nın dərhal sağı, col10)
+    # Sətir-üzrə İcmal sütunu (Kateqoriya-nın dərhal sağı, col10)
     wb = _reload(out)
-    ws = wb.active
-    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
+    ws = wb["Sheet"]
+    assert ws.cell(row=5, column=10).value == "İcmal"
     assert ws.cell(row=6, column=10).value == 1234.56   # -1234.56 → abs
     assert ws.cell(row=7, column=10).value == 1234.56   # "1 234,56" → abs
     assert ws.cell(row=8, column=10).value is None      # debit boş → boş
@@ -143,7 +143,7 @@ def test_categorize_xlsx_summary_and_meta_preserved():
     assert summary["BANK FAİZ XƏRCİ"] == {"cem": 16.0, "say": 2}
 
     wb = _reload(out)
-    ws = wb.active
+    ws = wb["Sheet"]
     # Meta sətirlər dəyişməz saxlanılıb
     assert ws.cell(row=1, column=1).value == "Qurum Adı"
     assert ws.cell(row=1, column=2).value == "X Bank ASC"
@@ -162,8 +162,8 @@ def test_categorize_xlsx_summary_and_meta_preserved():
     assert ws.cell(row=12, column=9).value is None
     assert ws.cell(row=8, column=9).value == "Nağd çəkim komissiyası"
 
-    # Hesablanan Məbləğ sütunu: Kateqoriya-nın dərhal sağı (col10), abs(debit)
-    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
+    # İcmal sütunu: Kateqoriya-nın dərhal sağı (col10), abs(debit)
+    assert ws.cell(row=5, column=10).value == "İcmal"
     assert ws.cell(row=6, column=10).value == 5.5
     assert ws.cell(row=7, column=10).value == 10.0
     assert ws.cell(row=8, column=10).value == 2.0
@@ -194,9 +194,9 @@ def test_categorize_adds_kateqoriya_column_if_missing():
     ]
     out, summary = categorize_statement(_xlsx_bytes(META, header_without_kat, rows))
     wb = _reload(out)
-    ws = wb.active
+    ws = wb["Sheet"]
     assert ws.cell(row=5, column=9).value == "Kateqoriya"
-    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
+    assert ws.cell(row=5, column=10).value == "İcmal"
     assert ws.cell(row=6, column=9).value == "KOMİSİYA"
     assert ws.cell(row=6, column=10).value == 5.5
     assert ws.cell(row=7, column=9).value == "Nağd çəkim komissiyası"
@@ -241,16 +241,19 @@ def test_categorize_csv_to_xlsx():
 
     wb = _reload(out)
     assert wb.sheetnames == ["Çıxarış", "Xülasə"]
+    assert wb.active.title == "Xülasə"
     ws = wb.active
-    assert ws.cell(row=1, column=1).value == "Qurum Adi"
-    assert ws.cell(row=3, column=4).value == "Əməliyyat Detalları"
-    assert ws.cell(row=3, column=10).value == "Hesablanan Məbləğ"
-    assert ws.cell(row=4, column=9).value == "BANK FAİZ XƏRCİ"
-    assert ws.cell(row=4, column=10).value == 7.25
-    assert ws.cell(row=5, column=9).value == "BANK FAİZ XƏRCİ"
-    assert ws.cell(row=5, column=10).value == 8.75
-    assert ws.cell(row=6, column=9).value is None
-    assert ws.cell(row=6, column=10).value is None
+    assert ws.title == "Xülasə"
+    main = wb["Çıxarış"]
+    assert main.cell(row=1, column=1).value == "Qurum Adi"
+    assert main.cell(row=3, column=4).value == "Əməliyyat Detalları"
+    assert main.cell(row=3, column=10).value == "İcmal"
+    assert main.cell(row=4, column=9).value == "BANK FAİZ XƏRCİ"
+    assert main.cell(row=4, column=10).value == 7.25
+    assert main.cell(row=5, column=9).value == "BANK FAİZ XƏRCİ"
+    assert main.cell(row=5, column=10).value == 8.75
+    assert main.cell(row=6, column=9).value is None
+    assert main.cell(row=6, column=10).value is None
 
 
 def test_categorize_header_not_found_raises():
@@ -262,3 +265,38 @@ def test_categorize_header_not_found_raises():
 def test_categorize_xls_not_supported():
     with pytest.raises(ValueError, match="dəstəklənmir"):
         categorize_statement(b"\xd0\xcf\x11\xe0" + b"ole2fake")
+
+
+def test_output_formatting():
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1"),
+        _row("ALIS VERIS", "-50.00", "2"),
+    ]
+    out, _ = categorize_statement(_xlsx_bytes(META, STD_HEADER, rows))
+    wb = _reload(out)
+
+    # Default aktiv sheet Xülasə-dir
+    assert wb.active.title == "Xülasə"
+
+    main = wb["Sheet"]
+    # Header sətri bold + açıq boz fon
+    hdr = main.cell(row=5, column=1)
+    assert hdr.font.bold is True
+    assert str(hdr.fill.start_color.rgb).endswith("E8E8E8")
+    # İcmal başlıq + number format + sağa düzləndirmə
+    assert main.cell(row=5, column=10).value == "İcmal"
+    amount_cell = main.cell(row=6, column=10)
+    assert amount_cell.number_format == "#,##0.00"
+    assert amount_cell.alignment.horizontal == "right"
+
+    xs = wb["Xülasə"]
+    # Xülasə başlıq bold + fon
+    assert xs.cell(row=1, column=1).font.bold is True
+    assert str(xs.cell(row=1, column=1).fill.start_color.rgb).endswith("E8E8E8")
+    # Cəm sütunu format
+    assert xs.cell(row=2, column=3).number_format == "#,##0.00"
+    # CƏMİ sətri bold + yuxarı border
+    total_row = xs.max_row
+    assert xs.cell(row=total_row, column=1).font.bold is True
+    assert xs.cell(row=total_row, column=1).border.top.style is not None
+    assert xs.cell(row=total_row, column=1).value == "CƏMİ"
