@@ -105,7 +105,18 @@
   }
 
   /* ===== Bank çıxarışı kateqoriyalaşdırması ===== */
-  const CATEGORY_ORDER = ["KOMİSİYA", "Nağd çəkim komissiyası", "BANK FAİZ XƏRCİ"];
+  const CATEGORY_ORDER = [
+    "Nağd çəkim komissiyası",
+    "KOMİSİYA",
+    "BANK FAİZ XƏRCİ",
+    "ƏDV ÖDƏNİŞİ",
+    "RÜSUM",
+    "VERGİ MƏXARİC",
+    "MAAŞ MƏXARİC",
+    "TƏSİSÇİDƏN BORC",
+    "DİGƏR ŞİRKƏT DAXİL OLMALAR",
+    "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+  ];
 
   function formatCem(value) {
     const n = Number(value);

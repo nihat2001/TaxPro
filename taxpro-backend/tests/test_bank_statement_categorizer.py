@@ -72,6 +72,7 @@ def _reload(out: bytes) -> Workbook:
         ("HESAB ACILIS KOM", "KOMİSİYA"),
         ("KREDIT TAHSIS KOM", "KOMİSİYA"),
         ("KOMISSIYA 0.50 AZN", "KOMİSİYA"),
+        ("PAYMENT ORDER COMMISSION", "KOMİSİYA"),
         ("NAKIT CEKME KOMISYONU", "Nağd çəkim komissiyası"),
         ("NAĞD ÇƏKİM KOMİSYONU", "Nağd çəkim komissiyası"),
         ("1 FAIZ NAGD CEKIM", "Nağd çəkim komissiyası"),
@@ -86,19 +87,245 @@ def _reload(out: bytes) -> Workbook:
     ],
 )
 def test_match_category_patterns(detail, expected):
-    assert _match_category(detail) == expected
+    assert _match_category("", detail, None, None) == expected
 
 
 def test_match_category_case_insensitive():
-    assert _match_category("nakıt çekme komisyonu") == "Nağd çəkim komissiyası"
-    assert _match_category("Kom. 123") == "KOMİSİYA"
-    assert _match_category("FAİZ+CƏRİMƏ") == "BANK FAİZ XƏRCİ"
+    assert _match_category("", "nakıt çekme komisyonu", None, None) == "Nağd çəkim komissiyası"
+    assert _match_category("", "Kom. 123", None, None) == "KOMİSİYA"
+    assert _match_category("", "FAİZ+CƏRİMƏ", None, None) == "BANK FAİZ XƏRCİ"
 
 
 def test_priority_nakit_cekme_not_komisiya():
     """Öncəlik: NAKIT CEKME KOMISYONU KOMİSİYA-ya düşməməli."""
-    assert _match_category("NAKIT CEKME KOMISYONU") == "Nağd çəkim komissiyası"
-    assert _match_category("NAKIT CEKME KOMISYONU") != "KOMİSİYA"
+    assert _match_category("", "NAKIT CEKME KOMISYONU", None, None) == "Nağd çəkim komissiyası"
+    assert _match_category("", "NAKIT CEKME KOMISYONU", None, None) != "KOMİSİYA"
+
+
+# ===== Yeni kateqoriyalar (prioritet 4-10) =====
+
+
+def test_priority_maas_odemesi_komissiya():
+    """MAAS ODEMESI KOMISSIYA KOMİSİYA-ya düşür (MAAŞ-a yox)."""
+    assert (
+        _match_category("", "MAAS ODEMESI KOMISSIYA", None, "-50.00")
+        == "KOMİSİYA"
+    )
+    assert (
+        _match_category("", "MAAS ODEMESI KOMISSIYA", None, "-50.00")
+        != "MAAŞ MƏXARİC"
+    )
+
+
+def test_edv_odenisi():
+    assert _match_category("", "EDV ODENILIR", None, "-75.60") == "ƏDV ÖDƏNİŞİ"
+    assert _match_category("", "ƏDV ödənilir", None, "-2.88") == "ƏDV ÖDƏNİŞİ"
+    assert _match_category("", "EDV", None, "-10.00") == "ƏDV ÖDƏNİŞİ"
+
+
+def test_edv_odenisi_requires_debit():
+    # Kredit sətirində EDV olsa da (pul daxil) ƏDV ÖDƏNİŞİ deyil.
+    assert _match_category("", "EDV", "100.00", None) is None
+
+
+def test_rusum():
+    assert _match_category("", "DÖVLƏT RÜSUMU", None, "-10.00") == "RÜSUM"
+    assert _match_category("", "DOVLET RUSUMU", None, "-15.00") == "RÜSUM"
+    assert _match_category("", "RÜSUM", None, "-5.00") == "RÜSUM"
+
+
+def test_priority_rusum_over_vergi():
+    """Eyni sətirdə həm RUSUM, həm ümumi vergi açar sözü → RÜSUM qalib."""
+    assert (
+        _match_category("VN Milli Gəlir.Departamenti", "DOVLET RUSUMU", None, "-10.00")
+        == "RÜSUM"
+    )
+    assert (
+        _match_category("VN Milli Gəlir.Departamenti", "DOVLET RUSUMU", None, "-10.00")
+        != "VERGİ MƏXARİC"
+    )
+
+
+def test_vergi_meharic_from_sender_keyword():
+    assert (
+        _match_category("Azərbaycan Respublikası DSMF", "TAM ODEME", None, "-14.71")
+        == "VERGİ MƏXARİC"
+    )
+    assert (
+        _match_category("Mərk.Sos.Sığ.FUİ (işsiz.yığım)", "126300 TAM ODEME", None, "-5.00")
+        == "VERGİ MƏXARİC"
+    )
+    assert (
+        _match_category("VN Milli Gəlir.Departamenti", "TAM ODEME", None, "-10.00")
+        == "VERGİ MƏXARİC"
+    )
+
+
+def test_vergi_meharic_from_detail_keyword():
+    assert (
+        _match_category("", "MİLLİ GƏLİR DEPARTAMENTİ", None, "-15.00")
+        == "VERGİ MƏXARİC"
+    )
+
+
+def test_vergi_meharic_requires_debit():
+    # Kredit sətiri (pul daxil), dövlət açar sözü olsa da VERGİ MƏXARİC deyil.
+    assert _match_category("DSMF", "TAM ODEME", "100.00", None) is None
+
+
+def test_priority_vergi_vs_komisiya_same_sender():
+    """Eyni dövlət qurumundan komissiya sətri → KOMİSİYA (prioritet 2 > 4)."""
+    assert _match_category("DSMF", "DK KOM", None, "-2.00") == "KOMİSİYA"
+
+
+def test_maas_meharic():
+    assert _match_category("", "MAAS PAKET", None, "-100.00") == "MAAŞ MƏXARİC"
+    assert _match_category("", "ƏMƏKHAQQ hesablanması", None, "-250.00") == "MAAŞ MƏXARİC"
+    assert _match_category("", "MAAŞ ÖDƏMƏSİ", None, "-120.00") == "MAAŞ MƏXARİC"
+
+
+def test_tesisciden_borc_three_conditions():
+    # 3 şərt: kredit dolu + NAGD YATIRMA/CASH DEPOSIT + tesisciden token.
+    assert (
+        _match_category(
+            "NAGD YATIRMA/CASH DEPOSIT",
+            "CSS001/23 TESİSCİDEN BORC\\DEMİROVA",
+            "60000",
+            None,
+        )
+        == "TƏSİSÇİDƏN BORC"
+    )
+    # BORC sözü ayrı dayana bilər — tək tesisciden token kifayətdir.
+    assert (
+        _match_category(
+            "NAGD YATIRMA/CASH DEPOSIT",
+            "CSS001/23SAYLI BORC MÜQ TƏSİSÇİDƏN",
+            "4200",
+            None,
+        )
+        == "TƏSİSÇİDƏN BORC"
+    )
+
+
+def test_tesisciden_borc_requires_sender_token():
+    # Sender-də NAGD YATIRMA/CASH DEPOSIT yoxdursa, kredit + şirkət → DAXİL.
+    assert (
+        _match_category("X Investment MMC", "TESİSCİDEN BORC", "1000", None)
+        == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    )
+
+
+def test_tesisciden_borc_requires_kredit():
+    # Debit (borc qaytarma) → TƏSİSÇİDƏN BORC deyil, şirkət deyil → None.
+    assert (
+        _match_category("NAGD YATIRMA/CASH DEPOSIT", "TESİSCİDEN BORC", None, "-60000")
+        is None
+    )
+
+
+def test_diger_sirket_daxil_olmalar():
+    assert (
+        _match_category("TRANSTONE MMC", "Muqavile esas en", "5132", None)
+        == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    )
+    assert (
+        _match_category("Atesgah sigorta sirketi asc", "SIGORTA HAQQI", "50", None)
+        == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    )
+
+
+def test_diger_sirket_odenisleri():
+    assert (
+        _match_category("Avtonax MR MMC", "EBDG 503767 esas en", None, "-4216.59")
+        == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    )
+
+
+def test_priority_vergi_over_company_payment():
+    """Dövlət qurumu debit + tax açar sözü → VERGİ (şirkət formatı olsa da)."""
+    assert (
+        _match_category("VN Milli Gəlir.Departamenti", "TAM ODEME", None, "-15.00")
+        == "VERGİ MƏXARİC"
+    )
+
+
+def test_is_company_name():
+    from app.services.deterministic.bank_statement_categorizer import (
+        _is_company_name,
+    )
+
+    assert _is_company_name("Avtonax MR MMC") is True
+    assert _is_company_name("TRANSTONE MMC") is True
+    assert _is_company_name("Atesgah sigorta sirketi asc") is True
+    assert _is_company_name("Azərbaycan Respublikası DSMF") is False
+    assert _is_company_name("NAGD YATIRMA/CASH DEPOSIT") is False
+    assert _is_company_name("") is False
+    assert _is_company_name(None) is False
+
+
+def test_summary_has_ten_categories():
+    out, summary = categorize_statement(
+        _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    )
+    assert set(summary.keys()) == {
+        "Nağd çəkim komissiyası",
+        "KOMİSİYA",
+        "BANK FAİZ XƏRCİ",
+        "ƏDV ÖDƏNİŞİ",
+        "RÜSUM",
+        "VERGİ MƏXARİC",
+        "MAAŞ MƏXARİC",
+        "TƏSİSÇİDƏN BORC",
+        "DİGƏR ŞİRKƏT DAXİL OLMALAR",
+        "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+    }
+
+
+def test_recategorize_own_output():
+    """Öz çıxışımızı (Xülasə aktiv sheet ilə) yenidən kateqoriyalaşdırmaq."""
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1"),
+        _row("MAAŞ PAKET", "-100.00", "2"),
+        _row("EDV ODENILIR", "-75.60", "3"),
+    ]
+    out1, summary1 = categorize_statement(_xlsx_bytes(META, STD_HEADER, rows))
+    out2, summary2 = categorize_statement(out1)  # aktiv sheet Xülasə-dir
+    assert summary2 == summary1
+    assert summary2["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+    assert summary2["MAAŞ MƏXARİC"] == {"cem": 100.0, "say": 1}
+    assert summary2["ƏDV ÖDƏNİŞİ"] == {"cem": 75.6, "say": 1}
+
+
+def test_categorize_integration_sender_sutunu_oxunur():
+    """End-to-end: sender sütunu (Göndərən/Alıcı) düzgün oxunmalıdır."""
+    rows = [
+        ["01.01.2026", "01.01.2026", "NAGD YATIRMA/CASH DEPOSIT", "TESİSCİDEN BORC", "1", "60000", "", "60000", ""],
+        ["02.01.2026", "02.01.2026", "TRANSTONE MMC", "Muqavile esas", "2", "5132", "", "5132", ""],
+        ["03.01.2026", "03.01.2026", "Avtonax MR MMC", "EBDG esas", "3", "", "-4216.59", "4216.59", ""],
+        ["04.01.2026", "04.01.2026", "X", "ALIS VERIS", "4", "", "-50.00", "50.00", ""],
+    ]
+    out, summary = categorize_statement(_xlsx_bytes(META, STD_HEADER, rows))
+    assert summary["TƏSİSÇİDƏN BORC"] == {"cem": 60000.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 5132.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 4216.59, "say": 1}
+
+
+def test_xulase_sheet_shows_only_present_categories():
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1"),
+        _row("MAAŞ PAKET", "-100.00", "2"),
+        _row("ALIS VERIS", "-50.00", "3"),
+    ]
+    out, _ = categorize_statement(_xlsx_bytes(META, STD_HEADER, rows))
+    wb = _reload(out)
+    xs = wb["Xülasə"]
+    data = list(xs.iter_rows(values_only=True))
+    cats = [row[0] for row in data]
+    assert "KOMİSİYA" in cats
+    assert "MAAŞ MƏXARİC" in cats
+    assert "Nağd çəkim komissiyası" not in cats  # sıfır → göstərilmir
+    assert "VERGİ MƏXARİC" not in cats
+    assert cats[-1] == "CƏMİ"
 
 
 # ===== Məbləğ parslama + abs cəm =====
@@ -176,7 +403,7 @@ def test_categorize_xlsx_summary_and_meta_preserved():
     assert "Xülasə" in wb.sheetnames
     xs = wb["Xülasə"]
     rows_in_sheet = list(xs.iter_rows(values_only=True))
-    assert rows_in_sheet[0] == ("Kateqoriya", "Əməliyyat sayı", "Cəm (Debit, abs)")
+    assert rows_in_sheet[0] == ("Kateqoriya", "Əməliyyat sayı", "Cəm (abs)")
     assert ("KOMİSİYA", 2, 15.5) in rows_in_sheet
     assert ("Nağd çəkim komissiyası", 2, 5.0) in rows_in_sheet
     assert ("BANK FAİZ XƏRCİ", 2, 16.0) in rows_in_sheet

@@ -14,7 +14,7 @@ class BankStatementCategorySummary(BaseModel):
 
 
 class BankStatementSummary(BaseModel):
-    """3 kateqoriya üzrə xülasə (bank çıxarışı kateqoriyalaşdırması).
+    """10 kateqoriya üzrə xülasə (bank çıxarışı kateqoriyalaşdırması).
 
     Alias-lar kateqoriya adlarının orijinal (Azərbaycan) yazılışıdır.
     """
@@ -29,4 +29,25 @@ class BankStatementSummary(BaseModel):
     )
     bank_faiz_xerci: BankStatementCategorySummary = Field(
         default_factory=BankStatementCategorySummary, alias="BANK FAİZ XƏRCİ"
+    )
+    edv_odenisi: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="ƏDV ÖDƏNİŞİ"
+    )
+    rusum: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="RÜSUM"
+    )
+    vergi_mexaric: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="VERGİ MƏXARİC"
+    )
+    maas_mexaric: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="MAAŞ MƏXARİC"
+    )
+    tesisciden_borc: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="TƏSİSÇİDƏN BORC"
+    )
+    diger_sirket_daxil_olmalar: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    )
+    diger_sirket_odenisleri: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
     )
