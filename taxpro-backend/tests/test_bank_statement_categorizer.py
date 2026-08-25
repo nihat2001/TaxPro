@@ -42,14 +42,14 @@ def _xlsx_bytes(meta, header, rows) -> bytes:
     return buf.read()
 
 
-def _row(detail, debit, no="1"):
+def _row(detail, debit, no="1", sender="", kredit=""):
     return [
         "01.01.2026",
         "01.01.2026",
-        "Alıcı/Satıcı",
+        sender,
         detail,
         no,
-        "",
+        kredit,
         debit,
         "1000.00",
         "",
@@ -170,7 +170,7 @@ def test_vergi_meharic_from_detail_keyword():
 
 def test_vergi_meharic_requires_debit():
     # Kredit sətiri (pul daxil), dövlət açar sözü olsa da VERGİ MƏXARİC deyil.
-    assert _match_category("DSMF", "TAM ODEME", "100.00", None) is None
+    assert _match_category("", "TAM ODEME", "100.00", None) is None
 
 
 def test_priority_vergi_vs_komisiya_same_sender():
@@ -208,18 +208,26 @@ def test_tesisciden_borc_three_conditions():
 
 
 def test_tesisciden_borc_requires_sender_token():
-    # Sender-də NAGD YATIRMA/CASH DEPOSIT yoxdursa, kredit + şirkət → DAXİL.
+    # Sender-də NAGD YATIRMA/CASH DEPOSIT yoxdursa, kredit + non-empty sender → DAXİL.
     assert (
         _match_category("X Investment MMC", "TESİSCİDEN BORC", "1000", None)
         == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
     )
 
 
-def test_tesisciden_borc_requires_kredit():
-    # Debit (borc qaytarma) → TƏSİSÇİDƏN BORC deyil, şirkət deyil → None.
+def test_tesisciden_borc_debit_direction():
+    # Yeni qayda: NAGD YATIRMA + Debit (borc qaytarma) → TƏSİSÇİDƏN BORC.
     assert (
         _match_category("NAGD YATIRMA/CASH DEPOSIT", "TESİSCİDEN BORC", None, "-60000")
-        is None
+        == "TƏSİSÇİDƏN BORC"
+    )
+
+
+def test_tesisciden_borc_without_token_word():
+    # tesisciden sözü olmadan da NAGD YATIRMA sətri TƏSİSÇİDƏN BORC-dur.
+    assert (
+        _match_category("NAGD YATIRMA/CASH DEPOSIT", "DƏMİR ZÖHRAB ƏKBƏR", None, "-1000")
+        == "TƏSİSÇİDƏN BORC"
     )
 
 
@@ -241,26 +249,34 @@ def test_diger_sirket_odenisleri():
     )
 
 
+def test_catchall_borusan_no_suffix():
+    """Suffiks yoxdur → yenə də catch-all: sender boş deyil + debit → ÖDƏNİŞLƏRİ."""
+    assert (
+        _match_category("BORUSAN MAKINA VE GUC", "EBDO sayli EQF esasen odenilir", None, "-450.86")
+        == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    )
+
+
+def test_catchall_universal_spare_parts():
+    assert (
+        _match_category("UNIVERSAL SPARE PARTS", "26 1023UC MUQAVILE", None, "-335.00")
+        == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    )
+
+
+def test_catchall_empty_sender_stays_uncategorized():
+    """Sender boşdursa catch-all işləməməlidir (ATM/PIN regression)."""
+    assert _match_category("", "ATM XIRDALAN BIZIM M", None, "-1000.00") is None
+    assert _match_category("", "PIN YENI UCRET", None, "-2.00") is None
+    assert _match_category("", "ATM 28 MAY", None, "-300.00") is None
+
+
 def test_priority_vergi_over_company_payment():
     """Dövlət qurumu debit + tax açar sözü → VERGİ (şirkət formatı olsa da)."""
     assert (
         _match_category("VN Milli Gəlir.Departamenti", "TAM ODEME", None, "-15.00")
         == "VERGİ MƏXARİC"
     )
-
-
-def test_is_company_name():
-    from app.services.deterministic.bank_statement_categorizer import (
-        _is_company_name,
-    )
-
-    assert _is_company_name("Avtonax MR MMC") is True
-    assert _is_company_name("TRANSTONE MMC") is True
-    assert _is_company_name("Atesgah sigorta sirketi asc") is True
-    assert _is_company_name("Azərbaycan Respublikası DSMF") is False
-    assert _is_company_name("NAGD YATIRMA/CASH DEPOSIT") is False
-    assert _is_company_name("") is False
-    assert _is_company_name(None) is False
 
 
 def test_summary_has_ten_categories():
@@ -302,7 +318,7 @@ def test_categorize_integration_sender_sutunu_oxunur():
         ["01.01.2026", "01.01.2026", "NAGD YATIRMA/CASH DEPOSIT", "TESİSCİDEN BORC", "1", "60000", "", "60000", ""],
         ["02.01.2026", "02.01.2026", "TRANSTONE MMC", "Muqavile esas", "2", "5132", "", "5132", ""],
         ["03.01.2026", "03.01.2026", "Avtonax MR MMC", "EBDG esas", "3", "", "-4216.59", "4216.59", ""],
-        ["04.01.2026", "04.01.2026", "X", "ALIS VERIS", "4", "", "-50.00", "50.00", ""],
+        ["04.01.2026", "04.01.2026", "", "ALIS VERIS", "4", "", "-50.00", "50.00", ""],
     ]
     out, summary = categorize_statement(_xlsx_bytes(META, STD_HEADER, rows))
     assert summary["TƏSİSÇİDƏN BORC"] == {"cem": 60000.0, "say": 1}
@@ -415,9 +431,9 @@ def test_categorize_xlsx_summary_and_meta_preserved():
 def test_categorize_adds_kateqoriya_column_if_missing():
     header_without_kat = STD_HEADER[:-1]
     rows = [
-        ["01.01.2026", "01.01.2026", "X", "Com. komissiya", "1", "", "-5.50", "994.50"],
-        ["02.01.2026", "02.01.2026", "X", "NAKIT CEKME KOMISYONU", "2", "", "-2.00", "992.50"],
-        ["03.01.2026", "03.01.2026", "X", "ALIS VERIS", "3", "", "-50.00", "942.50"],
+        ["01.01.2026", "01.01.2026", "", "Com. komissiya", "1", "", "-5.50", "994.50"],
+        ["02.01.2026", "02.01.2026", "", "NAKIT CEKME KOMISYONU", "2", "", "-2.00", "992.50"],
+        ["03.01.2026", "03.01.2026", "", "ALIS VERIS", "3", "", "-50.00", "942.50"],
     ]
     out, summary = categorize_statement(_xlsx_bytes(META, header_without_kat, rows))
     wb = _reload(out)
@@ -445,7 +461,7 @@ def test_categorize_csv_to_xlsx():
                     [
                         "01.01.2026",
                         "01.01.2026",
-                        "X",
+                        "",
                         d,
                         no,
                         "",

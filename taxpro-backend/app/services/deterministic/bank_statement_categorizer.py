@@ -15,13 +15,13 @@ Kateqoriyalar (prioritet sırası ilə, yoxsa boş qalır):
   5. "RÜSUM"                   (debit + RUSUM/RÜSUM)
   6. "VERGİ MƏXARİC"           (debit + dövlət/vergi açar sözü)
   7. "MAAŞ MƏXARİC"            (debit + maaş pattern-i)
-  8. "TƏSİSÇİDƏN BORC"         (kredit + NAGD YATIRMA/CASH DEPOSIT + tesisciden)
-  9. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (kredit + şirkət adı)
-  10. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (debit + şirkət adı)
+  8. "TƏSİSÇİDƏN BORC"         (sender NAGD YATIRMA/CASH DEPOSIT — kredit və ya debit)
+  9. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
+  10. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
 1-3 detail pattern-ləri CATEGORY_RULES ilə; 4-10 üçün VAT_PATTERNS,
-DUTY_PATTERNS, TAX_AUTHORITY_KEYWORDS, SALARY_PATTERNS, _FOUNDER_*,
-_COMPANY_SUFFIXES sabitləri istifadə olunur. Sıra önəmlidir — daha
-spesifik olanlar əvvəl yoxlanır.
+DUTY_PATTERNS, TAX_AUTHORITY_KEYWORDS, SALARY_PATTERNS, _FOUNDER_*
+sabitləri istifadə olunur. Sıra önəmlidir — daha spesifik olanlar əvvəl
+yoxlanır. Sender tamamilə boş olan sətirlər kateqoriyasız qalır.
 """
 
 import csv
@@ -106,19 +106,8 @@ VAT_PATTERNS: list[str] = ["edv"]
 # RÜSUM üçün normalize pattern-ləri (RUSUM/RÜSUM/DOVLET RUSUMU/DÖVLƏT RÜSUMU).
 DUTY_PATTERNS: list[str] = ["rusum"]
 
-# TƏSİSÇİDƏN BORC: sender token-ləri + detail token-i (diakritiksiz).
+# TƏSİSÇİDƏN BORC: sender token-ləri (NAGD YATIRMA / CASH DEPOSIT).
 _FOUNDER_SENDER_TOKENS: tuple[str, ...] = ("nagdyatirma", "cashdeposit")
-_FOUNDER_DETAIL_TOKEN = "tesisciden"
-
-# Şirkət adı suffiksləri (normalize) — DİGƏR ŞİRKƏT DAXİL OLMALAR/ÖDƏNİŞLƏRİ.
-_COMPANY_SUFFIXES: tuple[str, ...] = (
-    "mmc",
-    "qsc",
-    "asc",
-    "ojsc",
-    "sirketi",
-    "ltd",
-)
 
 # Ümumi kateqoriya sırası (prioritet) — summary və Xülasə üçün.
 _CATEGORY_ORDER: list[str] = [name for name, _ in CATEGORY_RULES] + [
@@ -164,9 +153,10 @@ def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | 
     """Sətir kontekstini prioritet sırası ilə kateqoriyalaşdırır.
 
     Sıra: 1) Com./COMM- → KOMİSİYA; 2) CATEGORY_RULES (Nağd çəkim →
-    KOMİSİYA → BANK FAİZ); 3) VERGİ MƏXARİC; 4) MAAŞ MƏXARİC;
-    5) TƏSİSÇİDƏN BORC; 6) DİGƏR ŞİRKƏT DAXİL OLMALAR;
-    7) DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 8) None.
+    KOMİSİYA → BANK FAİZ); 3) ƏDV ÖDƏNİŞİ; 4) RÜSUM; 5) VERGİ MƏXARİC;
+    6) MAAŞ MƏXARİC; 7) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT,
+    hər iki istiqamət); 8) catch-all: sender boş deyilsə Kredit → DİGƏR
+    ŞİRKƏT DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 9) None.
     """
     text = _cell_text(detail)
     lowered = text.lower()
@@ -194,18 +184,18 @@ def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | 
     if debit_filled and any(p in norm_detail for p in SALARY_PATTERNS):
         return "MAAŞ MƏXARİC"
 
-    if (
-        kredit_filled
-        and _sender_has(sender, _FOUNDER_SENDER_TOKENS)
-        and _FOUNDER_DETAIL_TOKEN in norm_detail
-    ):
+    # TƏSİSÇİDƏN BORC: sender-də NAGD YATIRMA/CASH DEPOSIT keçən hər sətir
+    # (Kredit və ya Debit — hər iki istiqamət, tesisciden şərti yoxdur).
+    if _sender_has(sender, _FOUNDER_SENDER_TOKENS) and (kredit_filled or debit_filled):
         return "TƏSİSÇİDƏN BORC"
 
-    if kredit_filled and _is_company_name(sender):
-        return "DİGƏR ŞİRKƏT DAXİL OLMALAR"
-
-    if debit_filled and _is_company_name(sender):
-        return "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    # Catch-all fallback: sender boş deyilsə, əvvəlki heç bir qayda düşməyibsə.
+    # Kredit dolu → DİGƏR ŞİRKƏT DAXİL OLMALAR, Debit dolu → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ.
+    if _sender_nonempty(sender):
+        if kredit_filled:
+            return "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+        if debit_filled:
+            return "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
 
     return None
 
@@ -225,12 +215,9 @@ def _row_amount(debit: Any, kredit: Any) -> float | None:
     return None
 
 
-def _is_company_name(sender: Any) -> bool:
-    """Sender şirkət adı formatındadırmı? (case-insensitive, suffiks axtarışı)."""
-    norm = normalize_text(_cell_text(sender))
-    if not norm:
-        return False
-    return any(s in norm for s in _COMPANY_SUFFIXES)
+def _sender_nonempty(sender: Any) -> bool:
+    """Göndərən/Alıcı Məlumatları sahəsi boş deyilmi (catch-all üçün)."""
+    return bool(_cell_text(sender))
 
 
 def _has_tax_keyword(sender: Any, norm_detail: str) -> bool:
