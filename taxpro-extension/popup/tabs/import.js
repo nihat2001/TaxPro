@@ -104,6 +104,69 @@
     }
   }
 
+  /* ===== Bank çıxarışı kateqoriyalaşdırması ===== */
+  const CATEGORY_ORDER = ["KOMİSİYA", "Nağd çəkim komissiyası", "BANK FAİZ XƏRCİ"];
+
+  function formatCem(value) {
+    const n = Number(value);
+    return (Number.isFinite(n) ? n : 0).toFixed(2);
+  }
+
+  function renderBankSummary(summary) {
+    if (!summary) return "";
+    const rows = CATEGORY_ORDER.map((name) => {
+      const item = summary[name] || { cem: 0, say: 0 };
+      return (
+        `<div class="bank-summary-row">` +
+        `<span class="bank-summary-name">${escapeHtml(name)}</span>` +
+        `<span class="bank-summary-say">${item.say} əməliyyat</span>` +
+        `<span class="bank-summary-cem">${escapeHtml(formatCem(item.cem))} AZN</span>` +
+        `</div>`
+      );
+    }).join("");
+    return (
+      `<div class="result-box ok">` +
+      `<div>Kateqoriyalaşdırılmış fayl endirildi. Xülasə:</div>` +
+      `<div class="bank-summary">${rows}</div>` +
+      `</div>`
+    );
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function runBankStatement() {
+    const file = $("bankStatementFile").files[0];
+    const btn = $("bankStatementBtn");
+    const resultBox = $("bankStatementResult");
+    resultBox.hidden = true;
+    if (!file) {
+      showToast("Çıxarış faylı seçin.", "err");
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Yüklənir…";
+    try {
+      const { blob, summary } = await api.categorizeBankStatement(file);
+      downloadBlob(blob, "taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx");
+      resultBox.innerHTML = renderBankSummary(summary);
+    } catch (err) {
+      resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Kateqoriyalaşdır və endir";
+      resultBox.hidden = false;
+    }
+  }
+
   function init() {
     if (!window.TaxProAPI || !document.getElementById("importExcelFile")) return;
     $("importExcelUploadBtn").addEventListener("click", runUpload);
@@ -111,6 +174,9 @@
       e.preventDefault();
       downloadTemplate();
     });
+    if (document.getElementById("bankStatementBtn")) {
+      $("bankStatementBtn").addEventListener("click", runBankStatement);
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);

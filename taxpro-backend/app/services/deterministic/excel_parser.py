@@ -72,11 +72,20 @@ _DIACRITIC_MAP = {
 }
 
 
-def _normalize_header(value: str) -> str:
+def normalize_text(value: str) -> str:
+    """Aşağı registr + diaqritiksiz + yalnız alfasayısal formata çevirir.
+
+    Həm başlıq uyğunlaşdırmasında, həm də deterministik pattern-matching-də
+    (bank çıxarışı kateqoriyalaşdırması) istifadə olunur.
+    """
     lowered = value.strip().lower()
     for char, repl in _DIACRITIC_MAP.items():
         lowered = lowered.replace(char, repl)
     return re.sub(r"[^a-z0-9]", "", lowered)
+
+
+def _normalize_header(value: str) -> str:
+    return normalize_text(value)
 
 
 def _map_header(value: str) -> str | None:
@@ -154,8 +163,17 @@ def _clean_row(row: dict[str, Any], field_map: dict[str, str]) -> dict[str, Any]
     return cleaned
 
 
+def detect_format(file_bytes: bytes) -> str:
+    """Bytes-imzası ilə fayl formatını təyin edir: "xlsx" | "xls" | "csv"."""
+    if file_bytes.startswith(_XLSX_MAGIC):
+        return "xlsx"
+    if file_bytes.startswith(_XLS_MAGIC):
+        return "xls"
+    return "csv"
+
+
 def _read_dataframe(file_bytes: bytes) -> pd.DataFrame:
-    if file_bytes.startswith(_XLSX_MAGIC) or file_bytes.startswith(_XLS_MAGIC):
+    if detect_format(file_bytes) in {"xlsx", "xls"}:
         return pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
     return pd.read_csv(io.BytesIO(file_bytes))
 

@@ -1,4 +1,6 @@
+import base64
 import io
+import json
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -6,8 +8,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.schemas.imports import ImportExcelResponse
+from app.schemas.imports import BankStatementSummary, ImportExcelResponse
 from app.schemas.profile import ProfileCreate
+from app.services.deterministic.bank_statement_categorizer import categorize_statement
 from app.services.deterministic.excel_parser import parse_standard
 from app.services.deterministic.profile_service import create_profile
 
@@ -68,6 +71,33 @@ async def import_standard_excel(
         message=f"{inserted} profil idxal edildi; {len(errors)} sətir atlandı.",
         inserted=inserted,
         sources=errors,
+    )
+
+
+@router.post("/bank-statement/categorize")
+async def categorize_bank_statement(file: UploadFile = File(...)):
+    raw = await file.read()
+    try:
+        out_bytes, summary = categorize_statement(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    validated = BankStatementSummary.model_validate(summary)
+    encoded = base64.b64encode(
+        json.dumps(validated.model_dump(by_alias=True), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    ).decode("ascii")
+
+    return StreamingResponse(
+        io.BytesIO(out_bytes),
+        media_type=_XLSX_MIME,
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx"'
+            ),
+            "X-Summary": encoded,
+        },
     )
 
 

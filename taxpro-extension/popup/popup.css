@@ -550,6 +550,29 @@ main {
 }
 .import-error.muted { color: var(--text-muted); }
 
+.bank-summary {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bank-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+.bank-summary-name { font-weight: 600; }
+.bank-summary-say { color: var(--text-muted); }
+.bank-summary-cem {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .file-label {
   display: block;
   margin-bottom: 4px;

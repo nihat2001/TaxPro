@@ -27,6 +27,13 @@
     return cachedBaseUrl;
   }
 
+  function base64ToJson(str) {
+    const bin = atob(str);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+  }
+
   function apiError(res, data) {
     let detail = `HTTP ${res.status}`;
     if (data) {
@@ -120,6 +127,38 @@
       const res = await fetch(base + "/api/v1/import/excel-template");
       if (!res.ok) throw apiError(res, await res.text().catch(() => null));
       return res.blob();
+    },
+
+    /* ===== Bank çıxarışı kateqoriyalaşdırması ===== */
+    categorizeBankStatement: async (file) => {
+      const base = await getBaseUrl();
+      const res = await fetch(
+        base + "/api/v1/import/bank-statement/categorize",
+        { method: "POST", body: fileForm(file) }
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => null);
+        let data = null;
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (err) {
+            data = text;
+          }
+        }
+        throw apiError(res, data);
+      }
+      const blob = await res.blob();
+      let summary = null;
+      const hdr = res.headers.get("X-Summary");
+      if (hdr) {
+        try {
+          summary = base64ToJson(hdr);
+        } catch (err) {
+          summary = null;
+        }
+      }
+      return { blob, summary };
     },
   };
 
