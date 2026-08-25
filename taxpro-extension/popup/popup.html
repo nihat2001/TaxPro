@@ -19,7 +19,8 @@
       <button class="tab-btn active" data-tab="sites" type="button">Saytlar</button>
       <button class="tab-btn" data-tab="profiles" type="button">Profillər</button>
       <button class="tab-btn" data-tab="autofill" type="button">Doldur</button>
-      <button class="tab-btn" data-tab="import" type="button">İdxal</button>
+      <button class="tab-btn" data-tab="profiles-import" type="button">Toplu Profil</button>
+      <button class="tab-btn" data-tab="bank" type="button">Bank Çıxarışı</button>
     </nav>
 
     <main>
@@ -98,10 +99,10 @@
         </div>
       </section>
 
-      <!-- İdxal -->
-      <section id="tab-import" class="tab-panel">
+      <!-- Toplu Profil -->
+      <section id="tab-profiles-import" class="tab-panel">
         <div class="card">
-          <div class="card-label">Excel idxalı</div>
+          <div class="card-label">Profil İdxalı</div>
           <div class="form-group">
             <label class="file-label" for="importExcelFile">Fayl seçin (.xlsx, .xls, .csv)</label>
             <input type="file" id="importExcelFile" accept=".xlsx,.xls,.csv" />
@@ -112,7 +113,10 @@
           <button id="importExcelUploadBtn" class="btn primary block" type="button">Yüklə</button>
           <div id="importExcelResult" class="import-result" hidden></div>
         </div>
+      </section>
 
+      <!-- Bank Çıxarışı -->
+      <section id="tab-bank" class="tab-panel">
         <div class="card">
           <div class="card-label">Bank çıxarışı kateqoriyalaşdırması</div>
           <div class="form-group">
