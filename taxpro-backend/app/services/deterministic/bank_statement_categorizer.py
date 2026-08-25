@@ -2,8 +2,9 @@
 
 AI/ML yoxdur — yalnız sabit, konfiqurasiya edilə bilən pattern-matching.
 Giriş: meta sətirləri + dinamik başlıq sətri olan .xlsx/.csv çıxarış.
-Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz, yalnız
-Kateqoriya sütunu doldurulur) + ayrıca "Xülasə" sheet-i + summary dict.
+Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
+sütunu doldurulur və onun dərhal sağında sətir-üzrə abs(debit) dəyəri ilə
+"Hesablanan Məbləğ" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i + summary dict.
 
 Kateqoriyalar (yalnız 3, yoxsa boş qalır):
   - "Nağd çəkim komissiyası"  (öncəlik 1: KOMİSİYA-ya düşməməli)
@@ -66,6 +67,9 @@ CATEGORY_RULES: list[tuple[str, list[str]]] = [
 _KOMISIYA_PREFIXES = ("com.", "comm-")
 
 _SUMMARY_SHEET_NAME = "Xülasə"
+
+# Kateqoriya sütununun dərhal sağında əlavə olunan sətir-üzrə məbləğ sütunu.
+_AMOUNT_COLUMN_TITLE = "Hesablanan Məbləğ"
 
 
 def _cell_text(value: Any) -> str:
@@ -195,6 +199,8 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     else:
         cat_col = _last_column(ws) + 1  # 1-əsaslı; yeni sütun olaraq əlavə edilir
         ws.cell(row=header_row_idx + 1, column=cat_col, value="Kateqoriya")
+    amount_col = cat_col + 1  # 1-əsaslı; Kateqoriya-nın dərhal sağı
+    ws.cell(row=header_row_idx + 1, column=amount_col, value=_AMOUNT_COLUMN_TITLE)
 
     summary = _empty_summary()
     for row in ws.iter_rows(min_row=header_row_idx + 2):
@@ -208,6 +214,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         amount = _parse_amount(row[debit_col].value)
         if amount is not None:
             entry["cem"] = float(entry["cem"]) + abs(amount)
+            ws.cell(row=row[0].row, column=amount_col).value = abs(amount)
 
     _add_summary_sheet(wb, summary)
     buf = io.BytesIO()
@@ -245,6 +252,9 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     max_cols = max((len(r) for r in rows), default=0)
     if cat_col is None:
         cat_col = max_cols  # 0-əsaslı yeni sütun
+    cat_col_1 = cat_col + 1  # 1-əsaslı
+    amount_col_1 = cat_col_1 + 1  # 1-əsaslı; Kateqoriya-nın dərhal sağı
+    target_cols = max(max_cols, amount_col_1)
 
     summary = _empty_summary()
     wb = Workbook()
@@ -253,25 +263,28 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
 
     for r_idx, row in enumerate(rows):
         values = list(row)
-        if len(values) < max_cols + 1:
-            values += [""] * (max_cols + 1 - len(values))
+        if len(values) < target_cols:
+            values += [""] * (target_cols - len(values))
         ws.append(values)
 
-        if r_idx == header_row_idx and cat_col == max_cols:
-            ws.cell(row=r_idx + 1, column=cat_col + 1, value="Kateqoriya")
+        if r_idx == header_row_idx:
+            if cat_col == max_cols:
+                ws.cell(row=r_idx + 1, column=cat_col_1, value="Kateqoriya")
+            ws.cell(row=r_idx + 1, column=amount_col_1, value=_AMOUNT_COLUMN_TITLE)
 
         if r_idx > header_row_idx:
             detail = values[details_col] if details_col < len(values) else ""
             category = _match_category(detail)
             if category is None:
                 continue
-            ws.cell(row=r_idx + 1, column=cat_col + 1, value=category)
+            ws.cell(row=r_idx + 1, column=cat_col_1, value=category)
             entry = summary[category]
             entry["say"] = int(entry["say"]) + 1
             debit_value = values[debit_col] if debit_col < len(values) else None
             amount = _parse_amount(debit_value)
             if amount is not None:
                 entry["cem"] = float(entry["cem"]) + abs(amount)
+                ws.cell(row=r_idx + 1, column=amount_col_1, value=abs(amount))
 
     _add_summary_sheet(wb, summary)
     buf = io.BytesIO()

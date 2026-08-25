@@ -116,6 +116,15 @@ def test_categorize_xlsx_sums_absolute_debits():
     assert summary["Nağd çəkim komissiyası"] == {"cem": 0.0, "say": 0}
     assert summary["BANK FAİZ XƏRCİ"] == {"cem": 0.0, "say": 0}
 
+    # Sətir-üzrə Hesablanan Məbləğ sütunu (Kateqoriya-nın dərhal sağı, col10)
+    wb = _reload(out)
+    ws = wb.active
+    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
+    assert ws.cell(row=6, column=10).value == 1234.56   # -1234.56 → abs
+    assert ws.cell(row=7, column=10).value == 1234.56   # "1 234,56" → abs
+    assert ws.cell(row=8, column=10).value is None      # debit boş → boş
+    assert ws.cell(row=9, column=10).value is None      # kateqoriyasız → boş
+
 
 def test_categorize_xlsx_summary_and_meta_preserved():
     rows = [
@@ -153,6 +162,16 @@ def test_categorize_xlsx_summary_and_meta_preserved():
     assert ws.cell(row=12, column=9).value is None
     assert ws.cell(row=8, column=9).value == "Nağd çəkim komissiyası"
 
+    # Hesablanan Məbləğ sütunu: Kateqoriya-nın dərhal sağı (col10), abs(debit)
+    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
+    assert ws.cell(row=6, column=10).value == 5.5
+    assert ws.cell(row=7, column=10).value == 10.0
+    assert ws.cell(row=8, column=10).value == 2.0
+    assert ws.cell(row=9, column=10).value == 3.0
+    assert ws.cell(row=10, column=10).value == 7.25
+    assert ws.cell(row=11, column=10).value == 8.75
+    assert ws.cell(row=12, column=10).value is None
+
     # Xülasə sheet-i
     assert "Xülasə" in wb.sheetnames
     xs = wb["Xülasə"]
@@ -177,9 +196,13 @@ def test_categorize_adds_kateqoriya_column_if_missing():
     wb = _reload(out)
     ws = wb.active
     assert ws.cell(row=5, column=9).value == "Kateqoriya"
+    assert ws.cell(row=5, column=10).value == "Hesablanan Məbləğ"
     assert ws.cell(row=6, column=9).value == "KOMİSİYA"
+    assert ws.cell(row=6, column=10).value == 5.5
     assert ws.cell(row=7, column=9).value == "Nağd çəkim komissiyası"
+    assert ws.cell(row=7, column=10).value == 2.0
     assert ws.cell(row=8, column=9).value is None
+    assert ws.cell(row=8, column=10).value is None
     assert summary["KOMİSİYA"] == {"cem": 5.5, "say": 1}
     assert summary["Nağd çəkim komissiyası"] == {"cem": 2.0, "say": 1}
 
@@ -221,9 +244,13 @@ def test_categorize_csv_to_xlsx():
     ws = wb.active
     assert ws.cell(row=1, column=1).value == "Qurum Adi"
     assert ws.cell(row=3, column=4).value == "Əməliyyat Detalları"
+    assert ws.cell(row=3, column=10).value == "Hesablanan Məbləğ"
     assert ws.cell(row=4, column=9).value == "BANK FAİZ XƏRCİ"
+    assert ws.cell(row=4, column=10).value == 7.25
     assert ws.cell(row=5, column=9).value == "BANK FAİZ XƏRCİ"
+    assert ws.cell(row=5, column=10).value == 8.75
     assert ws.cell(row=6, column=9).value is None
+    assert ws.cell(row=6, column=10).value is None
 
 
 def test_categorize_header_not_found_raises():
