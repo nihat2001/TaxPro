@@ -155,9 +155,6 @@
   }
 
   /* ===== Manual təsnifat (human-in-the-loop) ===== */
-  let reviewFile = null;
-  let reviewUnclassified = [];
-
   function reviewAmount(row) {
     const debit = Number(row.debit);
     const kredit = Number(row.kredit);
@@ -166,9 +163,9 @@
     return null;
   }
 
-  function renderBankReview() {
-    const list = $("bankReviewList");
-    const rows = reviewUnclassified.map((u, i) => {
+  function renderBankReview(state, prefix) {
+    const list = $(prefix + "ReviewList");
+    const rows = state.unclassified.map((u, i) => {
       const amount = reviewAmount(u);
       const amountText =
         amount === null ? "" : `${escapeHtml(formatCem(amount))} AZN`;
@@ -190,14 +187,14 @@
       );
     }).join("");
     list.innerHTML = rows;
-    $("bankReviewTitle").textContent =
-      `${reviewUnclassified.length} əməliyyat tanınmadı, nəzərdən keçirin.`;
-    $("bankReview").hidden = false;
+    $(prefix + "ReviewTitle").textContent =
+      `${state.unclassified.length} əməliyyat tanınmadı, nəzərdən keçirin.`;
+    $(prefix + "Review").hidden = false;
   }
 
-  function collectSelections() {
+  function collectSelections(state) {
     const selections = {};
-    reviewUnclassified.forEach((u, i) => {
+    state.unclassified.forEach((u, i) => {
       const sel = document.querySelector(`select[data-field="review-${i}"]`);
       const value = sel ? sel.value : "";
       selections[u.row_index] = value;
@@ -205,58 +202,70 @@
     return selections;
   }
 
-  async function confirmBankReview() {
-    if (!reviewFile) return;
-    const btn = $("bankReviewConfirmBtn");
-    const resultBox = $("bankStatementResult");
-    btn.disabled = true;
-    btn.textContent = "Yüklənir…";
-    try {
-      const selections = collectSelections();
-      const { blob, summary } = await api.finalizeBankStatement(reviewFile, selections);
-      downloadBlob(blob, "taxpro_bank_cizarsisi_yekun.xlsx");
-      $("bankReview").hidden = true;
-      resultBox.innerHTML = renderBankSummary(summary);
-    } catch (err) {
-      resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Təsdiqlə və yenidən yüklə";
-    }
-  }
+  /* Hər bank kartı öz prefix + state ilə bağlanır. */
+  function bindBankCard(prefix, downloadName) {
+    const state = { file: null, unclassified: [] };
 
-  async function runBankStatement() {
-    const file = $("bankStatementFile").files[0];
-    const btn = $("bankStatementBtn");
-    const resultBox = $("bankStatementResult");
-    resultBox.hidden = true;
-    $("bankReview").hidden = true;
-    if (!file) {
-      showToast("Çıxarış faylı seçin.", "err");
-      return;
-    }
-    btn.disabled = true;
-    btn.textContent = "Yüklənir…";
-    try {
-      const { blob, summary, unclassified } = await api.categorizeBankStatement(file);
-      reviewFile = file;
-      reviewUnclassified = Array.isArray(unclassified) ? unclassified : [];
-
-      if (reviewUnclassified.length === 0) {
-        downloadBlob(blob, "taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx");
+    async function confirmReview() {
+      if (!state.file) return;
+      const btn = $(prefix + "ReviewConfirmBtn");
+      const resultBox = $(prefix + "StatementResult");
+      btn.disabled = true;
+      btn.textContent = "Yüklənir…";
+      try {
+        const selections = collectSelections(state);
+        const { blob, summary } = await api.finalizeBankStatement(state.file, selections);
+        downloadBlob(blob, downloadName.replace(".xlsx", "_yekun.xlsx"));
+        $(prefix + "Review").hidden = true;
         resultBox.innerHTML = renderBankSummary(summary);
-      } else {
-        renderBankReview();
-        resultBox.innerHTML =
-          `<div class="result-box ok">Kateqoriyalaşdırma hazırdır. ` +
-          `${reviewUnclassified.length} əməliyyat nəzərdən keçirmə tələb edir.</div>`;
+      } catch (err) {
+        resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Təsdiqlə və yenidən yüklə";
       }
-    } catch (err) {
-      resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Kateqoriyalaşdır və endir";
-      resultBox.hidden = false;
+    }
+
+    async function run() {
+      const file = $(prefix + "StatementFile").files[0];
+      const btn = $(prefix + "StatementBtn");
+      const resultBox = $(prefix + "StatementResult");
+      resultBox.hidden = true;
+      $(prefix + "Review").hidden = true;
+      if (!file) {
+        showToast("Çıxarış faylı seçin.", "err");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Yüklənir…";
+      try {
+        const { blob, summary, unclassified } = await api.categorizeBankStatement(file);
+        state.file = file;
+        state.unclassified = Array.isArray(unclassified) ? unclassified : [];
+
+        if (state.unclassified.length === 0) {
+          downloadBlob(blob, downloadName);
+          resultBox.innerHTML = renderBankSummary(summary);
+        } else {
+          renderBankReview(state, prefix);
+          resultBox.innerHTML =
+            `<div class="result-box ok">Kateqoriyalaşdırma hazırdır. ` +
+            `${state.unclassified.length} əməliyyat nəzərdən keçirmə tələb edir.</div>`;
+        }
+      } catch (err) {
+        resultBox.innerHTML = `<div class="result-box err">${escapeHtml(err.message)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Kateqoriyalaşdır və endir";
+        resultBox.hidden = false;
+      }
+    }
+
+    if (document.getElementById(prefix + "StatementBtn")) {
+      $(prefix + "StatementBtn").addEventListener("click", run);
+    }
+    if (document.getElementById(prefix + "ReviewConfirmBtn")) {
+      $(prefix + "ReviewConfirmBtn").addEventListener("click", confirmReview);
     }
   }
 
@@ -267,12 +276,8 @@
       e.preventDefault();
       downloadTemplate();
     });
-    if (document.getElementById("bankStatementBtn")) {
-      $("bankStatementBtn").addEventListener("click", runBankStatement);
-    }
-    if (document.getElementById("bankReviewConfirmBtn")) {
-      $("bankReviewConfirmBtn").addEventListener("click", confirmBankReview);
-    }
+    bindBankCard("bank", "taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx");
+    bindBankCard("kapital", "taxpro_kapital_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);

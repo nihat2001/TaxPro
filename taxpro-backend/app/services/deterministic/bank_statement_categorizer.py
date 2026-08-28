@@ -2,6 +2,9 @@
 
 AI/ML yoxdur — yalnız sabit, konfiqurasiya edilə bilən pattern-matching.
 Giriş: meta sətirləri + dinamik başlıq sətri olan .xlsx/.csv çıxarış.
+Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
+  - standard: Əməliyyat Detalları + Debit/Kredit (YapıKredi/AccessBank)
+  - kapital:  № | Tarix | ... | Məbləğ (işarəli) | ... | Təyinat
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -50,6 +53,43 @@ _STATEMENT_COLUMN_FIELDS = {
     "kateqoriya": "kateqoriya",
 }
 
+# ===== Format profilləri =====
+# Hər bank çıxarışı öz sütun strukturuna görə ayrıca emal olunur.
+# "required": başlıq sətrini tanımaq üçün zəruri normalize başlıqlar.
+# "fields": normalize başlıq → kanonik sahə adı (col_map bununla qurulur).
+_FORMAT_PROFILES = [
+    {
+        "name": "standard",  # YapıKredi / AccessBank / ümumi
+        "required": ("emeliyyatdetallari", "debit"),
+        "fields": {
+            "emeliyyattarixi": "emeliyyat_tarixi",
+            "heyatakecmetarixi": "heyata_kechme_tarixi",
+            "gonderenalicimelumatlari": "gonderen_alici",
+            "emeliyyatdetallari": "emeliyyat_detallari",
+            "emeliyyatno": "emeliyyat_no",
+            "kredit": "kredit",
+            "debit": "debit",
+            "balans": "balans",
+            "kateqoriya": "kateqoriya",
+        },
+    },
+    {
+        "name": "kapital",  # Kapital Bank (№ | Tarix | ... | Məbləğ | ... | Təyinat)
+        "required": ("tarix", "mebleg", "teyinat"),
+        "fields": {
+            "tarix": "tarix",
+            "senedinnomresi": "sened_no",
+            "ekshesabinnomresiadivevoeni": "eks_hesab",
+            "mebleg": "mebleg",
+            "valyuta": "valyuta",
+            "azndeyeri": "azn_deyeri",
+            "balans": "balans",
+            "teyinat": "teyinat",
+            "kateqoriya": "kateqoriya",
+        },
+    },
+]
+
 # Kateqoriya qaydaları — sıra vacibdir.
 # Hər sətir: (kateqoriya, normalize edilmiş pattern siyahısı).
 # Pattern-lər normalize edilmiş Əməliyyat Detalları daxilində axtarılır.
@@ -95,6 +135,9 @@ TAX_AUTHORITY_KEYWORDS: list[str] = [
     "MİLLİ GƏLİR DEPARTAMENTİ",
     "DÖVLƏT RÜSUMU",
     "DOVLET RUSUMU",
+    "VERGİ XİDMƏTİ",
+    "VERGI XIDMETI",
+    "VERGI XIDMATI",
 ]
 
 # MAAŞ MƏXARİC üçün normalize edilmiş detail pattern-ləri.
@@ -170,10 +213,13 @@ def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | 
         return "KOMİSİYA"
 
     norm_detail = normalize_text(text)
-    for category, patterns in CATEGORY_RULES:
-        for pattern in patterns:
-            if pattern in norm_detail:
-                return category
+    for i, (category, patterns) in enumerate(CATEGORY_RULES):
+        if i == 0:
+            matched = _match_nagd_cekim(norm_detail)
+        else:
+            matched = any(p in norm_detail for p in patterns)
+        if matched:
+            return category
 
     debit_filled = _has_amount(debit)
     kredit_filled = _has_amount(kredit)
@@ -204,6 +250,57 @@ def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | 
             return "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
 
     return None
+
+
+_NAGD_CEKIM_PATTERNS = [
+    "nakitcekmekomisyonu",
+    "nagdcekimkomisyonu",
+    "1faiznagdcekim",
+]
+
+# Çevik variantlar: "1 faiz" VƏ (naglashdirma/nagd/cekim/cektirme) birlikdə.
+_NAGD_CEKIM_FLEX_TOKEN = "1faiz"
+_NAGD_CEKIM_FLEX_WITH = ("naglashdirma", "nagd", "cekim", "cektirme")
+
+
+def _match_nagd_cekim(norm_detail: str) -> bool:
+    """Nağd çəkim komissiyası: sabit pattern-lər VƏ ya çevik birləşmə."""
+    if any(p in norm_detail for p in _NAGD_CEKIM_PATTERNS):
+        return True
+    if _NAGD_CEKIM_FLEX_TOKEN in norm_detail and any(
+        t in norm_detail for t in _NAGD_CEKIM_FLEX_WITH
+    ):
+        return True
+    return False
+
+
+def _extract_sender_name(raw_cell: Any) -> str:
+    """'IBAN / AD / VÖEN' formatından ad hissəsini ayırır.
+
+    "/" ilə split; 3+ hissə → orta (index 1), 2 hissə → ikinci,
+    başqa halda tam mətn (IBAN və ya ad).
+    """
+    text = _cell_text(raw_cell)
+    if not text:
+        return ""
+    parts = [p.strip() for p in text.split("/") if p.strip()]
+    if len(parts) >= 2:
+        return parts[1]
+    return text
+
+
+def _split_signed_amount(value: Any) -> tuple[str | None, str | None]:
+    """İşarəli Məbləği (Kapital) debit/kredit-ə ayırır.
+
+    Mənfi → (abs, None) [debit/pul çıxır]; müsbət → (None, abs) [kredit].
+    """
+    amount = _parse_amount(value)
+    if amount is None or amount == 0:
+        return None, None
+    text = str(int(amount)) if amount == int(amount) else str(amount)
+    if amount < 0:
+        return text.replace("-", ""), None
+    return None, text
 
 
 def _has_amount(value: Any) -> bool:
@@ -241,18 +338,25 @@ def _sender_has(sender: Any, tokens) -> bool:
     return any(t in norm_sender for t in tokens)
 
 
-def _find_header_row(rows: list[list[Any]]) -> tuple[int, dict[str, int]] | None:
-    """Dinamik başlıq sətrini tapır: həm sətir indeksini, həm də
-    sütun xəritəsini qaytarır (normalize başlıq → 0-əsaslı sütun idx).
+def _find_header_row(rows: list[list[Any]]) -> tuple[int, dict[str, int], str] | None:
+    """Dinamik başlıq sətrini format profilinə görə tapır.
+
+    Qaytarır: (sətir idx, kanonik sahə → sütun idx xəritəsi, profil adı).
+    Hər profil öz required başlıqları ilə tanınır; ilk uyğun gələn qalib gəlir.
     """
     for idx, row in enumerate(rows):
-        col_map: dict[str, int] = {}
+        raw_map: dict[str, int] = {}
         for col_idx, value in enumerate(row):
             key = normalize_text(_cell_text(value))
             if key:
-                col_map[key] = col_idx
-        if all(field in col_map for field in _REQUIRED_HEADER_FIELDS):
-            return idx, col_map
+                raw_map[key] = col_idx
+        for profile in _FORMAT_PROFILES:
+            if all(req in raw_map for req in profile["required"]):
+                col_map: dict[str, int] = {}
+                for norm, field in profile["fields"].items():
+                    if norm in raw_map:
+                        col_map[field] = raw_map[norm]
+                return idx, col_map, profile["name"]
     return None
 
 
@@ -374,23 +478,29 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     ws = None
     header_row_idx = None
     col_map = None
+    profile = None
     for sheet in wb.worksheets:
         rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
         found = _find_header_row(rows)
         if found is not None:
             ws = sheet
-            header_row_idx, col_map = found
+            header_row_idx, col_map, profile = found
             break
     if ws is None:
         raise ValueError(
-            "Başlıq sətri tapılmadı. 'Əməliyyat Detalları' və 'Debit' "
-            "sütunları olan sətri axtarın."
+            "Başlıq sətri tapılmadı. 'Əməliyyat Detalları'+'Debit' və ya "
+            "'Tarix'+'Məbləğ'+'Təyinat' sütunları olan sətri axtarın."
         )
 
-    details_col = col_map["emeliyyatdetallari"]  # 0-əsaslı
-    debit_col = col_map["debit"]  # 0-əsaslı
-    sender_col = col_map.get("gonderenalicimelumatlari")
-    kredit_col = col_map.get("kredit")
+    if profile == "kapital":
+        teyinat_col = col_map["teyinat"]
+        mebleg_col = col_map["mebleg"]
+        eks_hesab_col = col_map.get("eks_hesab")
+    else:
+        details_col = col_map["emeliyyat_detallari"]  # 0-əsaslı
+        debit_col = col_map["debit"]  # 0-əsaslı
+        sender_col = col_map.get("gonderen_alici")
+        kredit_col = col_map.get("kredit")
     if "kateqoriya" in col_map:
         cat_col = col_map["kateqoriya"] + 1  # 1-əsaslı
     else:
@@ -402,10 +512,19 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     summary = _empty_summary()
     unclassified: list[dict] = []
     for row in ws.iter_rows(min_row=header_row_idx + 2):
-        detail = row[details_col].value
-        sender = row[sender_col].value if sender_col is not None else None
-        kredit = row[kredit_col].value if kredit_col is not None else None
-        debit = row[debit_col].value
+        if profile == "kapital":
+            sender = (
+                _extract_sender_name(row[eks_hesab_col].value)
+                if eks_hesab_col is not None
+                else ""
+            )
+            detail = row[teyinat_col].value
+            debit, kredit = _split_signed_amount(row[mebleg_col].value)
+        else:
+            detail = row[details_col].value
+            sender = row[sender_col].value if sender_col is not None else None
+            kredit = row[kredit_col].value if kredit_col is not None else None
+            debit = row[debit_col].value
         category = _match_category(sender, detail, kredit, debit)
         if category is None:
             unclassified.append(
@@ -455,15 +574,20 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     found = _find_header_row(rows)
     if found is None:
         raise ValueError(
-            "Başlıq sətri tapılmadı. 'Əməliyyat Detalları' və 'Debit' "
-            "sütunları olan sətri axtarın."
+            "Başlıq sətri tapılmadı. 'Əməliyyat Detalları'+'Debit' və ya "
+            "'Tarix'+'Məbləğ'+'Təyinat' sütunları olan sətri axtarın."
         )
-    header_row_idx, col_map = found
+    header_row_idx, col_map, profile = found
 
-    details_col = col_map["emeliyyatdetallari"]
-    debit_col = col_map["debit"]
-    sender_col = col_map.get("gonderenalicimelumatlari")
-    kredit_col = col_map.get("kredit")
+    if profile == "kapital":
+        teyinat_col = col_map["teyinat"]
+        mebleg_col = col_map["mebleg"]
+        eks_hesab_col = col_map.get("eks_hesab")
+    else:
+        details_col = col_map["emeliyyat_detallari"]
+        debit_col = col_map["debit"]
+        sender_col = col_map.get("gonderen_alici")
+        kredit_col = col_map.get("kredit")
     cat_col = col_map.get("kateqoriya")
     max_cols = max((len(r) for r in rows), default=0)
     if cat_col is None:
@@ -490,18 +614,29 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             ws.cell(row=r_idx + 1, column=amount_col_1, value=_AMOUNT_COLUMN_TITLE)
 
         if r_idx > header_row_idx:
-            detail = values[details_col] if details_col < len(values) else ""
-            sender = (
-                values[sender_col]
-                if sender_col is not None and sender_col < len(values)
-                else ""
-            )
-            kredit = (
-                values[kredit_col]
-                if kredit_col is not None and kredit_col < len(values)
-                else None
-            )
-            debit_value = values[debit_col] if debit_col < len(values) else None
+            if profile == "kapital":
+                sender = (
+                    _extract_sender_name(values[eks_hesab_col])
+                    if eks_hesab_col is not None and eks_hesab_col < len(values)
+                    else ""
+                )
+                detail = values[teyinat_col] if teyinat_col < len(values) else ""
+                debit_value, kredit = _split_signed_amount(
+                    values[mebleg_col] if mebleg_col < len(values) else None
+                )
+            else:
+                detail = values[details_col] if details_col < len(values) else ""
+                sender = (
+                    values[sender_col]
+                    if sender_col is not None and sender_col < len(values)
+                    else ""
+                )
+                kredit = (
+                    values[kredit_col]
+                    if kredit_col is not None and kredit_col < len(values)
+                    else None
+                )
+                debit_value = values[debit_col] if debit_col < len(values) else None
             category = _match_category(sender, detail, kredit, debit_value)
             if category is None:
                 unclassified.append(
@@ -517,7 +652,6 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             ws.cell(row=r_idx + 1, column=cat_col_1, value=category)
             entry = summary[category]
             entry["say"] = int(entry["say"]) + 1
-            debit_value = values[debit_col] if debit_col < len(values) else None
             amount = _row_amount(debit_value, kredit)
             if amount is not None:
                 entry["cem"] = float(entry["cem"]) + amount
@@ -567,14 +701,18 @@ def _locate_columns(wb):
         rows = [[cell.value for cell in row] for row in sheet.iter_rows()]
         found = _find_header_row(rows)
         if found is not None:
-            header_row_idx, col_map = found
+            header_row_idx, col_map, profile = found
             header_row = header_row_idx + 1
             cat_col = col_map["kateqoriya"] + 1
             amount_col = cat_col + 1
-            debit_col = col_map["debit"] + 1
-            kredit = col_map.get("kredit")
-            kredit_col = kredit + 1 if kredit is not None else None
-            return sheet, header_row, cat_col, amount_col, debit_col, kredit_col
+            debit_col = kredit_col = mebleg_col = None
+            if profile == "kapital":
+                mebleg_col = col_map["mebleg"] + 1
+            else:
+                debit_col = col_map["debit"] + 1
+                kredit = col_map.get("kredit")
+                kredit_col = kredit + 1 if kredit is not None else None
+            return sheet, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col
     raise ValueError("Kateqoriyalaşdırılmış faylda başlıq sətri tapılmadı.")
 
 
@@ -615,14 +753,20 @@ def finalize_statement(raw_bytes: bytes, selections: dict[int, str]) -> tuple[by
         parsed[row_index] = category
 
     wb = load_workbook(io.BytesIO(out_bytes))
-    ws, header_row, cat_col, amount_col, debit_col, kredit_col = _locate_columns(wb)
+    (ws, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col) = (
+        _locate_columns(wb)
+    )
 
     for row_index, category in parsed.items():
         if not category:
             continue  # "kateqoriyasız qalsın"
         ws.cell(row=row_index, column=cat_col).value = category
-        debit = ws.cell(row=row_index, column=debit_col).value if debit_col else None
-        kredit = ws.cell(row=row_index, column=kredit_col).value if kredit_col else None
+        if profile == "kapital":
+            mebleg = ws.cell(row=row_index, column=mebleg_col).value
+            debit, kredit = _split_signed_amount(mebleg)
+        else:
+            debit = ws.cell(row=row_index, column=debit_col).value if debit_col else None
+            kredit = ws.cell(row=row_index, column=kredit_col).value if kredit_col else None
         amount = _row_amount(debit, kredit)
         if amount is not None:
             ws.cell(row=row_index, column=amount_col).value = amount

@@ -4,7 +4,9 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.services.deterministic.bank_statement_categorizer import (
+    _extract_sender_name,
     _match_category,
+    _split_signed_amount,
     categorize_statement,
     categorize_statement_verbose,
     finalize_statement,
@@ -633,3 +635,125 @@ def test_finalize_empty_selections():
     assert summary["KOMİSİYA"] == {"cem": 5.5, "say": 1}
     wb = _reload(out)
     assert wb.active.title == "Xülasə"
+
+
+# ===== Kapital Bank format dəstəyi =====
+
+KAPITAL_HEADER = [
+    "№",
+    "Tarix",
+    "Sənədin nömrəsi",
+    "Əks hesabın nömrəsi, adı və vöen-i",
+    "Məbləğ",
+    "Valyuta",
+    "AZN dəyəri",
+    "Balans",
+    "Təyinat",
+]
+
+
+def _kapital_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(KAPITAL_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def test_kapital_extract_sender_name():
+    assert (
+        _extract_sender_name("AZ10AIIB00000100100001944221 / KAPITAL / 9900003611")
+        == "KAPITAL"
+    )
+    assert (
+        _extract_sender_name("AZ95AIIB410450D9441426 / FAHRADOV TALA T")
+        == "FAHRADOV TALA T"
+    )
+    assert _extract_sender_name("AZ95AIIB410450D9441426") == "AZ95AIIB410450D9441426"
+    assert _extract_sender_name("") == ""
+    assert _extract_sender_name(None) == ""
+
+
+def test_kapital_split_signed_amount():
+    assert _split_signed_amount("-1750") == ("1750", None)
+    assert _split_signed_amount("2080") == (None, "2080")
+    assert _split_signed_amount("-17.5") == ("17.5", None)
+    assert _split_signed_amount("0") == (None, None)
+    assert _split_signed_amount("") == (None, None)
+    assert _split_signed_amount(None) == (None, None)
+
+
+def test_match_nagd_cekim_flexible():
+    assert (
+        _match_category(
+            "", "hesabindan naglashdirma ucun 1 faiz vergi meblegi", None, "-17.50"
+        )
+        == "Nağd çəkim komissiyası"
+    )
+
+
+def test_match_dovlat_vergi_xidmati():
+    assert (
+        _match_category("", "Dovlat Vergi Xidmati", None, "-90.40")
+        == "VERGİ MƏXARİC"
+    )
+
+
+def test_kapital_end_to_end():
+    rows = [
+        [1, "2022-12-15", "4351627793", "AZ10AIIB00000100100001944221 / KAPITAL / 9900003611", 2080, "AZN", 2080, 2080, "mal uchun muqavile"],
+        [2, "2022-12-16", "4359350403", "AZ95AIIB410450D9441426 / FAHRADOV TALA T", -1750, "AZN", -1750, 330, "MAL VƏ XİDMƏT ÜZRƏ ÖDƏ"],
+        [3, "2022-12-16", "4359350411", "AZ64AIIB00000451090004 / Dovlat Vergi Xidmati / 9900001111", -17.5, "AZN", -17.5, 312.5, "hesabindan naglashdirma ucun 1 faiz vergi meblegi"],
+        [4, "2022-12-16", "4359350433", "AZ11AIIB00000670100001 / Dovlat Vergi Xidmati / 9900001111", -8.75, "AZN", -8.75, 303.75, "Dovlat Vergi Xidmati"],
+    ]
+    out, summary, _ = categorize_statement_verbose(_kapital_xlsx(rows))
+    assert summary["Nağd çəkim komissiyası"] == {"cem": 17.5, "say": 1}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 8.75, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 2080.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1750.0, "say": 1}
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=2, column=10).value == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert main.cell(row=3, column=10).value == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert main.cell(row=4, column=10).value == "Nağd çəkim komissiyası"
+    assert main.cell(row=5, column=10).value == "VERGİ MƏXARİC"
+    assert main.cell(row=2, column=11).value == 2080.0  # İcmal (kredit)
+    assert main.cell(row=3, column=11).value == 1750.0  # İcmal (debit)
+
+
+def test_kapital_csv():
+    import csv as csv_mod
+
+    buf = io.StringIO()
+    writer = csv_mod.writer(buf)
+    writer.writerow(KAPITAL_HEADER)
+    writer.writerow([1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal uchun"])
+    writer.writerow([2, "2022-12-16", "y", "AZ / FAHRADOV / 2", -50, "AZN", -50, 50, "odenis"])
+    raw = buf.getvalue().encode("utf-8")
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 50.0, "say": 1}
+
+
+def test_formats_independent_sequential():
+    """YapıKredi (standard) + Kapital eyni sessiyada ardıcıl — təsirsiz."""
+    std = _xlsx_bytes(
+        META,
+        STD_HEADER,
+        [_row("Com. bank komissiyası", "-5.50", "1"), _row("ALIS VERIS", "-100.00", "2")],
+    )
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s2, _ = categorize_statement_verbose(kap)
+    assert s2["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    _, s1b, _ = categorize_statement_verbose(std)
+    assert s1b["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+    assert s1b["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 0
