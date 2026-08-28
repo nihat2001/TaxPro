@@ -152,7 +152,8 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    // Blob URL-ni dərhal revoke etmək Chrome-da download-ı kəsə bilər.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   /* ===== Manual təsnifat (human-in-the-loop) ===== */
@@ -183,7 +184,7 @@
         `<div class="review-sender">${escapeHtml(u.sender || "")}</div>` +
         `</div>` +
         `<div class="review-amount">${amountText}</div>` +
-        `<select class="review-select" data-field="review-${i}">${options}</select>` +
+        `<select class="review-select" data-field="${prefix}-review-${i}">${options}</select>` +
         `</div>`
       );
     }).join("");
@@ -193,10 +194,11 @@
     $(prefix + "Review").hidden = false;
   }
 
-  function collectSelections(state) {
+  function collectSelections(state, prefix) {
     const selections = {};
+    const list = $(prefix + "ReviewList");
     state.unclassified.forEach((u, i) => {
-      const sel = document.querySelector(`select[data-field="review-${i}"]`);
+      const sel = list.querySelector(`select[data-field="${prefix}-review-${i}"]`);
       const value = sel ? sel.value : "";
       selections[u.row_index] = value;
     });
@@ -214,7 +216,7 @@
       btn.disabled = true;
       btn.textContent = "Yüklənir…";
       try {
-        const selections = collectSelections(state);
+        const selections = collectSelections(state, prefix);
         const { blob, summary } = await api.finalizeBankStatement(state.file, selections);
         downloadBlob(blob, downloadName.replace(".xlsx", "_yekun.xlsx"));
         $(prefix + "Review").hidden = true;
