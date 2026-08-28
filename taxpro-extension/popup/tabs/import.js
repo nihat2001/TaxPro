@@ -116,6 +116,7 @@
     "TƏSİSÇİDƏN BORC",
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+    "Terminal-Komissiya",
   ];
 
   function formatCem(value) {

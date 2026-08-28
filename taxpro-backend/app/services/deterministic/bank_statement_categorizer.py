@@ -21,6 +21,7 @@ Kateqoriyalar (prioritet sırası ilə, yoxsa boş qalır):
   8. "TƏSİSÇİDƏN BORC"         (sender NAGD YATIRMA/CASH DEPOSIT — kredit və ya debit)
   9. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
   10. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
+  11. "Terminal-Komissiya"       (kapital: Pos-Terminal ∧ Xidmət haqqı; İcmal = fee)
 1-3 detail pattern-ləri CATEGORY_RULES ilə; 4-10 üçün VAT_PATTERNS,
 DUTY_PATTERNS, TAX_AUTHORITY_KEYWORDS, SALARY_PATTERNS, _FOUNDER_*
 sabitləri istifadə olunur. Sıra önəmlidir — daha spesifik olanlar əvvəl
@@ -29,6 +30,8 @@ yoxlanır. Sender tamamilə boş olan sətirlər kateqoriyasız qalır.
 
 import csv
 import io
+import logging
+import re
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
@@ -36,6 +39,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.services.deterministic.excel_parser import detect_format, normalize_text
+
+logger = logging.getLogger(__name__)
 
 # Başlıq sətrinin tapılması üçün mütləq tələb olunan sütunlar.
 _REQUIRED_HEADER_FIELDS = ("emeliyyatdetallari", "debit")
@@ -122,6 +127,9 @@ _KOMISIYA_PREFIXES = ("com.", "comm-")
 # Kapital profilində KOMİSİYA üçün ƏLAVƏ açar sözlər (yalnız kapital aktiv olanda).
 _KOMISIYA_KAPITAL_PATTERNS: tuple[str, ...] = ("xidmethaqqi",)
 
+# Terminal-Komissiya (kapital): Təyinat-da 'Pos-Terminal' VƏ 'Xidmət haqqı'.
+_TERMINAL_FEE_RE = re.compile(r"[Xx]idm[əe]t haqq[ıi]:\s*-?([\d.,]+)\s*AZN")
+
 
 def _match_kapital_komisiya(norm_detail: str) -> bool:
     """Kapital KOMİSİYA əlavəsi: 'xidmət haqqı' (maaş-xaric).
@@ -134,6 +142,34 @@ def _match_kapital_komisiya(norm_detail: str) -> bool:
     if any(p in norm_detail for p in SALARY_PATTERNS):
         return False
     return True
+
+
+def _match_terminal_komissiya(norm_detail: str) -> bool:
+    """Terminal-Komissiya (yalnız kapital): Pos-Terminal ∧ Xidmət haqqı."""
+    return "posterminal" in norm_detail and "xidmethaqqi" in norm_detail
+
+
+def _extract_terminal_fee(detail: Any) -> float | None:
+    """Təyinat mətnindən 'Xidmət haqqı: N AZN' rəqəmini çıxarır (abs).
+
+    Regex uyğun gəlməzsə None qaytarır (çağıran abs(Məbləğ)-ə düşür).
+    """
+    text = _cell_text(detail)
+    match = _TERMINAL_FEE_RE.search(text)
+    if not match:
+        return None
+    raw = match.group(1)
+    normalized = raw.replace(" ", "")
+    if "," in normalized:
+        normalized = normalized.replace(".", "").replace(",", ".")
+    else:
+        parts = normalized.split(".")
+        if len(parts) > 2:
+            normalized = "".join(parts[:-1]) + "." + parts[-1]
+    try:
+        return abs(float(normalized))
+    except ValueError:
+        return None
 
 # ===== Kateqoriya konfiqurasiyaları (genişlənə bilən) =====
 
@@ -177,6 +213,7 @@ _CATEGORY_ORDER: list[str] = [name for name, _ in CATEGORY_RULES] + [
     "TƏSİSÇİDƏN BORC",
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+    "Terminal-Komissiya",
 ]
 
 _SUMMARY_SHEET_NAME = "Xülasə"
@@ -223,12 +260,13 @@ def _match_category(
 ) -> str | None:
     """Sətir kontekstini prioritet sırası ilə kateqoriyalaşdırır.
 
-    Sıra: 1) Com./COMM- → KOMİSİYA; 2) CATEGORY_RULES (Nağd çəkim →
+    Sıra: 1) Com./COMM- → KOMİSİYA; 2) kapital 'Terminal-Komissiya'
+    (Pos-Terminal ∧ Xidmət haqqı); 3) CATEGORY_RULES (Nağd çəkim →
     KOMİSİYA → BANK FAİZ) + kapital-profil 'xidmət haqqı' KOMİSİYA əlavəsi;
-    3) ƏDV ÖDƏNİŞİ; 4) RÜSUM; 5) VERGİ MƏXARİC; 6) MAAŞ MƏXARİC;
-    7) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT, hər iki
-    istiqamət); 8) catch-all: sender boş deyilsə Kredit → DİGƏR ŞİRKƏT
-    DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 9) None.
+    4) ƏDV ÖDƏNİŞİ; 5) RÜSUM; 6) VERGİ MƏXARİC; 7) MAAŞ MƏXARİC;
+    8) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT, hər iki
+    istiqamət); 9) catch-all: sender boş deyilsə Kredit → DİGƏR ŞİRKƏT
+    DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 10) None.
     """
     text = _cell_text(detail)
     lowered = text.lower()
@@ -236,6 +274,12 @@ def _match_category(
         return "KOMİSİYA"
 
     norm_detail = normalize_text(text)
+
+    # Terminal-Komissiya (kapital): Pos-Terminal ∧ Xidmət haqqı —
+    # ümumi KOMİSİYA-dan əvvəl yoxlanılır (daha spesifik).
+    if profile == "kapital" and _match_terminal_komissiya(norm_detail):
+        return "Terminal-Komissiya"
+
     for i, (category, patterns) in enumerate(CATEGORY_RULES):
         if i == 0:
             matched = _match_nagd_cekim(norm_detail)
@@ -568,6 +612,16 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         entry = summary[category]
         entry["say"] = int(entry["say"]) + 1
         amount = _row_amount(debit, kredit)
+        if category == "Terminal-Komissiya":
+            fee = _extract_terminal_fee(detail)
+            if fee is not None:
+                amount = fee
+            else:
+                logger.warning(
+                    "Terminal-Komissiya sətirində 'Xidmət haqqı' tapılmadı; "
+                    "abs(Məbləğ) istifadə olunur",
+                    extra={"row": row[0].row},
+                )
         if amount is not None:
             entry["cem"] = float(entry["cem"]) + amount
             ws.cell(row=row[0].row, column=amount_col).value = amount
@@ -680,6 +734,16 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             entry = summary[category]
             entry["say"] = int(entry["say"]) + 1
             amount = _row_amount(debit_value, kredit)
+            if category == "Terminal-Komissiya":
+                fee = _extract_terminal_fee(detail)
+                if fee is not None:
+                    amount = fee
+                else:
+                    logger.warning(
+                        "Terminal-Komissiya sətirində 'Xidmət haqqı' tapılmadı; "
+                        "abs(Məbləğ) istifadə olunur",
+                        extra={"row": r_idx + 1},
+                    )
             if amount is not None:
                 entry["cem"] = float(entry["cem"]) + amount
                 ws.cell(row=r_idx + 1, column=amount_col_1, value=amount)

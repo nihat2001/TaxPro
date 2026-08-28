@@ -5,6 +5,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.services.deterministic.bank_statement_categorizer import (
     _extract_sender_name,
+    _extract_terminal_fee,
     _match_category,
     _split_signed_amount,
     categorize_statement,
@@ -283,7 +284,7 @@ def test_priority_vergi_over_company_payment():
     )
 
 
-def test_summary_has_ten_categories():
+def test_summary_has_eleven_categories():
     out, summary = categorize_statement(
         _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
     )
@@ -298,6 +299,7 @@ def test_summary_has_ten_categories():
         "TƏSİSÇİDƏN BORC",
         "DİGƏR ŞİRKƏT DAXİL OLMALAR",
         "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
+        "Terminal-Komissiya",
     }
 
 
@@ -749,6 +751,76 @@ def test_kapital_xidmet_haqqi_end_to_end():
     _, summary, _ = categorize_statement_verbose(_kapital_xlsx(rows))
     assert summary["KOMİSİYA"] == {"cem": 6.0, "say": 2}
     assert summary["MAAŞ MƏXARİC"] == {"cem": 5.0, "say": 1}
+
+
+# ===== Terminal-Komissiya (kapital) =====
+
+POS_EXAMPLE = (
+    "260915324944221 Pos-Terminal üzrə əməliyyatlar. "
+    "Ödəniş məbləği: 1.02 AZN, Xidmət haqqı: -.04 AZN"
+)
+
+
+def test_extract_terminal_fee():
+    assert _extract_terminal_fee(POS_EXAMPLE) == 0.04
+    assert _extract_terminal_fee("Xidmət haqqı: -0.30 AZN PGDR...") == 0.3
+    assert _extract_terminal_fee("Xidmət haqqı: -1.28 AZN") == 1.28
+    assert _extract_terminal_fee("Xidmət haqqı: 1,28 AZN") == 1.28
+    assert _extract_terminal_fee("Xidmət haqqı: 1.1 AZN") == 1.1
+    assert _extract_terminal_fee("Xidmət haqqı: -0.30 AZN") == 0.3
+    assert _extract_terminal_fee("adi əməliyyat") is None
+    assert _extract_terminal_fee("") is None
+    assert _extract_terminal_fee(None) is None
+
+
+def test_terminal_komissiya_kapital():
+    assert (
+        _match_category("", POS_EXAMPLE, None, "-0.98", profile="kapital")
+        == "Terminal-Komissiya"
+    )
+
+
+def test_terminal_komissiya_standard_inactive():
+    """Standard profildə Pos-Terminal ∧ Xidmət haqqı → Terminal-Komissiya deyil."""
+    assert (
+        _match_category("", POS_EXAMPLE, None, "-0.98") != "Terminal-Komissiya"
+    )
+
+
+def test_terminal_komissiya_no_pos_terminal_stays_komisiya():
+    """Pos-Terminal yoxdursa adi 'xidmət haqqı' KOMİSİYA-da qalır."""
+    assert (
+        _match_category(
+            "", "Nağdsız köçürmə üzrə xidmət haqqı 4.00(AZN)", None, "-4.00",
+            profile="kapital",
+        )
+        == "KOMİSİYA"
+    )
+
+
+def test_terminal_komissiya_end_to_end_icmal_fee():
+    rows = [
+        [1, "2022-12-15", "x", "AZ / KAPITAL / 1", 0.98, "AZN", 0.98, 100, POS_EXAMPLE],
+        [2, "2022-12-15", "y", "AZ / KAPITAL / 1", 3.94, "AZN", 3.94, 96, "260915324944221 Pos-Terminal üzrə əməliyyatlar. Ödəniş məbləği: 4 AZN, Xidmət haqqı: -0.06 AZN"],
+    ]
+    out, summary, _ = categorize_statement_verbose(_kapital_xlsx(rows))
+    assert summary["Terminal-Komissiya"] == {"cem": 0.1, "say": 2}
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=2, column=10).value == "Terminal-Komissiya"
+    assert main.cell(row=2, column=11).value == 0.04  # İcmal = fee, Məbləğ 0.98 deyil
+    assert main.cell(row=3, column=10).value == "Terminal-Komissiya"
+    assert main.cell(row=3, column=11).value == 0.06
+    xs = wb["Xülasə"]
+    cats = [r[0] for r in xs.iter_rows(values_only=True)]
+    assert "Terminal-Komissiya" in cats
+
+
+def test_terminal_komissiya_fallback_abs_mebleg():
+    """Regex uyğun gəlməzsə abs(Məbləğ) istifadə olunur."""
+    row = [1, "2022-12-15", "x", "AZ / KAPITAL / 1", -7.5, "AZN", -7.5, 92.5, "Pos-Terminal üzrə əməliyyat. Xidmət haqqı yoxdur"]
+    _, summary, _ = categorize_statement_verbose(_kapital_xlsx([row]))
+    assert summary["Terminal-Komissiya"] == {"cem": 7.5, "say": 1}
 
 
 def test_kapital_end_to_end():
