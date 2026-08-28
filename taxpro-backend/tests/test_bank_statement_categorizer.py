@@ -703,6 +703,54 @@ def test_match_dovlat_vergi_xidmati():
     )
 
 
+def test_kapital_xidmet_haqqi_komisiya():
+    assert (
+        _match_category(
+            "", "530392404 saylı əməliyyat üzrə xidmət haqqı", None, "-2.00",
+            profile="kapital",
+        )
+        == "KOMİSİYA"
+    )
+    assert (
+        _match_category(
+            "", "Nağdsız köçürmə üzrə xidmət haqqı 4.00(AZN)", None, "-4.00",
+            profile="kapital",
+        )
+        == "KOMİSİYA"
+    )
+
+
+def test_kapital_emek_haqqi_xidmet_haqqi_stays_maas():
+    """'Emek haqqi kartlarinin xidmet haqqi' MAAŞ MƏXARİC-də qalmalıdır."""
+    assert (
+        _match_category(
+            "", "Emek haqqi kartlarinin xidmet haqqi. BatchId = 123", None, "-5.00",
+            profile="kapital",
+        )
+        == "MAAŞ MƏXARİC"
+    )
+
+
+def test_standard_profile_ignores_xidmet_haqqi():
+    """Standard profilində 'xidmət haqqı' KOMİSİYA-ya düşmür (izolyasiya)."""
+    result = _match_category(
+        "Azpetrol MMC", "Nağdsız köçürmə üzrə xidmət haqqı", None, "-4.00"
+    )
+    assert result != "KOMİSİYA"
+    assert result == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_kapital_xidmet_haqqi_end_to_end():
+    rows = [
+        [1, "2022-12-15", "x", "AZ / KAPITAL / 1", -2.0, "AZN", -2.0, 100, "530392404 saylı əməliyyat üzrə xidmət haqqı"],
+        [2, "2022-12-15", "y", "AZ / KAPITAL / 1", -4.0, "AZN", -4.0, 96, "Nağdsız köçürmə üzrə xidmət haqqı 4.00(AZN)"],
+        [3, "2022-12-15", "z", "AZ / KAPITAL / 1", -5.0, "AZN", -5.0, 91, "Emek haqqi kartlarinin xidmet haqqi. BatchId = 1"],
+    ]
+    _, summary, _ = categorize_statement_verbose(_kapital_xlsx(rows))
+    assert summary["KOMİSİYA"] == {"cem": 6.0, "say": 2}
+    assert summary["MAAŞ MƏXARİC"] == {"cem": 5.0, "say": 1}
+
+
 def test_kapital_end_to_end():
     rows = [
         [1, "2022-12-15", "4351627793", "AZ10AIIB00000100100001944221 / KAPITAL / 9900003611", 2080, "AZN", 2080, 2080, "mal uchun muqavile"],

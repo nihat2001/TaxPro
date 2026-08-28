@@ -119,6 +119,22 @@ CATEGORY_RULES: list[tuple[str, list[str]]] = [
 # KOMİSİYA üçün başlanğıc (prefix) qaydaları — normalize etmədən yoxlanır.
 _KOMISIYA_PREFIXES = ("com.", "comm-")
 
+# Kapital profilində KOMİSİYA üçün ƏLAVƏ açar sözlər (yalnız kapital aktiv olanda).
+_KOMISIYA_KAPITAL_PATTERNS: tuple[str, ...] = ("xidmethaqqi",)
+
+
+def _match_kapital_komisiya(norm_detail: str) -> bool:
+    """Kapital KOMİSİYA əlavəsi: 'xidmət haqqı' (maaş-xaric).
+
+    Maaş pattern-i ('emekhaqq'/'maasodemesi'/'maaspaket') varsa KOMİSİYA
+    deyil — belə sətirlər MAAŞ MƏXARİC-ə qalır (reqressiya qorunur).
+    """
+    if not any(p in norm_detail for p in _KOMISIYA_KAPITAL_PATTERNS):
+        return False
+    if any(p in norm_detail for p in SALARY_PATTERNS):
+        return False
+    return True
+
 # ===== Kateqoriya konfiqurasiyaları (genişlənə bilən) =====
 
 # Dövlət/vergi orqanı açar sözləri — VERGİ MƏXARİC üçün (sender və ya detail).
@@ -198,14 +214,21 @@ def _cell_display(value: Any) -> str | None:
     return text if text else None
 
 
-def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | None:
+def _match_category(
+    sender: Any,
+    detail: Any,
+    kredit: Any,
+    debit: Any,
+    profile: str = "standard",
+) -> str | None:
     """Sətir kontekstini prioritet sırası ilə kateqoriyalaşdırır.
 
     Sıra: 1) Com./COMM- → KOMİSİYA; 2) CATEGORY_RULES (Nağd çəkim →
-    KOMİSİYA → BANK FAİZ); 3) ƏDV ÖDƏNİŞİ; 4) RÜSUM; 5) VERGİ MƏXARİC;
-    6) MAAŞ MƏXARİC; 7) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT,
-    hər iki istiqamət); 8) catch-all: sender boş deyilsə Kredit → DİGƏR
-    ŞİRKƏT DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 9) None.
+    KOMİSİYA → BANK FAİZ) + kapital-profil 'xidmət haqqı' KOMİSİYA əlavəsi;
+    3) ƏDV ÖDƏNİŞİ; 4) RÜSUM; 5) VERGİ MƏXARİC; 6) MAAŞ MƏXARİC;
+    7) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT, hər iki
+    istiqamət); 8) catch-all: sender boş deyilsə Kredit → DİGƏR ŞİRKƏT
+    DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 9) None.
     """
     text = _cell_text(detail)
     lowered = text.lower()
@@ -220,6 +243,10 @@ def _match_category(sender: Any, detail: Any, kredit: Any, debit: Any) -> str | 
             matched = any(p in norm_detail for p in patterns)
         if matched:
             return category
+
+    # Kapital-profil KOMİSİYA əlavəsi — ümumi KOMİSİYA ilə eyni səviyyədə.
+    if profile == "kapital" and _match_kapital_komisiya(norm_detail):
+        return "KOMİSİYA"
 
     debit_filled = _has_amount(debit)
     kredit_filled = _has_amount(kredit)
@@ -525,7 +552,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             sender = row[sender_col].value if sender_col is not None else None
             kredit = row[kredit_col].value if kredit_col is not None else None
             debit = row[debit_col].value
-        category = _match_category(sender, detail, kredit, debit)
+        category = _match_category(sender, detail, kredit, debit, profile)
         if category is None:
             unclassified.append(
                 {
@@ -637,7 +664,7 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                     else None
                 )
                 debit_value = values[debit_col] if debit_col < len(values) else None
-            category = _match_category(sender, detail, kredit, debit_value)
+            category = _match_category(sender, detail, kredit, debit_value, profile)
             if category is None:
                 unclassified.append(
                     {
