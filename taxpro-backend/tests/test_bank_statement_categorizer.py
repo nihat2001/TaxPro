@@ -823,6 +823,104 @@ def test_terminal_komissiya_fallback_abs_mebleg():
     assert summary["Terminal-Komissiya"] == {"cem": 7.5, "say": 1}
 
 
+# ===== Yelo Bank format dəstəyi (çoxsətirli header, Mədaxil/Məxaric) =====
+
+YELO_HEADER = [
+    "Əməl.tarixi/\ntr.date",
+    "İcra tarixi/\nreal date",
+    "Təyinat/\nDescription",
+    "Ödəyən/alan\npayer/reciever",
+    "Qarşı hesab/\ncounter account",
+    "Mədaxil/\nincome",
+    "Məxaric/\noutcome",
+    "Balans/\nbalance",
+    "Kurs/\nrate",
+    "AZN/\nekv",
+]
+
+
+def _yelo_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Hesab açılma tarixi", "26.01"])
+    ws.append(["IBAN", "AZ00YELO000000"])
+    ws.append(YELO_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _yelo_row(sender, detail, medaxil, mexaric):
+    return ["08.01.26", "07.01.26", detail, sender, "qarsi", medaxil, mexaric, "100", "1", "0"]
+
+
+def test_yelo_header_substring_detected():
+    raw = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+
+def test_yelo_patterns():
+    # BANK FAİZ: faiz ∧ odeme
+    assert _match_category("YELO BANK ASC", "FAIZ ÖDƏMƏ", "0", "5.00", profile="yelo") == "BANK FAİZ XƏRCİ"
+    assert _match_category("YELO BANK ASC", "GECİKMİŞ FAIZ ÖDƏMƏ", "0", "4.23", profile="yelo") == "BANK FAİZ XƏRCİ"
+    # KOMİSİYA: DƏBBƏ ÖDƏMƏ / ƏMƏLİYYAT MƏSRƏFİ / xidmət haqqı
+    assert _match_category("YELO BANK ASC", "DƏBBƏ ÖDƏMƏ", "0", "1.68", profile="yelo") == "KOMİSİYA"
+    assert _match_category("YELO BANK ASC", "ƏMƏLİYYAT MƏSRƏFİ", "0", "1.98", profile="yelo") == "KOMİSİYA"
+    assert _match_category("YELO BANK ASC", "xidmət haqqı", "0", "2.00", profile="yelo") == "KOMİSİYA"
+    # Nağd çəkim: Nağdlaşdırma vergisi
+    assert _match_category("YELO BANK ASC", "Nağdlaşdırma vergisi", "0", "118", profile="yelo") == "Nağd çəkim komissiyası"
+    # VERGİ: gəlir vergisi
+    assert _match_category("", "Fiziki şəxslərin gəlir vergisi", "0", "50.00", profile="yelo") == "VERGİ MƏXARİC"
+
+
+def test_yelo_asas_odeme_uncategorized():
+    """Əsas ödəmə / GECİKMİŞ ƏSAS ÖDƏMƏ → kateqoriyasız (izolyasiya)."""
+    assert _match_category("YELO BANK ASC", "ƏSAS ÖDƏMƏ", "0", "100.00", profile="yelo") is None
+    assert _match_category("YELO BANK ASC", "GECİKMİŞ ƏSAS ÖDƏMƏ", "0", "1281.22", profile="yelo") is None
+    # "ESASEN" (müqaviləyə əsasən) düşməməlidir
+    assert _match_category("YELO BANK ASC", "MUQAVILEYE ESASEN ODENIS", "0", "50.00", profile="yelo") is not None
+
+
+def test_yelo_patterns_standard_inactive():
+    """Yelo pattern-ləri standard profildə aktiv deyil (izolyasiya)."""
+    assert _match_category("", "DƏBBƏ ÖDƏMƏ", None, "-1.68") != "KOMİSİYA"
+    assert _match_category("", "FAIZ ÖDƏMƏ", None, "-5.00") != "BANK FAİZ XƏRCİ"
+    assert _match_category("", "Nağdlaşdırma vergisi", None, "-10.00") != "Nağd çəkim komissiyası"
+
+
+def test_yelo_end_to_end_no_k_column():
+    """K sütunu yoxdur — kateqoriyalaşdırma Təyinat/Ödəyən/Mədaxil/Məxaric-dən asılı."""
+    rows = [
+        _yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5),
+        _yelo_row("YELO BANK ASC", "GECİKMİŞ ƏSAS ÖDƏMƏ", 0, 100),
+        _yelo_row("YELO BANK ASC", "DƏBBƏ ÖDƏMƏ", 0, 2),
+        _yelo_row("YELO BANK ASC", "Əməliyyat Məsrəfi", 0, 3),
+        _yelo_row("YELO BANK ASC", "Nağdlaşdırma vergisi", 0, 10),
+        _yelo_row("", "Fiziki şəxslərin gəlir vergisi", 0, 50),
+        _yelo_row("", "B44:Verilmiş kreditler", 5000, 0),
+        _yelo_row("SOME MMC", "MAL", 100, 0),
+    ]
+    out, summary, unclassified = categorize_statement_verbose(_yelo_xlsx(rows))
+    assert summary["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+    assert summary["KOMİSİYA"] == {"cem": 5.0, "say": 2}
+    assert summary["Nağd çəkim komissiyası"] == {"cem": 10.0, "say": 1}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 50.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+    # əsas ödəmə + kredit daxilolması kateqoriyasız
+    idx = {u["row_index"] for u in unclassified}
+    assert idx == {5, 10}  # meta 1-2, header 3, data 4..; əsas ödəmə row5, B44 row10
+
+    wb = _reload(out)
+    assert wb.sheetnames[0] != "Xülasə"
+    main = wb[wb.sheetnames[0]]
+    # Kateqoriya/İcmal əlavə olunub (11/12) — K sütunu yoxdur
+    assert main.max_column == 12
+
+
 def test_kapital_end_to_end():
     rows = [
         [1, "2022-12-15", "4351627793", "AZ10AIIB00000100100001944221 / KAPITAL / 9900003611", 2080, "AZN", 2080, 2080, "mal uchun muqavile"],

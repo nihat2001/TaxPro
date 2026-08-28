@@ -279,6 +279,7 @@
     });
     bindBankCard("bank", "taxpro_bank_cizarsisi_kateqoriyalasmis.xlsx");
     bindBankCard("kapital", "taxpro_kapital_bank_cizarsisi.xlsx");
+    bindBankCard("yelo", "taxpro_yelo_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);

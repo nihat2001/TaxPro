@@ -5,6 +5,7 @@ Giriş: meta sətirləri + dinamik başlıq sətri olan .xlsx/.csv çıxarış.
 Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - standard: Əməliyyat Detalları + Debit/Kredit (YapıKredi/AccessBank)
   - kapital:  № | Tarix | ... | Məbləğ (işarəli) | ... | Təyinat
+  - yelo:     çoxsətirli header, Mədaxil/Məxaric ayrı, Ödəyən/alan sender
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -93,6 +94,23 @@ _FORMAT_PROFILES = [
             "kateqoriya": "kateqoriya",
         },
     },
+    {
+        "name": "yelo",  # Yelo Bank (çoxsətirli header; Mədaxil/Məxaric ayrı)
+        "required": ("teyinat", "medaxil", "mexaric"),
+        "fields": {
+            "emeltarixitrdate": "emeliyyat_tarixi",
+            "icratarixirealdate": "icra_tarixi",
+            "teyinatdescription": "teyinat",
+            "odeyenalanpayerreciever": "odeyen",
+            "qarsihesabcounteraccount": "qarsi_hesab",
+            "medaxilincome": "medaxil",
+            "mexaricoutcome": "mexaric",
+            "balansbalance": "balans",
+            "kursrate": "kurs",
+            "aznekv": "azn_ekv",
+            "kateqoriya": "kateqoriya",
+        },
+    },
 ]
 
 # Kateqoriya qaydaları — sıra vacibdir.
@@ -124,20 +142,39 @@ CATEGORY_RULES: list[tuple[str, list[str]]] = [
 # KOMİSİYA üçün başlanğıc (prefix) qaydaları — normalize etmədən yoxlanır.
 _KOMISIYA_PREFIXES = ("com.", "comm-")
 
-# Kapital profilində KOMİSİYA üçün ƏLAVƏ açar sözlər (yalnız kapital aktiv olanda).
-_KOMISIYA_KAPITAL_PATTERNS: tuple[str, ...] = ("xidmethaqqi",)
+# KOMİSİYA üçün başlanğıc (prefix) qaydaları — normalize etmədən yoxlanır.
+_KOMISIYA_PREFIXES = ("com.", "comm-")
+
+# Profilə-xas KOMİSİYA əlavə açar sözləri (normalize). Yalnız həmin profildə.
+_KOMISIYA_EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
+    "kapital": ("xidmethaqqi",),
+    "yelo": ("debbeodeme", "emeliyyatmesref", "xidmethaqqi"),
+}
+
+# Yelo: Nağd çəkim komissiyası üçün əlavə token.
+_NAGD_CEKIM_YELO = "nagdlasdirmavergisi"
+
+# Yelo: BANK FAİZ XƏRCİ üçün çevik yoxlama (faiz ∧ ödəmə).
+_YELO_FAIZ_TOKEN = "faiz"
+_YELO_ODEME_TOKEN = "odeme"
+
+# Yelo: əsas borc ödənişi → kateqoriyasız (borc əsas ödəmə).
+_YELO_ASAS_ODEME = "esasodeme"
 
 # Terminal-Komissiya (kapital): Təyinat-da 'Pos-Terminal' VƏ 'Xidmət haqqı'.
 _TERMINAL_FEE_RE = re.compile(r"[Xx]idm[əe]t haqq[ıi]:\s*-?([\d.,]+)\s*AZN")
 
 
-def _match_kapital_komisiya(norm_detail: str) -> bool:
-    """Kapital KOMİSİYA əlavəsi: 'xidmət haqqı' (maaş-xaric).
+def _match_komisiya_extra(profile: str, norm_detail: str) -> bool:
+    """Profilə-xas KOMİSİYA əlavəsi (maaş-xaric).
 
     Maaş pattern-i ('emekhaqq'/'maasodemesi'/'maaspaket') varsa KOMİSİYA
     deyil — belə sətirlər MAAŞ MƏXARİC-ə qalır (reqressiya qorunur).
     """
-    if not any(p in norm_detail for p in _KOMISIYA_KAPITAL_PATTERNS):
+    patterns = _KOMISIYA_EXTRA_PATTERNS.get(profile)
+    if not patterns:
+        return False
+    if not any(p in norm_detail for p in patterns):
         return False
     if any(p in norm_detail for p in SALARY_PATTERNS):
         return False
@@ -190,6 +227,7 @@ TAX_AUTHORITY_KEYWORDS: list[str] = [
     "VERGİ XİDMƏTİ",
     "VERGI XIDMETI",
     "VERGI XIDMATI",
+    "GƏLİR VERGİSİ",
 ]
 
 # MAAŞ MƏXARİC üçün normalize edilmiş detail pattern-ləri.
@@ -262,11 +300,11 @@ def _match_category(
 
     Sıra: 1) Com./COMM- → KOMİSİYA; 2) kapital 'Terminal-Komissiya'
     (Pos-Terminal ∧ Xidmət haqqı); 3) CATEGORY_RULES (Nağd çəkim →
-    KOMİSİYA → BANK FAİZ) + kapital-profil 'xidmət haqqı' KOMİSİYA əlavəsi;
-    4) ƏDV ÖDƏNİŞİ; 5) RÜSUM; 6) VERGİ MƏXARİC; 7) MAAŞ MƏXARİC;
-    8) TƏSİSÇİDƏN BORC (sender NAGD YATIRMA/CASH DEPOSIT, hər iki
-    istiqamət); 9) catch-all: sender boş deyilsə Kredit → DİGƏR ŞİRKƏT
-    DAXİL OLMALAR, Debit → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ; 10) None.
+    KOMİSİYA → BANK FAİZ) + profil-xas əlavələr (kapital 'xidmət haqqı',
+    yelo 'DƏBBƏ ÖDƏMƏ/ƏMƏLİYYAT MƏSRƏFİ', yelo BANK FAİZ 'faiz∧odeme',
+    yelo Nağd çəkim 'Nağdlaşdırma vergisi'); 4) yelo 'Əsas ödəmə' →
+    kateqoriyasız; 5) ƏDV ÖDƏNİŞİ; 6) RÜSUM; 7) VERGİ MƏXARİC;
+    8) MAAŞ MƏXARİC; 9) TƏSİSÇİDƏN BORC; 10) catch-all (DAXİL/ÖDƏNİŞLƏRİ).
     """
     text = _cell_text(detail)
     lowered = text.lower()
@@ -281,16 +319,28 @@ def _match_category(
         return "Terminal-Komissiya"
 
     for i, (category, patterns) in enumerate(CATEGORY_RULES):
-        if i == 0:
-            matched = _match_nagd_cekim(norm_detail)
+        if category == "Nağd çəkim komissiyası":
+            matched = _match_nagd_cekim(norm_detail) or (
+                profile == "yelo" and _NAGD_CEKIM_YELO in norm_detail
+            )
+        elif category == "KOMİSİYA":
+            matched = any(p in norm_detail for p in patterns) or _match_komisiya_extra(
+                profile, norm_detail
+            )
+        elif category == "BANK FAİZ XƏRCİ":
+            matched = any(p in norm_detail for p in patterns) or (
+                profile == "yelo"
+                and _YELO_FAIZ_TOKEN in norm_detail
+                and _YELO_ODEME_TOKEN in norm_detail
+            )
         else:
             matched = any(p in norm_detail for p in patterns)
         if matched:
             return category
 
-    # Kapital-profil KOMİSİYA əlavəsi — ümumi KOMİSİYA ilə eyni səviyyədə.
-    if profile == "kapital" and _match_kapital_komisiya(norm_detail):
-        return "KOMİSİYA"
+    # Yelo: əsas borc ödənişi → kateqoriyasız (catch-all-dan əvvəl).
+    if profile == "yelo" and _YELO_ASAS_ODEME in norm_detail:
+        return None
 
     debit_filled = _has_amount(debit)
     kredit_filled = _has_amount(kredit)
@@ -414,6 +464,9 @@ def _find_header_row(rows: list[list[Any]]) -> tuple[int, dict[str, int], str] |
 
     Qaytarır: (sətir idx, kanonik sahə → sütun idx xəritəsi, profil adı).
     Hər profil öz required başlıqları ilə tanınır; ilk uyğun gələn qalib gəlir.
+    Uyğunluq SUBSTRING əsaslıdır: çoxsətirli hüceyrələr normalize_text ilə
+    birləşdiyindən 'Təyinat/Description' → 'teyinatdescription' kimi açarlar
+    yaranır və 'teyinat' substring-i onu tutur.
     """
     for idx, row in enumerate(rows):
         raw_map: dict[str, int] = {}
@@ -421,13 +474,17 @@ def _find_header_row(rows: list[list[Any]]) -> tuple[int, dict[str, int], str] |
             key = normalize_text(_cell_text(value))
             if key:
                 raw_map[key] = col_idx
+        raw_keys = list(raw_map)
         for profile in _FORMAT_PROFILES:
-            if all(req in raw_map for req in profile["required"]):
-                col_map: dict[str, int] = {}
-                for norm, field in profile["fields"].items():
-                    if norm in raw_map:
-                        col_map[field] = raw_map[norm]
-                return idx, col_map, profile["name"]
+            if not all(any(req in k for k in raw_keys) for req in profile["required"]):
+                continue
+            col_map: dict[str, int] = {}
+            for norm, field in profile["fields"].items():
+                for key in raw_keys:
+                    if norm in key:
+                        col_map[field] = raw_map[key]
+                        break
+            return idx, col_map, profile["name"]
     return None
 
 
@@ -567,6 +624,11 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         teyinat_col = col_map["teyinat"]
         mebleg_col = col_map["mebleg"]
         eks_hesab_col = col_map.get("eks_hesab")
+    elif profile == "yelo":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        odeyen_col = col_map.get("odeyen")
     else:
         details_col = col_map["emeliyyat_detallari"]  # 0-əsaslı
         debit_col = col_map["debit"]  # 0-əsaslı
@@ -591,6 +653,11 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             )
             detail = row[teyinat_col].value
             debit, kredit = _split_signed_amount(row[mebleg_col].value)
+        elif profile == "yelo":
+            sender = row[odeyen_col].value if odeyen_col is not None else None
+            detail = row[teyinat_col].value
+            kredit = row[medaxil_col].value
+            debit = row[mexaric_col].value
         else:
             detail = row[details_col].value
             sender = row[sender_col].value if sender_col is not None else None
@@ -664,6 +731,11 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
         teyinat_col = col_map["teyinat"]
         mebleg_col = col_map["mebleg"]
         eks_hesab_col = col_map.get("eks_hesab")
+    elif profile == "yelo":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        odeyen_col = col_map.get("odeyen")
     else:
         details_col = col_map["emeliyyat_detallari"]
         debit_col = col_map["debit"]
@@ -705,6 +777,15 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 debit_value, kredit = _split_signed_amount(
                     values[mebleg_col] if mebleg_col < len(values) else None
                 )
+            elif profile == "yelo":
+                sender = (
+                    values[odeyen_col]
+                    if odeyen_col is not None and odeyen_col < len(values)
+                    else ""
+                )
+                detail = values[teyinat_col] if teyinat_col < len(values) else ""
+                kredit = values[medaxil_col] if medaxil_col < len(values) else None
+                debit_value = values[mexaric_col] if mexaric_col < len(values) else None
             else:
                 detail = values[details_col] if details_col < len(values) else ""
                 sender = (
@@ -799,6 +880,9 @@ def _locate_columns(wb):
             debit_col = kredit_col = mebleg_col = None
             if profile == "kapital":
                 mebleg_col = col_map["mebleg"] + 1
+            elif profile == "yelo":
+                debit_col = col_map["mexaric"] + 1
+                kredit_col = col_map["medaxil"] + 1
             else:
                 debit_col = col_map["debit"] + 1
                 kredit = col_map.get("kredit")
