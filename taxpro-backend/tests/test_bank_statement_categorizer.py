@@ -1574,3 +1574,218 @@ def test_all_six_profiles_sequential_no_mix():
     vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
     _, s6, _ = categorize_statement_verbose(vtb)
     assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+
+# ===== Ziraat Bank format dəstəyi (Header 13-cü sətirdə; Debet/Kredit ayrı, sender = Müxbirin adı) =====
+
+ZIRAAT_HEADER = [
+    "Tarix",
+    "Sənədin N-si",
+    "Müxbirin hesabı",
+    "Müxbirin adı",
+    "Debet",
+    "Kredit",
+    "Ara qaliq",
+    "Təyinat",
+    "Əməliyat saatı",
+]
+
+
+def _ziraat_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["27.05.25 16:55"])
+    ws.append(["Ziraat Bank Azərbaycan ASC"])
+    ws.append(["Kod  - 513218,M/H - AZ42NABZ01350100000000095944"])
+    ws.append([""])
+    ws.append([None, None, None, "HESABDAN ÇIXARIŞ"])
+    ws.append([None, None, None, "01.09.2021 - 31.12.2022 tarixləri arası"])
+    ws.append([""])
+    ws.append(["Hesablaşma hesabı: ", "AZ53TCZB40030944006598700102"])
+    ws.append(["Hesabın valyutası: ", "AZN"])
+    ws.append(["Hesabın Adı: ", "İNTEKS MMC"])
+    ws.append(["Giriş qalığı: ", 0])
+    ws.append([""])
+    ws.append(ZIRAAT_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _ziraat_row(tarix, sened, mux_hesab, mux_adi, debet, kredit, teyinat):
+    return [
+        tarix,
+        sened,
+        mux_hesab,
+        mux_adi,
+        debet,
+        kredit,
+        "1 000.00",
+        teyinat,
+        "15:36:18",
+    ]
+
+
+def test_ziraat_profile_detected_header_on_row_13():
+    """Ziraat başlığı 13-cü sətirdədir; 12 meta sətir skan edilməlidir."""
+    raw = _ziraat_xlsx(
+        [_ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1198804.1, "Valyuta Satışı 1.963")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1198804.1, "say": 1}
+
+
+def test_ziraat_not_stolen_by_other_profiles():
+    """Mövcud profillər Ziraat başlığını tanımır — catch-all davranışı düzgündür."""
+    raw = _ziraat_xlsx(
+        [_ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1000, "Valyuta Satışı")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1000.0, "say": 1}
+
+
+def test_ziraat_skip_summary_rows():
+    """CƏMİ / Çıxış qalıq sətirləri (Təyinat + sender boş) atlanmalıdır."""
+    raw = _ziraat_xlsx(
+        [
+            _ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1000, "Valyuta Satışı"),
+            ["CƏMİ:", None, None, None, "1000", "1000", None, None, None],
+            ["Çıxış qalıq:", 0, None, None, None, None, None, None, None],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1000.0, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=15, column=10).value is None  # CƏMİ sətri kateqoriyasız
+    assert main.cell(row=16, column=10).value is None  # Çıxış qalıq sətri kateqoriyasız
+
+
+def test_ziraat_keeps_sms_fee_rows():
+    """Boş Təyinat AMA dolu sender (SMS xidmət haqqı) — skip edilməməlidir (catch-all)."""
+    rows = [
+        _ziraat_row("21.04.2022", "6795", "AZ37TCZB67017944000000001002", "CARDS:SMS NOTİFİCATİONI ÜZRƏ XİDMƏT HAQQI", 1.18, 0, None)
+    ]
+    out, summary, unclassified = categorize_statement_verbose(_ziraat_xlsx(rows))
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1.18, "say": 1}
+    assert len(unclassified) == 0
+
+
+def test_ziraat_komisiya():
+    """'Əməliyyat üzrə komissiya' → KOMİSİYA (ümumi 'kom')."""
+    assert _match_category(
+        "İçərişəhər filialı",
+        "Bank tariflərinə uyğun olaraq Əməliyyat üzrə komissiya \"Sadə köçürmə\" məbləğ 120.00 (AZN). ƏDV daxil deyil",
+        None, "120.00", profile="ziraat",
+    ) == "KOMİSİYA"
+
+
+def test_ziraat_vergi():
+    """VN Milli Gəlir Departamenti sender → VERGİ MƏXARİC."""
+    assert _match_category(
+        "VN Milli Gəlir.Departamenti - AZ17CTRE00000000000002117131 - 1602473621",
+        "3 rub 2021 il uzre sadelew vergi",
+        None, "1000000", profile="ziraat",
+    ) == "VERGİ MƏXARİC"
+
+
+def test_ziraat_edv():
+    """'AVANS ODENIWI UZRE EDV' → ƏDV ÖDƏNİŞİ."""
+    assert _match_category(
+        "BAKU STEEL COMPANY MMC", "AVANS ODENIWI UZRE EDV", None, "18000", profile="ziraat"
+    ) == "ƏDV ÖDƏNİŞİ"
+
+
+def test_ziraat_catchall_directions():
+    """Kredit → DAXİL OLMALAR; debit → ÖDƏNİŞLƏRİ."""
+    assert _match_category(
+        "İNTEKS MMC", "Valyuta Satışı 1.963", "1198804.1", None, profile="ziraat"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category(
+        "BAKU STEEL COMPANY MMC", "AVANS ODENIWI", None, "18000", profile="ziraat"
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_ziraat_end_to_end_counts():
+    """Real Ziraat strukturuna uyğun end-to-end — proqnoz 342/42/42/46/331 = 803, skip 2."""
+    rows = []
+    for _ in range(342):
+        rows.append(_ziraat_row("15.10.2021", "x", "AZ97TCZB67013944000000000102", "İçərişəhər filialı", 1.0, 0, "Bank tariflərinə uyğun olaraq Əməliyyat üzrə komissiya"))
+    for _ in range(42):
+        rows.append(_ziraat_row("06.10.2021", "02", "AZ17CTRE00000000000002117131", "VN Milli Gəlir.Departamenti", 1000, 0, "sadelew vergi"))
+    for _ in range(42):
+        rows.append(_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV"))
+    for _ in range(46):
+        rows.append(_ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1000, "Valyuta Satışı"))
+    for _ in range(323):
+        rows.append(_ziraat_row("13.10.2021", "04", "AZ62AIIB40060019440419948105", "BAKI MEXANIKA", 100, 0, "EBBF qaliz mebleq"))
+    for _ in range(8):
+        rows.append(_ziraat_row("21.04.2022", "6795", "AZ37TCZB67017944000000001002", "CARDS:SMS NOTİFİCATİONI ÜZRƏ XİDMƏT HAQQI", 1.18, 0, None))
+    rows.append(["CƏMİ:", None, None, None, "1000", "1000", None, None, None])
+    rows.append(["Çıxış qalıq:", 0, None, None, None, None, None, None, None])
+    raw = _ziraat_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 342.0, "say": 342}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 42000.0, "say": 42}
+    assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 4200.0, "say": 42}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 46000.0, "say": 46}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": pytest.approx(32309.44), "say": 331}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=13, column=1).value == "Tarix"
+    assert main.cell(row=13, column=10).value == "Kateqoriya"
+    assert main.cell(row=13, column=11).value == "İcmal"
+    assert main.cell(row=14, column=10).value == "KOMİSİYA"
+    assert main.cell(row=14, column=11).value == 1.0
+    # yekun sətirlər (CƏMİ 817, Çıxış qalıq 818) kateqoriyasız
+    assert main.cell(row=817, column=10).value is None
+    assert main.cell(row=818, column=10).value is None
+    assert wb.active.title == "Xülasə"
+
+
+def test_ziraat_finalize():
+    """Ziraat profili finalize ilə uyğun işləyir."""
+    raw = _ziraat_xlsx(
+        [_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 18000, 0, "AVANS ODENIWI UZRE EDV")]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 18000.0, "say": 1}
+
+
+def test_all_seven_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat ardıcıl — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}

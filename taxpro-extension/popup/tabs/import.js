@@ -285,6 +285,7 @@
     bindBankCard("access", "taxpro_access_bank_cizarsisi.xlsx");
     bindBankCard("vtb", "taxpro_vtb_bank_cizarsisi.xlsx");
     bindBankCard("turan", "taxpro_turan_bank_cizarsisi.xlsx");
+    bindBankCard("ziraat", "taxpro_ziraat_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);
