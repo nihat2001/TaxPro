@@ -1789,3 +1789,213 @@ def test_all_seven_profiles_sequential_no_mix():
     zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
     _, s7, _ = categorize_statement_verbose(zir)
     assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+
+# ===== ATB Bank format dəstəyi (Header 12-ci sətirdə; Debit/Kredit ayrı, Müxbir sender) =====
+
+ATB_HEADER = [
+    "Valyutalaşma tarixi",
+    "Tranzaksiya tarixi",
+    "Müxbir",
+    "Göndərənin VÖEN-i",
+    "Təsvir",
+    "Sənəd nömrəsi",
+    "Debit",
+    "Kredit",
+    "Balans",
+]
+
+
+def _atb_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append([None, None, "Hesabdan çıxarış", None, None, "Çıxarışın tərtib olunma tarixi:", "19.01.2026"])
+    ws.append([None])
+    ws.append([None])
+    ws.append(["Tarix", "01.01.2025  -  31.12.2025"])
+    ws.append(["Filial", "Azər-Türk Bank Müştəri Xidmətləri Mərkəzi"])
+    ws.append(["Hesabın adı", "1/GLOBAL EXPORTS LLC"])
+    ws.append(["VÖEN", "1302070301"])
+    ws.append(["IBAN", "AZ18AZRT40060019440389924001"])
+    ws.append([None])
+    ws.append([None])
+    ws.append([None, None, None, None, None, "Müddətin əvvəlində qalıq", None, 154353.98])
+    ws.append(ATB_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _atb_row(tranz, muxbir, tesvir, debet=0, kredit=0):
+    return [
+        tranz,
+        tranz,
+        muxbir,
+        None,
+        tesvir,
+        "001PBUD250060747",
+        debet,
+        kredit,
+        "154352.98",
+    ]
+
+
+def test_atb_profile_detected_header_on_row_12():
+    """ATB başlığı 12-ci sətirdədir (index 11); 11 meta sətir skan edilməlidir."""
+    raw = _atb_xlsx(
+        [_atb_row("07.01.2025", "GLOBAL EXPORTS MEHDUD MESULIYYETLI", "Shirket daxili hesabin mohkemlendirilmesi", kredit=25000)]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 25000.0, "say": 1}
+
+
+def test_atb_not_stolen_by_other_profiles():
+    """Mövcud 7 profil ATB başlığını tanımır."""
+    raw = _atb_xlsx(
+        [_atb_row("07.01.2025", "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", debet=97810.17)]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 97810.17, "say": 1}
+
+
+def test_atb_skip_summary_rows():
+    """Müddət üzrə dövriyyə / Müddətin sonunda qalıq sətirləri atlanmalıdır."""
+    raw = _atb_xlsx(
+        [
+            _atb_row("07.01.2025", "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", debet=100),
+            [None, None, None, None, "Müddət üzrə dövriyyə", None, 4313015.9, 4173675.98, None],
+            [None, None, None, None, None, None, "Müddətin sonunda qalıq", None, 15014.06],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 100.0, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=14, column=10).value is None  # Müddət üzrə dövriyyə
+    assert main.cell(row=15, column=10).value is None  # Müddətin sonunda qalıq
+
+
+def test_atb_xidmet_haqqi_debit_komisiya():
+    """Debit 'Xidmet Haqqi' → KOMİSİYA (debit-istiqamət qoruyucusu ilə)."""
+    assert _match_category(
+        "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri",
+        "Xidmet Haqqi", 0, "1", profile="atb",
+    ) == "KOMİSİYA"
+
+
+def test_atb_xidmet_haqqi_kredit_catchall_daxil():
+    """KRİTİK: kredit 'Xidmet Haqqi' → KOMİSİYA deyil, DAXİL OLMALAR (qoruyucu)."""
+    assert _match_category(
+        "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri",
+        "Xidmet Haqqi", "5", 0, profile="atb",
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category(
+        "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri",
+        "Xidmet Haqqi", "5", 0, profile="atb",
+    ) != "KOMİSİYA"
+
+
+def test_atb_komisiya_guard_other_profiles_unaffected():
+    """Digər profillərdə kredit 'xidmət haqqı' davranışı dəyişməz (kapital/yelo qaydası)."""
+    # yelo: kredit xidmət haqqı → yelo-da medaxil/xidmet haqqi KOMİSİYA-dır (qoruyucu yox)
+    assert _match_category("YELO BANK ASC", "xidmət haqqı", "5", "0", profile="yelo") == "KOMİSİYA"
+
+
+def test_atb_vergi():
+    """Mərkəzi Sos.Sığ sender → VERGİ MƏXARİC."""
+    assert _match_category(
+        "AZ36CTRE00000000000007017617 1300115511 Mərkəzi Sos.Sığ.FUİ",
+        "DSMF odenisi", None, "916", profile="atb",
+    ) == "VERGİ MƏXARİC"
+
+
+def test_atb_catchall_directions():
+    """Kredit → DAXİL OLMALAR; debit (qeyri-xidmət) → ÖDƏNİŞLƏRİ."""
+    assert _match_category(
+        "GLOBAL EXPORTS MEHDUD MESULIYYETLI", "Shirket daxili hesabin mohkemlendirilmesi",
+        "25000", 0, profile="atb",
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category(
+        "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", 0, "97810.17", profile="atb",
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_atb_end_to_end_counts():
+    """Real ATB strukturuna uyğun end-to-end — proqnoz 193/20/43/165 = 421, skip 2."""
+    rows = []
+    for _ in range(193):
+        rows.append(_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1))
+    for _ in range(20):
+        rows.append(_atb_row("07.01.2025", "Mərkəzi Sos.Sığ.FUİ", "DSMF odenisi", debet=10))
+    for _ in range(43):
+        rows.append(_atb_row("07.01.2025", "GLOBAL EXPORTS MEHDUD MESULIYYETLI", "Shirket daxili hesabin mohkemlendirilmesi", kredit=100))
+    for _ in range(165):
+        rows.append(_atb_row("07.01.2025", "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", debet=10))
+    rows.append([None, None, None, None, "Müddət üzrə dövriyyə", None, 4313015.9, 4173675.98, None])
+    rows.append([None, None, None, None, None, None, "Müddətin sonunda qalıq", None, 15014.06])
+    raw = _atb_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 193.0, "say": 193}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 200.0, "say": 20}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 4300.0, "say": 43}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1650.0, "say": 165}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=12, column=1).value == "Valyutalaşma tarixi"
+    assert main.cell(row=12, column=10).value == "Kateqoriya"
+    assert main.cell(row=12, column=11).value == "İcmal"
+    assert main.cell(row=13, column=10).value == "KOMİSİYA"
+    assert main.cell(row=13, column=11).value == 1.0
+    assert main.cell(row=434, column=10).value is None  # Müddət üzrə dövriyyə
+    assert main.cell(row=435, column=10).value is None  # Müddətin sonunda qalıq
+    assert wb.active.title == "Xülasə"
+
+
+def test_atb_finalize():
+    """ATB profili finalize ilə uyğun işləyir."""
+    raw = _atb_xlsx([_atb_row("07.01.2025", "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", debet=100)])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 100.0, "say": 1}
+
+
+def test_all_eight_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat + atb ardıcıl — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s8, _ = categorize_statement_verbose(atb)
+    assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
