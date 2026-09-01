@@ -2205,3 +2205,215 @@ def test_all_nine_profiles_sequential_no_mix():
     uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
     _, s9, _ = categorize_statement_verbose(uni)
     assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+
+
+# ===== Rabitə Bank format dəstəyi (Header 10-cu sətirdə; Debet/Kredit ayrı, sender = Qarşı tərəfin adı) =====
+
+RABITE_HEADER = [
+    "Əməliyyat tarixi",
+    "Silinmə tarixi",
+    "Benefisiarın bankı",
+    "Qarşı tərəfin hesab nömrəsi",
+    "Qarşı tərəfin adı",
+    "Debet",
+    "Kredit",
+    "Balans",
+    "Təsvir",
+]
+
+
+def _rabite_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append([""])
+    ws.append([""])
+    ws.append([""])
+    ws.append(["Hesabdan çıxarış"])
+    ws.append(["Müştərinin adı", "PARROTIAS MMC", "Tarix aralığı", "01.07.2025 - 30.06.2026"])
+    ws.append(["Hesab nömrəsi", "02400600100944-453964", "VÖEN", "1306715831"])
+    ws.append([""])
+    ws.append(["Başlanğıc balans", "3477.59", "Yekun balans", "8847.96"])
+    ws.append([""])
+    ws.append(RABITE_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _rabite_row(tarix, qarsi_teref, debet, kredit, tesvir):
+    return [
+        tarix,
+        tarix,
+        "RABİTƏBANK ASC (Yasamal filialı)",
+        "AZ68RBTA02670130100944414555",
+        qarsi_teref,
+        str(debet) if debet else "0",
+        str(kredit) if kredit else "0",
+        "3350.47",
+        tesvir,
+    ]
+
+
+def test_rabite_profile_detected_header_on_row_10():
+    """Rabitə başlığı 10-cu sətirdədir (index 9); 9 meta sətir skan edilməlidir."""
+    raw = _rabite_xlsx(
+        [_rabite_row("01.07.2025", "Digital Classifieds MMC", 127.12, 0, "Hesab-faktura N 2145823")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 127.12, "say": 1}
+
+
+def test_rabite_not_stolen_by_other_profiles():
+    """Mövcud 9 profil Rabitə başlığını tanımır."""
+    raw = _rabite_xlsx(
+        [_rabite_row("01.07.2025", "CASPIAN EQUIPMENT COMPANY", 0, 45, "MT250611668756")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 45.0, "say": 1}
+
+
+def test_rabite_skip_summary_row():
+    """Yalnız cəmi göstərən yekun sətri (Tarix/Təsvir boş) atlanmalıdır."""
+    raw = _rabite_xlsx(
+        [
+            _rabite_row("01.07.2025", "Digital Classifieds MMC", 127.12, 0, "Hesab-faktura"),
+            [None, None, None, None, None, "235233.29", "240603.66", None, None],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 127.12, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=12, column=10).value is None  # yekun sətri
+
+
+def test_rabite_komisiya_sender_token():
+    """Sender 'Haqq və komissiya gəlirləri' + debit → KOMİSİYA."""
+    assert _match_category(
+        "Haqq və komissiya gəlirləri", "Hesab-faktura N 2145823", "0", "127.12", profile="rabite"
+    ) == "KOMİSİYA"
+
+
+def test_rabite_komisiya_maas_guard():
+    """KRİTİK: 'Haqq və komissiya gəlirləri' + detail 'Emek haqqi' → MAAŞ (KOMİSİYA deyil)."""
+    assert _match_category(
+        "Haqq və komissiya gəlirləri", "Emek haqqi İyun", "0", "2943.31", profile="rabite"
+    ) == "MAAŞ MƏXARİC"
+    assert _match_category(
+        "Haqq və komissiya gəlirləri", "Emek haqqi İyun", "0", "2943.31", profile="rabite"
+    ) != "KOMİSİYA"
+
+
+def test_rabite_komisiya_kredit_daxil():
+    """KRİTİK: kredit 'Haqq və komissiya gəlirləri' → KOMİSİYA deyil, DAXİL."""
+    assert _match_category(
+        "Haqq və komissiya gəlirləri", "Hesab-faktura", "127.12", "0", profile="rabite"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_rabite_vergi_detail():
+    """'Dövlət Vergi Xidməti' detail → VERGİ MƏXARİC."""
+    assert _match_category(
+        "HÖP", 'Dövlət Vergi Xidməti "PARROTIAS" M', "0", "7010.5", profile="rabite"
+    ) == "VERGİ MƏXARİC"
+
+
+def test_rabite_maas_detail():
+    """'Emek haqqı' detail → MAAŞ MƏXARİC."""
+    assert _match_category(
+        "PARROTIAS MMC", "Emek haqqı İyun", "0", "3400.01", profile="rabite"
+    ) == "MAAŞ MƏXARİC"
+
+
+def test_rabite_end_to_end_counts():
+    """Real Rabitə strukturuna uyğun end-to-end — proqnoz 53/16/6/149/54 = 278, skip 1."""
+    rows = []
+    for _ in range(53):
+        rows.append(_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 1.0, 0, "Hesab-faktura N 2145823"))
+    for _ in range(3):
+        rows.append(_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 2943.31, 0, "Emek haqqi İyun"))
+    for _ in range(3):
+        rows.append(_rabite_row("01.07.2025", "PARROTIAS MMC", 3400.01, 0, "Emek haqqi uyun"))
+    for _ in range(16):
+        rows.append(_rabite_row("01.07.2025", "HÖP", 7010.5, 0, 'Dövlət Vergi Xidməti "PARROTIAS" M'))
+    for _ in range(149):
+        rows.append(_rabite_row("01.07.2025", "CASPIAN EQUIPMENT COMPANY", 0, 45, "MT250611668756"))
+    for _ in range(54):
+        rows.append(_rabite_row("01.07.2025", "Digital Classifieds MMC", 127.12, 0, "Hesab-faktura N 2145823"))
+    rows.append([None, None, None, None, None, "235233.29", "240603.66", None, None])
+    raw = _rabite_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": pytest.approx(53.0), "say": 53}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 112168.0, "say": 16}
+    assert summary["MAAŞ MƏXARİC"] == {"cem": pytest.approx(19029.96), "say": 6}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 6705.0, "say": 149}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": pytest.approx(6864.48), "say": 54}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=10, column=1).value == "Əməliyyat tarixi"
+    assert main.cell(row=10, column=10).value == "Kateqoriya"
+    assert main.cell(row=10, column=11).value == "İcmal"
+    assert main.cell(row=11, column=10).value == "KOMİSİYA"
+    assert main.cell(row=11, column=11).value == 1.0
+    assert main.cell(row=289, column=10).value is None  # yekun sətri
+    assert wb.active.title == "Xülasə"
+
+
+def test_rabite_finalize():
+    """Rabitə profili finalize ilə uyğun işləyir."""
+    raw = _rabite_xlsx(
+        [_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 127.12, "say": 1}
+
+
+def test_all_ten_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat + atb + unibank + rabite ardıcıl — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s8, _ = categorize_statement_verbose(atb)
+    assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+    uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, s9, _ = categorize_statement_verbose(uni)
+    assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+
+    rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
+    _, s10, _ = categorize_statement_verbose(rab)
+    assert s10["KOMİSİYA"] == {"cem": 127.12, "say": 1}
