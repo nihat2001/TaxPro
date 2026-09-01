@@ -975,3 +975,185 @@ def test_formats_independent_sequential():
     _, s1b, _ = categorize_statement_verbose(std)
     assert s1b["KOMİSİYA"] == {"cem": 5.5, "say": 1}
     assert s1b["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 0
+
+
+# ===== Access Bank format dəstəyi (Header 2-ci sətirdə; Mədaxil/Məxaric ayrı) =====
+
+ACCESS_HEADER = [
+    "",
+    "Hesablaşma tarixi\nValue Date",
+    "Əməliyyat tarixi\nPosting Date",
+    "Əməliyyatın №-si\nTransaction ID",
+    "Mədaxil\nIn",
+    "Məxaric\nOut",
+    "Balans\nBalance",
+    "Göndərənin/Alanın Adı\nSender / Beneficiary Name",
+    "Göndərən/Alanin Tax ID\nSender/Beneficiary TAX ID",
+    "Təyinat\nDescription",
+]
+
+
+def _access_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append([""])  # 1-ci sətir boş
+    ws.append(ACCESS_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _access_row(detail, medaxil, mexaric, sender="", tax="", no="1"):
+    return [
+        "",
+        "01.04.2025",
+        "01.04.2025",
+        no,
+        medaxil,
+        mexaric,
+        "1000",
+        sender,
+        tax,
+        detail,
+    ]
+
+
+def test_access_profile_detected_header_on_second_row():
+    """Access başlığı 2-ci sətirdədir; boş 1-ci sətir meta kimi qəbul edilməlidir."""
+    raw = _access_xlsx(
+        [_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+
+def test_access_yelo_do_not_mix():
+    """Access başlığı yelo kimi tanınmamalıdır (gondereninalanin ≠ odeyenalan)."""
+    access_raw = _access_xlsx(
+        [_access_row("FAIZ ÖDƏMƏ", 0, 5, "X MMC")]
+    )
+    _, s_access, _ = categorize_statement_verbose(access_raw)
+    # yelo-ya xas 'FAIZ ÖDƏMƏ' → BANK FAİZ access-də aktiv olmamalıdır
+    assert s_access["BANK FAİZ XƏRCİ"]["say"] == 0
+    assert s_access["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 5.0, "say": 1}
+
+    # Yelo faylı access kimi tanınmamalıdır
+    yelo_raw = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s_yelo, _ = categorize_statement_verbose(yelo_raw)
+    assert s_yelo["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+
+def test_access_yelo_access_sequential_no_mix():
+    """Eyni sessiyada access + yelo ardıcıl — bir-birinə qarışmamalıdır."""
+    a = _access_xlsx(
+        [_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")]
+    )
+    _, s1, _ = categorize_statement_verbose(a)
+    assert s1["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    y = _yelo_xlsx([_yelo_row("YELO BANK ASC", "GECİKMİŞ ƏSAS ÖDƏMƏ", 0, 100)])
+    _, s2, _ = categorize_statement_verbose(y)
+    # əsas ödəmə kateqoriyasız (yelo-xas); access token-u bura təsir etməməli
+    assert s2["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 0
+    assert s2["KOMİSİYA"]["say"] == 0
+
+    a2 = _access_xlsx(
+        [_access_row("Məxaric üçün komm.haqqı", "", 14.7)]
+    )
+    _, s3, _ = categorize_statement_verbose(a2)
+    assert s3["KOMİSİYA"] == {"cem": 14.7, "say": 1}
+
+
+def test_access_xidmet_haqqi_not_komisiya():
+    """KRİTİK: 'xidmət haqqı' access-də KOMİSİYA YARATMAMALIDIR (gəlir sətri)."""
+    result = _match_category(
+        "HASANLI-H MMC",
+        "Muqavileye esasen Mart ayi xidmet haqqi odenilir",
+        "700",
+        "",
+        profile="access",
+    )
+    assert result != "KOMİSİYA"
+    assert result == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_access_xidmet_haqqi_debit_empty_sender_stays_unclassified():
+    """Boş sender + 'xidmət haqqı' debit — KOMİSİYA-ya düşməməli (catch-all üçün sender lazım)."""
+    assert _match_category("", "Nağdsız köçürmə üzrə xidmət haqqı", "", "4.00", profile="access") is None
+
+
+def test_access_menfeet_vergisi():
+    """MƏNFƏƏT VERGİSİ/MENFEET VERGISI → VERGİ MƏXARİC (qlo bal)."""
+    assert _match_category("", "111213 Menfeet vergisi", "", "300.00", profile="access") == "VERGİ MƏXARİC"
+    assert _match_category("", "MƏNFƏƏT VERGİSİ", "", "50.00", profile="kapital") == "VERGİ MƏXARİC"
+
+
+def test_access_nagdlasdirma():
+    """Access-xas 'NAGDLASDIRMA' → Nağd çəkim komissiyası."""
+    assert _match_category("", "Nağdlaşdırma üçün S/V", "", "49.00", profile="access") == "Nağd çəkim komissiyası"
+
+
+def test_access_nagdlasdirma_standard_inactive():
+    """Access Nağd çəkim token-i standard profildə aktiv deyil (izolyasiya)."""
+    assert _match_category("", "Nağdlaşdırma üçün S/V", "", "49.00") != "Nağd çəkim komissiyası"
+
+
+def test_access_end_to_end():
+    """Real Access strukturuna uyğun end-to-end — sender ad+IBAN birlikdə ötürülür."""
+    rows = [
+        _access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC\n1605270611/"),
+        _access_row("Nağdlaşdırma üçün S/V", "", 49),
+        _access_row("Maaş haqqqı kommissiyası AZN3.82", "", 3.82),
+        _access_row("1\n111213\nMenfeet vergisi", "", 300, "VN Milli Gəlir Departamenti"),
+        _access_row("Əmək haqqı\nəmək haqqı - salary", "", 100, "X MMC"),
+        _access_row("Xüsusi əməliyyat - Məxaric (SOP)\nOPEN.SALARY.CARD.FEE", "", 10),
+        _access_row("İcarə haqqı", "", 1000, "Huseynova Ramide Yusif qizi"),
+    ]
+    out, summary, unclassified = categorize_statement_verbose(_access_xlsx(rows))
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+    assert summary["Nağd çəkim komissiyası"] == {"cem": 49.0, "say": 1}
+    assert summary["KOMİSİYA"] == {"cem": 3.82, "say": 1}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 300.0, "say": 1}
+    assert summary["MAAŞ MƏXARİC"] == {"cem": 100.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1000.0, "say": 1}
+    idx = {u["row_index"] for u in unclassified}
+    assert idx == {8}  # meta 1, header 2, data 3..9 → OPEN.SALARY.CARD.FEE row8
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    # Kateqoriya/İcmal 11/12 (access sütunları 1-10)
+    assert main.cell(row=2, column=11).value == "Kateqoriya"
+    assert main.cell(row=2, column=12).value == "İcmal"
+    assert main.cell(row=4, column=11).value == "Nağd çəkim komissiyası"
+    assert main.cell(row=4, column=12).value == 49.0
+
+
+def test_access_finalize_unclassified():
+    """Access unclassified sətirinə manual təsnifat + finalize."""
+    raw = _access_xlsx(
+        [_access_row("Xüsusi əməliyyat - Məxaric (SOP)\nCHEQUE.BOOK", "", 10)]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 1
+    idx = unclassified[0]["row_index"]
+    out, summary = finalize_statement(raw, {idx: "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"})
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 10.0, "say": 1}
+
+
+def test_standard_and_kapital_regression_with_access():
+    """YapıKredi (standard) + Kapital access əlavə olunduqdan sonra dəyişməz."""
+    std = _xlsx_bytes(
+        META,
+        STD_HEADER,
+        [_row("Com. bank komissiyası", "-5.50", "1"), _row("NAKIT CEKME KOMISYONU", "-2.00", "2")],
+    )
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+    assert s1["Nağd çəkim komissiyası"] == {"cem": 2.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", -17.5, "AZN", -17.5, 100, "hesabindan naglashdirma ucun 1 faiz vergi meblegi"]])
+    _, s2, _ = categorize_statement_verbose(kap)
+    assert s2["Nağd çəkim komissiyası"] == {"cem": 17.5, "say": 1}

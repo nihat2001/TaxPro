@@ -6,6 +6,8 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - standard: Əməliyyat Detalları + Debit/Kredit (YapıKredi/AccessBank)
   - kapital:  № | Tarix | ... | Məbləğ (işarəli) | ... | Təyinat
   - yelo:     çoxsətirli header, Mədaxil/Məxaric ayrı, Ödəyən/alan sender
+  - access:   Header 2-ci sətirdə, Mədaxil/Məxaric ayrı,
+              Göndərənin/Alanın Adı sender (ad + IBAN birlikdə)
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -96,7 +98,7 @@ _FORMAT_PROFILES = [
     },
     {
         "name": "yelo",  # Yelo Bank (çoxsətirli header; Mədaxil/Məxaric ayrı)
-        "required": ("teyinat", "medaxil", "mexaric"),
+        "required": ("teyinat", "medaxil", "mexaric", "odeyenalan"),
         "fields": {
             "emeltarixitrdate": "emeliyyat_tarixi",
             "icratarixirealdate": "icra_tarixi",
@@ -108,6 +110,21 @@ _FORMAT_PROFILES = [
             "balansbalance": "balans",
             "kursrate": "kurs",
             "aznekv": "azn_ekv",
+            "kateqoriya": "kateqoriya",
+        },
+    },
+    {
+        "name": "access",  # Access Bank (Header 2-ci sətirdə; Mədaxil/Məxaric ayrı)
+        "required": ("teyinat", "medaxil", "mexaric", "gondereninalanin"),
+        "fields": {
+            "emeliyyattarixipostingdate": "emeliyyat_tarixi",
+            "emeliyyatinsitransactionid": "emeliyyat_no",
+            "medaxilin": "medaxil",
+            "mexaricout": "mexaric",
+            "balansbalance": "balans",
+            "gondereninalaninadisenderbeneficiaryname": "gonderen_alici",
+            "gonderenalanintaxidsenderbeneficiarytaxid": "gonderen_tax",
+            "teyinatdescription": "teyinat",
             "kateqoriya": "kateqoriya",
         },
     },
@@ -153,6 +170,9 @@ _KOMISIYA_EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
 
 # Yelo: Nağd çəkim komissiyası üçün əlavə token.
 _NAGD_CEKIM_YELO = "nagdlasdirmavergisi"
+
+# Access: Nağd çəkim komissiyası üçün əlavə token ('Nağdlaşdırma üçün S/V').
+_NAGD_CEKIM_ACCESS = "nagdlasdirma"
 
 # Yelo: BANK FAİZ XƏRCİ üçün çevik yoxlama (faiz ∧ ödəmə).
 _YELO_FAIZ_TOKEN = "faiz"
@@ -228,6 +248,7 @@ TAX_AUTHORITY_KEYWORDS: list[str] = [
     "VERGI XIDMETI",
     "VERGI XIDMATI",
     "GƏLİR VERGİSİ",
+    "MƏNFƏƏT VERGİSİ",
 ]
 
 # MAAŞ MƏXARİC üçün normalize edilmiş detail pattern-ləri.
@@ -322,6 +343,8 @@ def _match_category(
         if category == "Nağd çəkim komissiyası":
             matched = _match_nagd_cekim(norm_detail) or (
                 profile == "yelo" and _NAGD_CEKIM_YELO in norm_detail
+            ) or (
+                profile == "access" and _NAGD_CEKIM_ACCESS in norm_detail
             )
         elif category == "KOMİSİYA":
             matched = any(p in norm_detail for p in patterns) or _match_komisiya_extra(
@@ -629,6 +652,11 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
         odeyen_col = col_map.get("odeyen")
+    elif profile == "access":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
     else:
         details_col = col_map["emeliyyat_detallari"]  # 0-əsaslı
         debit_col = col_map["debit"]  # 0-əsaslı
@@ -655,6 +683,11 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             debit, kredit = _split_signed_amount(row[mebleg_col].value)
         elif profile == "yelo":
             sender = row[odeyen_col].value if odeyen_col is not None else None
+            detail = row[teyinat_col].value
+            kredit = row[medaxil_col].value
+            debit = row[mexaric_col].value
+        elif profile == "access":
+            sender = row[sender_col].value if sender_col is not None else None
             detail = row[teyinat_col].value
             kredit = row[medaxil_col].value
             debit = row[mexaric_col].value
@@ -736,6 +769,11 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
         odeyen_col = col_map.get("odeyen")
+    elif profile == "access":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
     else:
         details_col = col_map["emeliyyat_detallari"]
         debit_col = col_map["debit"]
@@ -781,6 +819,15 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 sender = (
                     values[odeyen_col]
                     if odeyen_col is not None and odeyen_col < len(values)
+                    else ""
+                )
+                detail = values[teyinat_col] if teyinat_col < len(values) else ""
+                kredit = values[medaxil_col] if medaxil_col < len(values) else None
+                debit_value = values[mexaric_col] if mexaric_col < len(values) else None
+            elif profile == "access":
+                sender = (
+                    values[sender_col]
+                    if sender_col is not None and sender_col < len(values)
                     else ""
                 )
                 detail = values[teyinat_col] if teyinat_col < len(values) else ""
@@ -880,7 +927,7 @@ def _locate_columns(wb):
             debit_col = kredit_col = mebleg_col = None
             if profile == "kapital":
                 mebleg_col = col_map["mebleg"] + 1
-            elif profile == "yelo":
+            elif profile in ("yelo", "access"):
                 debit_col = col_map["mexaric"] + 1
                 kredit_col = col_map["medaxil"] + 1
             else:
