@@ -1362,3 +1362,215 @@ def test_all_profiles_sequential_no_mix():
     vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
     _, s5, _ = categorize_statement_verbose(vtb)
     assert s5["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+
+# ===== Turan Bank format dəstəyi (Header 13-cü sətirdə; tək "Məbləğ", sender yoxdur) =====
+
+TURAN_HEADER = [
+    "№",
+    "Tarix",
+    "Hesab nömrəsi",
+    "Məbləğ",
+    "Məbləğin AZN dəyəri",
+    "Qalıq",
+    "Qalığın AZN dəyəri",
+    "Valyuta",
+    "Təyinat",
+]
+
+
+def _turan_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append([None])  # 1-ci sətir boş (real fayla uyğun)
+    ws.append(["Hesabdan çıxarış / Account statement"])
+    ws.append(["Çıxarışın tarixi / Statement date:", None, None, None, "27-08-2026"])
+    ws.append([""])
+    ws.append(["Müştərinin Adı / Client's Name", None, None, None, "CR CONSTRUCTION MMC"])
+    ws.append([""])
+    ws.append(["Hesab adı", None, None, "CR CONSTRUCTION MMC", "Hesab nömrəsi / IBAN", None, "AZ09TURA40050096495200107944"])
+    ws.append(["Hesabın valyutası / Account Currency", None, None, "AZN", "VÖEN", None, "2008334861"])
+    ws.append(["İlk əməliyyat tarixi", None, None, "2026-01-01", "Son əməliyyat tarixi", None, "2026-08-27"])
+    ws.append(["Günün əvvəlinə qalıq", None, None, 0, "Günün sonuna qalıq", None, 17.63])
+    ws.append([""])
+    ws.append([""])
+    ws.append(TURAN_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _turan_row(no, tarix, mebleg, teyinat):
+    return [
+        no,
+        tarix,
+        "AZ09TURA40050096495200107944",
+        mebleg,
+        mebleg,
+        17.63,
+        17.63,
+        "AZN",
+        teyinat,
+    ]
+
+
+def test_turan_profile_detected_header_on_row_13():
+    """Turan başlığı 13-cü sətirdədir; 12 meta sətir skan edilməlidir."""
+    raw = _turan_xlsx([_turan_row(0, "24-08-2026", -2162.25, "əsas borc üzrə ödəniş")])
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 2162.25, "say": 1}
+
+
+def test_turan_not_stolen_by_kapital():
+    """Konflikt reqressiyası: kapital (tarix+mebleg+teyinat) Turan başlığını oğurlamamalı."""
+    raw = _turan_xlsx(
+        [_turan_row(0, "24-08-2026", -2162.25, "əsas borc üzrə ödəniş")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    # kapital ssenarisi olsaydı sender _extract_sender_name eks_hesab-dan → boş → unclassified qalardı
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 2162.25, "say": 1}
+
+
+def test_kapital_not_stolen_by_turan():
+    """Kapital başlığı turan required token-lərinə (hesabnomresi/qaliq/mebleginazndeyeri) uyğun gəlmir."""
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s1, _ = categorize_statement_verbose(kap)
+    assert s1["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+
+def test_turan_skip_empty_tarix_teyinat():
+    """Yalnız qalıq göstərən yekun sətri (Tarix/Təyinat boş) atlanmalıdır."""
+    raw = _turan_xlsx(
+        [
+            _turan_row(0, "24-08-2026", -2162.25, "əsas borc üzrə ödəniş"),
+            [None, None, None, 17.63, None, None, None, None, None],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 2162.25, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=15, column=10).value is None  # yekun sətir kateqoriyasız
+    assert main.cell(row=15, column=11).value is None
+
+
+def test_turan_nagd_cekim_komissiyasi():
+    """'Nəğd vəsaitə görə 1 % vergi' → Nağd çəkim komissiyası."""
+    assert _match_category(
+        "", "Nəğd vəsaitə görə 1 % vergi - Məbləğ 30000.00 - Vergi məbləği 300.00",
+        None, "-300.00", profile="turan",
+    ) == "Nağd çəkim komissiyası"
+
+
+def test_turan_komisiya_patterns():
+    """AZIPS xidmət haqqı / çek kitabçası rüsumu / hesab açılması / kassa komisyonu → KOMİSİYA."""
+    assert _match_category(
+        "", "AZIPS xidmət haqqı, VESAIT HESABIN MOHKEMLENDIRILMESI UCUN KOCURULUR",
+        None, "-68.61", profile="turan",
+    ) == "KOMİSİYA"
+    assert _match_category(
+        "", "çek kitabçası rüsumu (CR CONSTRUCTION MMC №__283976 dən__284000 dək)",
+        None, "-10", profile="turan",
+    ) == "KOMİSİYA"
+    assert _match_category("", "hesab açılması", None, "-10", profile="turan") == "KOMİSİYA"
+    assert _match_category(
+        "", "Kreditlər üzrə kassa komisyonu - 1%", None, "-1000", profile="turan"
+    ) == "KOMİSİYA"
+
+
+def test_turan_cek_rusumu_not_rusum():
+    """'çek kitabçası rüsumu' KOMİSİYA-ya düşməli, RÜSUM-a deyil (prioritet)."""
+    assert _match_category("", "çek kitabçası rüsumu", None, "-10", profile="turan") == "KOMİSİYA"
+
+
+def test_turan_catchall_without_sender():
+    """Sender sütunu yoxdur — debit → ÖDƏNİŞLƏRİ, kredit → DAXİL OLMALAR."""
+    assert _match_category("", "əsas borc üzrə ödəniş", None, "-2162.25", profile="turan") == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert _match_category("", "kredit tranşı", "100000", None, profile="turan") == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_turan_catchall_without_sender_not_in_standard():
+    """Sender-siz catch-all yalnız turan üçündür — standard profildə boş sender unclassified qalır."""
+    assert _match_category("", "ATM XIRDALAN", None, "-1000") is None
+
+
+def test_turan_end_to_end_counts():
+    """Real Turan strukturuna uyğun end-to-end — proqnoz 1/4/3/6, unclassified 0, skip 1."""
+    rows = [
+        _turan_row(0, "24-08-2026", -2162.25, "L032404/0001 - nömrəli müqavilə üçün əsas borc üzrə ödəniş"),
+        _turan_row(1, "24-08-2026", -1479.13, "L032404/0001 - nömrəli müqavilə üçün faiz borc üzrə ödəniş"),
+        _turan_row(2, "24-08-2026", 3600, "03 saylı 24.08.2026 taixli Borc müq əsasən təsisçidən - Cabbarov Əfqan Rəşid oğlu"),
+        _turan_row(3, "24-07-2026", -1391.38, "L032404/0001 - nömrəli müqavilə üçün əsas borc üzrə ödəniş"),
+        _turan_row(4, "24-07-2026", -2250, "L032404/0001 - nömrəli müqavilə üçün faiz borc üzrə ödəniş"),
+        _turan_row(5, "23-07-2026", 3700, "ƏDV ödəyicisi AZIPS, HESABIN MOHKEMLENMESI KREDIT ODENISI UCUN"),
+        _turan_row(6, "11-06-2026", -68611, "AZIPS, VESAIT HESABIN MOHKEMLENDIRILMESI UCUN KOCURULUR"),
+        _turan_row(7, "11-06-2026", -68.61, "AZIPS xidmət haqqı, VESAIT HESABIN MOHKEMLENDIRILMESI UCUN KOCURULUR"),
+        _turan_row(8, "09-06-2026", -30000, "09/06/2026 tarixli L032404/0001 nömrəli müqavilə üzrə kredit məxaric"),
+        _turan_row(9, "09-06-2026", -300, "Nəğd vəsaitə görə 1 % vergi - Məbləğ 30000.00 - Vergi məbləği 300.00"),
+        _turan_row(10, "09-06-2026", -10, "çek kitabçası rüsumu (CR CONSTRUCTION MMC №__283976 dən__284000 dək)"),
+        _turan_row(11, "09-06-2026", 100000, "L032404/0001- müqavilə üzrə kredit tranşı"),
+        _turan_row(12, "09-06-2026", -10, "hesab açılması"),
+        _turan_row(13, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%"),
+        [None, None, None, 17.63, None, None, None, None, None],  # yekun sətir — skip
+    ]
+    raw = _turan_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["Nağd çəkim komissiyası"] == {"cem": 300.0, "say": 1}
+    assert summary["KOMİSİYA"] == {"cem": 1088.61, "say": 4}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 107300.0, "say": 3}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 105893.76, "say": 6}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    # header 13-cü sətir (1-əsaslı); Kateqoriya/İcmal 10/11
+    assert main.cell(row=13, column=1).value == "№"
+    assert main.cell(row=13, column=10).value == "Kateqoriya"
+    assert main.cell(row=13, column=11).value == "İcmal"
+    assert main.cell(row=14, column=10).value == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert main.cell(row=14, column=11).value == 2162.25
+    assert main.cell(row=16, column=10).value == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert main.cell(row=23, column=10).value == "Nağd çəkim komissiyası"
+    assert main.cell(row=28, column=10).value is None  # skip sətir
+    # Xülasə sheet aktiv
+    assert wb.active.title == "Xülasə"
+
+
+def test_turan_finalize():
+    """Turan profili finalize (işarəli Məbləğ) ilə uyğun işləyir."""
+    raw = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+
+def test_all_six_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb ardıcıl — bir-birinə qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
