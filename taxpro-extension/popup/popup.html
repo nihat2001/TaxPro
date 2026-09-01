@@ -276,6 +276,22 @@
             <button id="rabiteReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-label">BANK OF BAKU ÇIXARIŞI KATEQORİYALAŞDIRMASI</div>
+          <div class="form-group">
+            <label class="file-label" for="bankofbakuStatementFile">Çıxarış seçin (.xlsx, .csv)</label>
+            <input type="file" id="bankofbakuStatementFile" accept=".xlsx,.csv" />
+          </div>
+          <button id="bankofbakuStatementBtn" class="btn primary block" type="button">Kateqoriyalaşdır və endir</button>
+          <div id="bankofbakuStatementResult" class="import-result" hidden></div>
+
+          <div id="bankofbakuReview" class="review-section" hidden>
+            <div class="card-label" id="bankofbakuReviewTitle">Tanınmamış əməliyyatlar</div>
+            <div id="bankofbakuReviewList" class="review-list"></div>
+            <button id="bankofbakuReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
+          </div>
+        </div>
       </section>
     </main>
 

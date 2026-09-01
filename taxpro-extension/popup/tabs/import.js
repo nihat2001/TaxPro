@@ -289,6 +289,7 @@
     bindBankCard("atb", "taxpro_atb_bank_cizarsisi.xlsx");
     bindBankCard("unibank", "taxpro_unibank_cixarsisi.xlsx");
     bindBankCard("rabite", "taxpro_rabite_bank_cizarsisi.xlsx");
+    bindBankCard("bankofbaku", "taxpro_bankofbaku_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);
