@@ -17,6 +17,10 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - atb:      Header 12-ci sətirdə, Debit/Kredit ayrı, Müxbir sender;
               'Xidmet Haqqi' yalnız debit-də KOMİSİYA (kredit → DAXİL);
               yekun (Müddət üzrə dövriyyə) sətirləri atlanır
+  - unibank:  Header 13-cü sətirdə, Mədaxil/Məxaric ayrı, Tərəfdaş sender;
+              sender-siz catch-all (KASSA, kredit ödənişləri);
+              'konvertasiya/xidmet haqqi' yalnız debit-də KOMİSİYA;
+              yekun (Yekun (Summary)) sətirləri atlanır
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -194,6 +198,20 @@ _FORMAT_PROFILES = [
             "kateqoriya": "kateqoriya",
         },
     },
+    {
+        "name": "unibank",  # Unibank (Header 13-cü sətirdə; Mədaxil/Məxaric ayrı, Tərəfdaş sender)
+        "required": ("emeliyyattarixi", "medaxil", "mexaric", "emeliyyatterefdasi", "teyinat"),
+        "fields": {
+            "emeliyyattarixi": "emeliyyat_tarixi",
+            "transactionid": "emeliyyat_no",
+            "emeliyyatterefdasi": "gonderen_alici",
+            "mexaric": "mexaric",
+            "medaxil": "medaxil",
+            "balans": "balans",
+            "teyinat": "teyinat",
+            "kateqoriya": "kateqoriya",
+        },
+    },
 ]
 
 # Kateqoriya qaydaları — sıra vacibdir.
@@ -234,11 +252,13 @@ _KOMISIYA_EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
     "yelo": ("debbeodeme", "emeliyyatmesref", "xidmethaqqi"),
     "turan": ("xidmethaqqi", "cekkitabcasi", "hesabacilmasi"),
     "atb": ("xidmethaqqi",),
+    "unibank": ("xidmethaqqi", "konvertasiya"),
 }
 
 # ATB: 'xidmet haqqi' yalnız DEBIT (məxaric) sətirlərində KOMİSİYA-dır;
 # kredit (mədaxil) 'xidmet haqqi' catch-all-a (DAXİL OLMALAR) qalmalıdır.
-_KOMISIYA_EXTRA_DEBIT_ONLY = ("atb",)
+# Unibank: 'konvertasiya'/'xidmet haqqi' eyni istiqamət qaydası ilə.
+_KOMISIYA_EXTRA_DEBIT_ONLY = ("atb", "unibank")
 
 # Yelo: Nağd çəkim komissiyası üçün əlavə token.
 _NAGD_CEKIM_YELO = "nagdlasdirmavergisi"
@@ -251,7 +271,8 @@ _NAGD_CEKIM_TURAN = "negdvesaitegore"
 
 # Sender sütunu olmayan profillər üçün catch-all sender tələb etmir
 # (Turan: debit → ÖDƏNİŞLƏRİ, kredit → DAXİL OLMALAR).
-_CATCHALL_NO_SENDER = ("turan",)
+# Unibank-da çoxlu boş-sender əməliyyat var (KASSA, kredit ödənişləri, konvertasiya).
+_CATCHALL_NO_SENDER = ("turan", "unibank")
 
 # VTB: kiril 'комиссия' normalize_text ilə boşaldılır (yalnız [a-z0-9] saxlanır);
 # buna görə KOMİSİYA raw (lowered) mətndə yoxlanılır ('Комиссия за срочность').
@@ -754,6 +775,12 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         mexaric_col = col_map["mexaric"]
         sender_col = col_map.get("gonderen_alici")
         tarix_col = col_map.get("emeliyyat_tarixi")
+    elif profile == "unibank":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
+        tarix_col = col_map.get("emeliyyat_tarixi")
     elif profile == "yelo":
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
@@ -811,6 +838,14 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             detail = row[teyinat_col].value
             if not _cell_text(tarix) or not _cell_text(detail) or not _sender_nonempty(sender):
                 continue  # yekun/summary sətri (Müddət üzrə dövriyyə / sonunda qalıq) — atla
+            kredit = row[medaxil_col].value
+            debit = row[mexaric_col].value
+        elif profile == "unibank":
+            tarix = row[tarix_col].value if tarix_col is not None else None
+            sender = row[sender_col].value if sender_col is not None else None
+            detail = row[teyinat_col].value
+            if not _cell_text(tarix) or not _cell_text(detail):
+                continue  # yekun/summary sətri (Yekun (Summary)) — atla
             kredit = row[medaxil_col].value
             debit = row[mexaric_col].value
         elif profile == "yelo":
@@ -912,6 +947,12 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
         mexaric_col = col_map["mexaric"]
         sender_col = col_map.get("gonderen_alici")
         tarix_col = col_map.get("emeliyyat_tarixi")
+    elif profile == "unibank":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
+        tarix_col = col_map.get("emeliyyat_tarixi")
     elif profile == "yelo":
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
@@ -1008,6 +1049,22 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 detail = values[teyinat_col] if teyinat_col < len(values) else ""
                 if not _cell_text(tarix) or not _cell_text(detail) or not _sender_nonempty(sender):
                     continue  # yekun/summary sətri — atla
+                kredit = values[medaxil_col] if medaxil_col < len(values) else None
+                debit_value = values[mexaric_col] if mexaric_col < len(values) else None
+            elif profile == "unibank":
+                tarix = (
+                    values[tarix_col]
+                    if tarix_col is not None and tarix_col < len(values)
+                    else ""
+                )
+                sender = (
+                    values[sender_col]
+                    if sender_col is not None and sender_col < len(values)
+                    else ""
+                )
+                detail = values[teyinat_col] if teyinat_col < len(values) else ""
+                if not _cell_text(tarix) or not _cell_text(detail):
+                    continue  # yekun/summary sətri (Yekun (Summary)) — atla
                 kredit = values[medaxil_col] if medaxil_col < len(values) else None
                 debit_value = values[mexaric_col] if mexaric_col < len(values) else None
             elif profile == "yelo":
@@ -1122,7 +1179,7 @@ def _locate_columns(wb):
             debit_col = kredit_col = mebleg_col = None
             if profile in ("kapital", "turan"):
                 mebleg_col = col_map["mebleg"] + 1
-            elif profile in ("yelo", "access", "vtb", "ziraat", "atb"):
+            elif profile in ("yelo", "access", "vtb", "ziraat", "atb", "unibank"):
                 debit_col = col_map["mexaric"] + 1
                 kredit_col = col_map["medaxil"] + 1
             else:

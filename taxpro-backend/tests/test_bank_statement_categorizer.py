@@ -1999,3 +1999,209 @@ def test_all_eight_profiles_sequential_no_mix():
     atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
     _, s8, _ = categorize_statement_verbose(atb)
     assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+
+# ===== Unibank format dəstəyi (Header 13-cü sətirdə; Mədaxil/Məxaric ayrı, Tərəfdaş sender) =====
+
+UNIBANK_HEADER = [
+    "VÖEN\n(TIN)",
+    "Əməliyyat tarixi\n(Transaction date)",
+    "Mədaxil\n(Paid In)",
+    "Məxaric\n(Paid Out)",
+    "Balans\n(Balance)",
+    "Əməliyyat Tərəfdaşı\n(Counterparty Name)",
+    "Təyinat\n(Description)",
+    "POS Transaction ID",
+    "Transaction ID",
+]
+
+
+def _unibank_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Unibank ASC-nin Biznes Mərkəzi Filialı"])
+    ws.append(["1300017201"])
+    ws.append(["Bakı ş.,AZ1014, Rəşid Behbudov"])
+    ws.append(["Operator: İnternet Bankçılıq"])
+    ws.append([""])
+    ws.append(["ÇIXARIŞ(ACCOUNT INFORMATION):", "01.01.2026 - 25.08.2026(25.08.2026)"])
+    ws.append(["Hesabın üzrə çıxarış(Account):", "AZ26UBAZ44899385440060AZN001"])
+    ws.append(["Müştərinin adı(Name):", "PRESTIGE ELECTRONICS MMC"])
+    ws.append(["VÖEN(TIN):", "1102475261"])
+    ws.append(["Müştərinin ünvanı(Address):", ""])
+    ws.append(["Valyutanın adı(Currency):", "AZN"])
+    ws.append([""])
+    ws.append(UNIBANK_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _unibank_row(tarix, medaxil, mexaric, teyinat, terefdas=None):
+    return [
+        "1102475261",
+        tarix,
+        medaxil if medaxil is not None else "-",
+        mexaric if mexaric is not None else "-",
+        "34395.58",
+        terefdas,
+        teyinat,
+        None,
+        "6768032680",
+    ]
+
+
+def test_unibank_profile_detected_header_on_row_13():
+    """Unibank başlığı 13-cü sətirdədir (index 12); 12 meta sətir skan edilməlidir."""
+    raw = _unibank_xlsx(
+        [_unibank_row("05.01.2026", 32700, None, "KASSA QALIĞI")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 32700.0, "say": 1}
+
+
+def test_unibank_not_stolen_by_other_profiles():
+    """Mövcud 8 profil Unibank başlığını tanımır."""
+    raw = _unibank_xlsx(
+        [_unibank_row("05.01.2026", None, 34249.63, "hesabin mohkemlendirilmesi")]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 34249.63, "say": 1}
+
+
+def test_unibank_skip_summary_rows():
+    """Yekun (Summary) + boş sətirlər atlanmalıdır."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", 32700, None, "KASSA QALIĞI"),
+            ["Yekun (Summary)", None, "963459.61", "965154.48", None, None, None, None, None],
+            [None, None, None, None, None, None, None, None, None],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 32700.0, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=15, column=10).value is None  # Yekun (Summary)
+    assert main.cell(row=16, column=10).value is None  # boş sətir
+
+
+def test_unibank_konvertasiya_debit_komisiya():
+    """Debit 'konvertasiya' → KOMİSİYA (debit-istiqamət qoruyucusu ilə)."""
+    assert _match_category("", "konvertasiya", 0, "208.25", profile="unibank") == "KOMİSİYA"
+
+
+def test_unibank_konvertasiya_kredit_catchall_daxil():
+    """KRİTİK: kredit 'konvertasiya' → KOMİSİYA deyil, DAXİL OLMALAR."""
+    assert _match_category("", "konvertasiya", "100", 0, profile="unibank") == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category("", "konvertasiya", "100", 0, profile="unibank") != "KOMİSİYA"
+
+
+def test_unibank_komisiya_generic_kom():
+    """Ümumi 'kom' ('komisiyya haqqı') → KOMİSİYA (profilə-xas yox, ümumi)."""
+    assert _match_category("", "Kredit prosedura üzrə komisiyya haqqı", 0, "4000", profile="unibank") == "KOMİSİYA"
+
+
+def test_unibank_sender_siz_catchall():
+    """Boş-sender əməliyyatları sender-siz catch-all ilə kateqoriyalaşır."""
+    assert _match_category("", "KASSA QALIĞI", "32700", 0, profile="unibank") == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category("", "karta kocurme", 0, "3000", profile="unibank") == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_unibank_vergi():
+    """Mərkəzi Sosial sığorta sender → VERGİ MƏXARİC."""
+    assert _match_category(
+        "Hüquqi şəxslər üzrə Adi Merkezi Sosial sig.FUI",
+        "AZ36CTRE00000000000007017617 DSMF", 0, "4500", profile="unibank",
+    ) == "VERGİ MƏXARİC"
+
+
+def test_unibank_end_to_end_counts():
+    """Real Unibank strukturuna uyğun end-to-end — proqnoz 11/18/2/57/63 = 151, skip 3."""
+    rows = []
+    for _ in range(10):
+        rows.append(_unibank_row("05.01.2026", None, 100, "konvertasiya"))
+    rows.append(_unibank_row("05.01.2026", None, 4000, "Kredit prosedura üzrə komisiyya haqqı"))
+    for _ in range(18):
+        rows.append(_unibank_row("08.01.2026", None, 10, "AZ36CTRE00000000000007017617 DSMF", "Hüquqi şəxslər üzrə Adi Merkezi Sosial sig.FUI"))
+    for _ in range(2):
+        rows.append(_unibank_row("05.01.2026", None, 100, "EDV odenisi"))
+    for _ in range(57):
+        rows.append(_unibank_row("05.01.2026", 100, None, "KASSA QALIĞI"))
+    for _ in range(63):
+        rows.append(_unibank_row("05.01.2026", None, 10, "karta kocurme"))
+    rows.append(["Yekun (Summary)", None, "963459.61", "965154.48", None, None, None, None, None])
+    rows.append([None, None, None, None, None, None, None, None, None])
+    rows.append([None, None, None, None, None, None, None, None, None])
+    raw = _unibank_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 5000.0, "say": 11}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 180.0, "say": 18}
+    assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 200.0, "say": 2}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 5700.0, "say": 57}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 630.0, "say": 63}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=13, column=1).value == "VÖEN\n(TIN)"
+    assert main.cell(row=13, column=10).value == "Kateqoriya"
+    assert main.cell(row=13, column=11).value == "İcmal"
+    assert main.cell(row=14, column=10).value == "KOMİSİYA"
+    assert main.cell(row=14, column=11).value == 100.0
+    assert main.cell(row=165, column=10).value is None  # Yekun (Summary)
+    assert main.cell(row=166, column=10).value is None  # boş
+    assert main.cell(row=167, column=10).value is None  # boş
+    assert wb.active.title == "Xülasə"
+
+
+def test_unibank_finalize():
+    """Unibank profili finalize ilə uyğun işləyir."""
+    raw = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+
+
+def test_all_nine_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat + atb + unibank ardıcıl — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s8, _ = categorize_statement_verbose(atb)
+    assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+    uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, s9, _ = categorize_statement_verbose(uni)
+    assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
