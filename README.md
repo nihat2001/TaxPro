@@ -10,6 +10,7 @@ idarə edir və Excel/CSV faylından toplu profil idxalını təmin edir.
 - **Qeydiyyat rejimi** — istifadəçi portal formasında sahə seçir, selector eşləmələri DB-yə yazılır (dəfələrlə istifadə üçün).
 - **Profil idarəetməsi** — CRUD, rəng/ikon seçimi; PIN/PUK Fernet ilə şifrələnir, siyahılarda maskalanır.
 - **Excel idxalı** — tək formatlı deterministik emal (.xlsx/.xls/.csv); telefon normallaşdırması, tarix dəstəyi, əskik-sütun xətası dəqiq göstərilir; nümunə şablon endirmə.
+- **Bank çıxarışı kateqoriyalaşdırması** — 11 bank format profili avtomatik tanınır (YapıKredi, Turan, Kapital, Yelo, Access, VTB, Ziraat, ATB, Unibank, Rabitə, Bank of Baku); 2-mərhələli axın: `categorize` (xülasə + unclassified + fayl) → `finalize` (manual təsnifat override → yekun .xlsx). AI/ML yoxdur — tam deterministik pattern-matching.
 - **30 portal** üçün domen əsaslı favicon + statik logo override-ları (hərf-avatar fallback ilə).
 
 ## Arxitektura
@@ -32,13 +33,13 @@ flowchart LR
 ```
 taxpro-backend/
 ├── app/
-│   ├── api/v1/endpoints/    # REST: profiles, portals, import/excel (+ şablon)
+│   ├── api/v1/endpoints/    # REST: profiles, portals, import/excel, import/bank-statement (categorize+finalize)
 │   ├── core/                # config (pydantic-settings), database, security (Fernet), logging
 │   ├── models/              # SQLAlchemy: Profile, Portal
-│   ├── schemas/             # Pydantic v2 sxemləri
-│   ├── services/deterministic/  # excel_parser, autofill_service, portal_service, profile_service
+│   ├── schemas/             # Pydantic v2 sxemləri (BankStatementSummary — 11 kateqoriya)
+│   ├── services/deterministic/  # excel_parser, bank_statement_categorizer, autofill_service, portal_service, profile_service
 │   └── main.py
-├── alembic/versions/        # Miqrasiyalar 0001–0010 (seed + URL/logo düzəlişləri)
+├── alembic/versions/        # Miqrasiyalar 0001–0012 (seed + URL/logo düzəlişləri + telefon normallaşdırma)
 ├── tests/                   # pytest inteqrasiya testləri (conftest real DB)
 ├── Dockerfile · alembic.ini · requirements.txt · .env.example
 
@@ -58,7 +59,7 @@ taxpro-extension/
 |---|---|
 | API | FastAPI, Pydantic v2, SQLAlchemy v2 (async) |
 | DB | PostgreSQL, Alembic |
-| Emal | pandas + openpyxl (Excel/CSV idxalı), cryptography (Fernet) |
+| Emal | pandas + openpyxl (Excel/CSV idxalı + bank çıxarışı kateqoriyalaşdırması), cryptography (Fernet) |
 | Infra | Docker (backend) |
 | Extension | Manifest V3, vanilla JS, Chrome Side Panel API |
 
@@ -82,7 +83,48 @@ sequenceDiagram
     API->>PARSER: parse_standard
     PARSER->>DB: profilləri yaz
     API-->>P: nəticə (inserted / atlanan sətirlər)
+    Note over U,DB: Bank çıxarışı kateqoriyalaşdırması
+    U->>P: Bank kartında çıxarış faylı seç
+    P->>API: POST /import/bank-statement/categorize
+    API-->>P: summary + unclassified + fayl (base64)
+    P->>P: unclassified>0 → review dropdown (11 kateqoriya)
+    P->>API: POST /import/bank-statement/finalize (selections)
+    API-->>P: yekun .xlsx + X-Summary header
 ```
+
+## Bank çıxarışı kateqoriyalaşdırması
+
+Deterministik emal — AI/ML yoxdur, yalnız sabit pattern-matching. Format profilləri `_FORMAT_PROFILES`-də
+avtomatik tanınır (hər bank üçün unikal required header token-ləri; profillər bir-birinə qarışmır).
+
+**11 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
+RÜSUM · VERGİ MƏXARİC · MAAŞ MƏXARİC · TƏSİSÇİDƏN BORC · DİGƏR ŞİRKƏT DAXİL OLMALAR ·
+DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
+
+**Dəstəklənən format profilləri (11):**
+
+| Profil | Bank | Header qeydləri |
+|---|---|---|
+| `standard` | YapıKredi / ümumi | Əməliyyat Detalları + Debit/Kredit |
+| `turan` | Turan Bank | Tək "Məbləğ" (mənfi=məxaric); sender-siz catch-all |
+| `kapital` | Kapital Bank | № / Tarix / Məbləğ / Təyinat; Terminal-Komissiya |
+| `yelo` | Yelo Bank | Mədaxil/Məxaric ayrı, Ödəyən/alan sender; Əsas ödəmə → kateqoriyasız |
+| `access` | Access Bank | Header 2-ci sətirdə; Göndərənin/Alanın Adı sender |
+| `vtb` | VTB Bank | Debet/Kredit ayrı; kiril "Комиссия за срочность" → KOMİSİYA |
+| `ziraat` | Ziraat Bank | Müxbirin adı sender; CƏMİ/Çıxış qalıq atlanır |
+| `atb` | ATB Bank | Müxbir sender; "Xidmet Haqqi" yalnız debit-də KOMİSİYA |
+| `unibank` | Unibank | Tərəfdaş sender; "konvertasiya" debit-də KOMİSİYA; sender-siz catch-all |
+| `rabite` | Rabitə Bank | Qarşı tərəfin adı sender; "Haqq və komissiya gəlirləri" → KOMİSİYA |
+| `bankofbaku` | Bank of Baku | Profit/Expenditure; Debet Account sender |
+
+**2-mərhələli axın:**
+1. `POST /import/bank-statement/categorize` → `{summary, unclassified[], file_base64}` — hər kateqoriya üzrə
+   say/cəm; tanınmayan sətirlər unclassified siyahısında.
+2. `POST /import/bank-statement/finalize` (multipart: fayl + `selections` JSON) → yekun .xlsx
+   (Kateqoriya + İcmal sütunları, "Xülasə" sheet-i) + `X-Summary` header.
+
+Extension-ın "Bank Çıxarışı" tab-ında hər bank üçün müstəqil kart + unclassified>0 olduqda review
+(11 kateqoriya dropdown + "Təsdiqlə və yenidən yüklə").
 
 ## Təhlükəsizlik qeydləri
 
