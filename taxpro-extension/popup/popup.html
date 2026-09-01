@@ -180,6 +180,22 @@
             <button id="accessReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-label">VTB BANK ÇIXARIŞI KATEQORİYALAŞDIRMASI</div>
+          <div class="form-group">
+            <label class="file-label" for="vtbStatementFile">Çıxarış seçin (.xlsx, .csv)</label>
+            <input type="file" id="vtbStatementFile" accept=".xlsx,.csv" />
+          </div>
+          <button id="vtbStatementBtn" class="btn primary block" type="button">Kateqoriyalaşdır və endir</button>
+          <div id="vtbStatementResult" class="import-result" hidden></div>
+
+          <div id="vtbReview" class="review-section" hidden>
+            <div class="card-label" id="vtbReviewTitle">Tanınmamış əməliyyatlar</div>
+            <div id="vtbReviewList" class="review-list"></div>
+            <button id="vtbReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
+          </div>
+        </div>
       </section>
     </main>
 

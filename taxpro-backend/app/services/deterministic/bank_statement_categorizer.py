@@ -8,6 +8,8 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - yelo:     çoxsətirli header, Mədaxil/Məxaric ayrı, Ödəyən/alan sender
   - access:   Header 2-ci sətirdə, Mədaxil/Məxaric ayrı,
               Göndərənin/Alanın Adı sender (ad + IBAN birlikdə)
+  - vtb:      Header 11-ci sətirdə, Debet/Kredit ayrı, kiril
+              'Комиссия за срочность' → KOMİSİYA (raw lowered yoxlanır)
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -128,6 +130,21 @@ _FORMAT_PROFILES = [
             "kateqoriya": "kateqoriya",
         },
     },
+    {
+        "name": "vtb",  # VTB Bank (Header 11-ci sətirdə; Debet/Kredit ayrı)
+        "required": ("qarsihesab", "debet", "kredit", "qaliq"),
+        "fields": {
+            "tarix": "emeliyyat_tarixi",
+            "qarsihesab": "qarsi_hesab",
+            "adi": "gonderen_alici",
+            "voen": "gonderen_tax",
+            "debet": "mexaric",
+            "kredit": "medaxil",
+            "qaliq": "balans",
+            "teyinat": "teyinat",
+            "kateqoriya": "kateqoriya",
+        },
+    },
 ]
 
 # Kateqoriya qaydaları — sıra vacibdir.
@@ -173,6 +190,10 @@ _NAGD_CEKIM_YELO = "nagdlasdirmavergisi"
 
 # Access: Nağd çəkim komissiyası üçün əlavə token ('Nağdlaşdırma üçün S/V').
 _NAGD_CEKIM_ACCESS = "nagdlasdirma"
+
+# VTB: kiril 'комиссия' normalize_text ilə boşaldılır (yalnız [a-z0-9] saxlanır);
+# buna görə KOMİSİYA raw (lowered) mətndə yoxlanılır ('Комиссия за срочность').
+_KOMISIYA_CYRILLIC = "комиссия"
 
 # Yelo: BANK FAİZ XƏRCİ üçün çevik yoxlama (faiz ∧ ödəmə).
 _YELO_FAIZ_TOKEN = "faiz"
@@ -347,8 +368,10 @@ def _match_category(
                 profile == "access" and _NAGD_CEKIM_ACCESS in norm_detail
             )
         elif category == "KOMİSİYA":
-            matched = any(p in norm_detail for p in patterns) or _match_komisiya_extra(
-                profile, norm_detail
+            matched = (
+                any(p in norm_detail for p in patterns)
+                or _match_komisiya_extra(profile, norm_detail)
+                or (profile == "vtb" and _KOMISIYA_CYRILLIC in lowered)
             )
         elif category == "BANK FAİZ XƏRCİ":
             matched = any(p in norm_detail for p in patterns) or (
@@ -652,7 +675,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
         odeyen_col = col_map.get("odeyen")
-    elif profile == "access":
+    elif profile in ("access", "vtb"):
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
@@ -686,7 +709,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             detail = row[teyinat_col].value
             kredit = row[medaxil_col].value
             debit = row[mexaric_col].value
-        elif profile == "access":
+        elif profile in ("access", "vtb"):
             sender = row[sender_col].value if sender_col is not None else None
             detail = row[teyinat_col].value
             kredit = row[medaxil_col].value
@@ -769,7 +792,7 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
         odeyen_col = col_map.get("odeyen")
-    elif profile == "access":
+    elif profile in ("access", "vtb"):
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
@@ -824,7 +847,7 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 detail = values[teyinat_col] if teyinat_col < len(values) else ""
                 kredit = values[medaxil_col] if medaxil_col < len(values) else None
                 debit_value = values[mexaric_col] if mexaric_col < len(values) else None
-            elif profile == "access":
+            elif profile in ("access", "vtb"):
                 sender = (
                     values[sender_col]
                     if sender_col is not None and sender_col < len(values)
@@ -927,7 +950,7 @@ def _locate_columns(wb):
             debit_col = kredit_col = mebleg_col = None
             if profile == "kapital":
                 mebleg_col = col_map["mebleg"] + 1
-            elif profile in ("yelo", "access"):
+            elif profile in ("yelo", "access", "vtb"):
                 debit_col = col_map["mexaric"] + 1
                 kredit_col = col_map["medaxil"] + 1
             else:

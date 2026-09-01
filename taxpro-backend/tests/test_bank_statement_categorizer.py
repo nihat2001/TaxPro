@@ -1157,3 +1157,208 @@ def test_standard_and_kapital_regression_with_access():
     kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", -17.5, "AZN", -17.5, 100, "hesabindan naglashdirma ucun 1 faiz vergi meblegi"]])
     _, s2, _ = categorize_statement_verbose(kap)
     assert s2["Nağd çəkim komissiyası"] == {"cem": 17.5, "say": 1}
+
+
+# ===== VTB Bank format dəstəyi (Header 11-ci sətirdə; Debet/Kredit ayrı) =====
+
+VTB_HEADER = [
+    "Tarix",
+    "Qarşı hesab",
+    "Adı",
+    "VÖEN",
+    "Debet",
+    "Kredit",
+    "Qalıq",
+    "Təyinat",
+]
+
+
+def _vtb_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["BANK VTB (AZƏRBAYCAN) ASC"])
+    ws.append(["VÖEN: 1400117231"])
+    ws.append(["Müştərinin adı", '"GLOBAL EXPORTS" MMC'])
+    ws.append(["Hesab", "AZ19VTBA04006004375789AZN001"])
+    ws.append(["VÖEN", "1302070301"])
+    ws.append(["Valyuta", "AZN"])
+    ws.append(["Çıxarışın müddəti", "2025-01-01 - 2025-12-31"])
+    ws.append(["Dövrün əvvəlinə qalıq", "171.99"])
+    ws.append(["Dövrün sonuna qalıq", "1058.46"])
+    ws.append(["Dövr", "2025"])
+    ws.append(VTB_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _vtb_row(detail, debet=None, kredit=None, adi="FKT MMC", voen="2905379861"):
+    return [
+        "24.09.2025 17:50",
+        "AZ29VTBA04016004375789RUB001",
+        adi,
+        voen,
+        debet,
+        kredit,
+        "1000",
+        detail,
+    ]
+
+
+def test_vtb_profile_detected_header_on_row_11():
+    """VTB başlığı 11-ci sətirdədir; 10 meta sətir skan edilməlidir."""
+    raw = _vtb_xlsx([_vtb_row("Outward remittance commission", debet=16.56, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 16.56, "say": 1}
+
+
+def test_vtb_outward_remittance_commission():
+    """'Outward remittance commission' ümumi 'commission' qaydası ilə → KOMİSİYA."""
+    assert _match_category(
+        "BANK VTB (AZƏRBAYCAN) ASC",
+        "Outward remittance commission",
+        None,
+        "16.56",
+        profile="vtb",
+    ) == "KOMİSİYA"
+
+
+def test_vtb_cyrillic_komissiya():
+    """KRİTİK: kiril 'Комиссия за срочность' normalize ilə boşalır; KOMİSİYA olmalı."""
+    assert _match_category(
+        "BANK VTB (AZƏRBAYCAN) ASC",
+        "Комиссия за срочность",
+        None,
+        "5",
+        profile="vtb",
+    ) == "KOMİSİYA"
+
+
+def test_vtb_cyrillic_komissiya_other_profiles_inactive():
+    """Kiril KOMİSİYA token-i yalnız vtb profildə aktivdir (izolyasiya)."""
+    assert _match_category(
+        "BANK VTB (AZƏRBAYCAN) ASC", "Комиссия за срочность", None, "5"
+    ) != "KOMİSİYA"
+
+
+def test_vtb_vergi_meharic():
+    """DSMF / İcbari Tibbi Sığorta → VERGİ MƏXARİC (ümumi TAX keyword)."""
+    assert _match_category(
+        "DSMF Iri Sigortaedanlarla Is uzra Idara",
+        "27.10.2025-ci il tarixli 25959703534AS saylı DSMF üzrə sərəncamın tam ödənişi",
+        None,
+        "403.39",
+        profile="vtb",
+    ) == "VERGİ MƏXARİC"
+    assert _match_category(
+        "Icbari Tibbi Sigorta uzra DA",
+        "27.10.2025-ci il tarixli 25959703553AT saylı Icbari tibbi sığorta üzrə sərəncamın tam ödənişi",
+        None,
+        "0.21",
+        profile="vtb",
+    ) == "VERGİ MƏXARİC"
+
+
+def test_vtb_edv_odenisi():
+    """'esasen EDV odenilir' → ƏDV ÖDƏNİŞİ (ümumi VAT pattern)."""
+    assert _match_category(
+        "FKT MMC", "e-qaime MT2510 11711243 11711206 11711252 esasen EDV odenilir",
+        None, "9600.52", profile="vtb",
+    ) == "ƏDV ÖDƏNİŞİ"
+
+
+def test_vtb_daxil_and_odenis_catchall():
+    """Kredit → DAXİL OLMALAR; debit + sender → ÖDƏNİŞLƏRİ."""
+    assert _match_category(
+        '"GLOBAL EXPORTS" MMC',
+        "Customer's transfer FCY INPUT_OUTPUT Currency Conversion N 189041",
+        "87409", None, profile="vtb",
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert _match_category(
+        "FKT MMC", "e-qaime MT2509 10887993 10887995 10887991 10887994 10887987",
+        None, "16558.19", profile="vtb",
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_vtb_not_mistaken_for_yelo_access():
+    """VTB başlığı yelo/access kimi tanınmamalıdır (token izolyasiyası)."""
+    raw = _vtb_xlsx([_vtb_row("Outward remittance commission", debet=16.56, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, summary, _ = categorize_statement_verbose(raw)
+    # yelo/access-ə xas 'xidmət haqqı'/'DƏBBƏ ÖDƏMƏ' yoxdur; profil düzgün seçilməlidir
+    assert summary["KOMİSİYA"] == {"cem": 16.56, "say": 1}
+
+
+def test_vtb_end_to_end_counts():
+    """Real VTB strukturuna uyğun end-to-end — proqnoz 52/2/4/19/36, unclassified 0."""
+    rows = []
+    for _ in range(42):
+        rows.append(_vtb_row("Outward remittance commission", debet=1.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231"))
+    for _ in range(10):
+        rows.append(_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231"))
+    rows.append(_vtb_row("e-qaime MT2510 11711243 esasen EDV odenilir", debet=9600.52))
+    rows.append(_vtb_row("e-qaime MT2512 10065609 esasen EDV odenilir", debet=6549.68))
+    rows.append(_vtb_row("27.10.2025 DSMF üzrə sərəncamın tam ödənişi", debet=403.39, adi="DSMF Iri Sigortaedanlarla Is uzra Idara", voen="1300115511"))
+    rows.append(_vtb_row("27.10.2025 DSMF üzrə sərəncamın tam ödənişi", debet=41.08, adi="DSMF Iri Sigortaedanlarla Is uzra Idara", voen="1300115511"))
+    rows.append(_vtb_row("27.10.2025 Icbari tibbi sığorta üzrə sərəncam", debet=0.21, adi="Icbari Tibbi Sigorta uzra DA", voen="1701911851"))
+    rows.append(_vtb_row("27.10.2025 Icbari tibbi sığorta üzrə sərəncam", debet=53.14, adi="Icbari Tibbi Sigorta uzra DA", voen="1701911851"))
+    for _ in range(19):
+        rows.append(_vtb_row("Customer's transfer FCY INPUT_OUTPUT Currency Conversion", kredit=1000, adi='"GLOBAL EXPORTS" MMC', voen=""))
+    for _ in range(36):
+        rows.append(_vtb_row("e-qaime MT2509 10887993 esasen odenilir", debet=100))
+    raw = _vtb_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 92.0, "say": 52}
+    assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 16150.2, "say": 2}
+    assert summary["VERGİ MƏXARİC"] == {"cem": pytest.approx(497.82), "say": 4}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 19000.0, "say": 19}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 3600.0, "say": 36}
+    assert unclassified == []
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    # header 11-ci sətir (1-əsaslı); Kateqoriya/İcmal 9/10
+    assert main.cell(row=11, column=1).value == "Tarix"
+    assert main.cell(row=11, column=9).value == "Kateqoriya"
+    assert main.cell(row=11, column=10).value == "İcmal"
+    # 42 outward → row 12 KOMİSİYA, İcmal 1.0
+    assert main.cell(row=12, column=9).value == "KOMİSİYA"
+    assert main.cell(row=12, column=10).value == 1.0
+    # ilk kiril sətir → row 12+42+1 = 55 KOMİSİYA
+    assert main.cell(row=55, column=9).value == "KOMİSİYA"
+    # Xülasə sheet aktiv
+    assert wb.active.title == "Xülasə"
+
+
+def test_vtb_finalize():
+    """VTB profili finalize (manual override) ilə uyğun işləyir."""
+    raw = _vtb_xlsx([_vtb_row("hesablar arasi kocurme edilir", debet=5, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0  # catch-all → ÖDƏNİŞLƏRİ, unclassified yoxdur
+    out, summary = finalize_statement(raw, {})
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 5.0, "say": 1}
+
+
+def test_all_profiles_sequential_no_mix():
+    """standard + kapital + yelo + access + vtb ardıcıl — bir-birinə qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s2, _ = categorize_statement_verbose(kap)
+    assert s2["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s3, _ = categorize_statement_verbose(yelo)
+    assert s3["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s4, _ = categorize_statement_verbose(access)
+    assert s4["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s5, _ = categorize_statement_verbose(vtb)
+    assert s5["KOMİSİYA"] == {"cem": 5.0, "say": 1}

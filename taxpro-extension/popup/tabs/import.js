@@ -283,6 +283,7 @@
     bindBankCard("kapital", "taxpro_kapital_bank_cizarsisi.xlsx");
     bindBankCard("yelo", "taxpro_yelo_bank_cizarsisi.xlsx");
     bindBankCard("access", "taxpro_access_bank_cizarsisi.xlsx");
+    bindBankCard("vtb", "taxpro_vtb_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);
