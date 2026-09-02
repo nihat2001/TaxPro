@@ -284,7 +284,7 @@ def test_priority_vergi_over_company_payment():
     )
 
 
-def test_summary_has_eleven_categories():
+def test_summary_has_sixteen_categories():
     out, summary = categorize_statement(
         _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
     )
@@ -297,6 +297,11 @@ def test_summary_has_eleven_categories():
         "VERGİ MƏXARİC",
         "MAAŞ MƏXARİC",
         "TƏSİSÇİDƏN BORC",
+        "Hesab Möhkəmlənməsi",
+        "Nağdlaşdırma",
+        "Konvertasiya",
+        "Bank xərci",
+        "Divident ödəniş",
         "DİGƏR ŞİRKƏT DAXİL OLMALAR",
         "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
         "Terminal-Komissiya",
@@ -1336,9 +1341,9 @@ def test_vtb_finalize():
     """VTB profili finalize (manual override) ilə uyğun işləyir."""
     raw = _vtb_xlsx([_vtb_row("hesablar arasi kocurme edilir", debet=5, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
     _, _, unclassified = categorize_statement_verbose(raw)
-    assert len(unclassified) == 0  # catch-all → ÖDƏNİŞLƏRİ, unclassified yoxdur
+    assert len(unclassified) == 0  # Hesab Möhkəmlənməsi → unclassified yoxdur
     out, summary = finalize_statement(raw, {})
-    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 5.0, "say": 1}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 5.0, "say": 1}
 
 
 def test_all_profiles_sequential_no_mix():
@@ -1521,8 +1526,10 @@ def test_turan_end_to_end_counts():
     out, summary, unclassified = categorize_statement_verbose(raw)
     assert summary["Nağd çəkim komissiyası"] == {"cem": 300.0, "say": 1}
     assert summary["KOMİSİYA"] == {"cem": 1088.61, "say": 4}
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 107300.0, "say": 3}
-    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 105893.76, "say": 6}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 72311.0, "say": 2}
+    assert summary["Nağdlaşdırma"] == {"cem": 30000.0, "say": 1}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 103600.0, "say": 2}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 7282.76, "say": 4}
     assert unclassified == []
 
     wb = _reload(out)
@@ -1534,6 +1541,8 @@ def test_turan_end_to_end_counts():
     assert main.cell(row=14, column=10).value == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
     assert main.cell(row=14, column=11).value == 2162.25
     assert main.cell(row=16, column=10).value == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    assert main.cell(row=19, column=10).value == "Hesab Möhkəmlənməsi"
+    assert main.cell(row=22, column=10).value == "Nağdlaşdırma"
     assert main.cell(row=23, column=10).value == "Nağd çəkim komissiyası"
     assert main.cell(row=28, column=10).value is None  # skip sətir
     # Xülasə sheet aktiv
@@ -1635,16 +1644,16 @@ def test_ziraat_profile_detected_header_on_row_13():
         [_ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1198804.1, "Valyuta Satışı 1.963")]
     )
     _, summary, _ = categorize_statement_verbose(raw)
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1198804.1, "say": 1}
+    assert summary["Konvertasiya"] == {"cem": 1198804.1, "say": 1}
 
 
 def test_ziraat_not_stolen_by_other_profiles():
-    """Mövcud profillər Ziraat başlığını tanımır — catch-all davranışı düzgündür."""
+    """Mövcud profillər Ziraat başlığını tanımır — Konvertasiya davranışı düzgündür."""
     raw = _ziraat_xlsx(
         [_ziraat_row("30.09.2021", "CODE", "AZ75TCZB40130978006598700102", "İNTEKS MMC", 0, 1000, "Valyuta Satışı")]
     )
     _, summary, _ = categorize_statement_verbose(raw)
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1000.0, "say": 1}
+    assert summary["Konvertasiya"] == {"cem": 1000.0, "say": 1}
 
 
 def test_ziraat_skip_summary_rows():
@@ -1657,7 +1666,7 @@ def test_ziraat_skip_summary_rows():
         ]
     )
     out, summary, unclassified = categorize_statement_verbose(raw)
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 1000.0, "say": 1}
+    assert summary["Konvertasiya"] == {"cem": 1000.0, "say": 1}
     assert len(unclassified) == 0
     wb = _reload(out)
     main = wb[wb.sheetnames[0]]
@@ -1701,10 +1710,10 @@ def test_ziraat_edv():
 
 
 def test_ziraat_catchall_directions():
-    """Kredit → DAXİL OLMALAR; debit → ÖDƏNİŞLƏRİ."""
+    """Kredit 'Valyuta Satışı' → Konvertasiya; ümumi kredit → DAXİL; debit → ÖDƏNİŞLƏRİ."""
     assert _match_category(
         "İNTEKS MMC", "Valyuta Satışı 1.963", "1198804.1", None, profile="ziraat"
-    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    ) == "Konvertasiya"
     assert _match_category(
         "BAKU STEEL COMPANY MMC", "AVANS ODENIWI", None, "18000", profile="ziraat"
     ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
@@ -1732,7 +1741,8 @@ def test_ziraat_end_to_end_counts():
     assert summary["KOMİSİYA"] == {"cem": 342.0, "say": 342}
     assert summary["VERGİ MƏXARİC"] == {"cem": 42000.0, "say": 42}
     assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 4200.0, "say": 42}
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 46000.0, "say": 46}
+    assert summary["Konvertasiya"] == {"cem": 46000.0, "say": 46}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 0
     assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": pytest.approx(32309.44), "say": 331}
     assert unclassified == []
 
@@ -1849,7 +1859,7 @@ def test_atb_profile_detected_header_on_row_12():
         [_atb_row("07.01.2025", "GLOBAL EXPORTS MEHDUD MESULIYYETLI", "Shirket daxili hesabin mohkemlendirilmesi", kredit=25000)]
     )
     _, summary, _ = categorize_statement_verbose(raw)
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 25000.0, "say": 1}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 25000.0, "say": 1}
 
 
 def test_atb_not_stolen_by_other_profiles():
@@ -1914,11 +1924,11 @@ def test_atb_vergi():
 
 
 def test_atb_catchall_directions():
-    """Kredit → DAXİL OLMALAR; debit (qeyri-xidmət) → ÖDƏNİŞLƏRİ."""
+    """Kredit 'hesabin mohkemlendirilmesi' → Hesab Möhkəmlənməsi; debit → ÖDƏNİŞLƏRİ."""
     assert _match_category(
         "GLOBAL EXPORTS MEHDUD MESULIYYETLI", "Shirket daxili hesabin mohkemlendirilmesi",
         "25000", 0, profile="atb",
-    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    ) == "Hesab Möhkəmlənməsi"
     assert _match_category(
         "KHAZAR DRINK MMC", "MT2501 10092937 esasen odenilir", 0, "97810.17", profile="atb",
     ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
@@ -1941,7 +1951,8 @@ def test_atb_end_to_end_counts():
     out, summary, unclassified = categorize_statement_verbose(raw)
     assert summary["KOMİSİYA"] == {"cem": 193.0, "say": 193}
     assert summary["VERGİ MƏXARİC"] == {"cem": 200.0, "say": 20}
-    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 4300.0, "say": 43}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 4300.0, "say": 43}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 0
     assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1650.0, "say": 165}
     assert unclassified == []
 
@@ -2069,7 +2080,7 @@ def test_unibank_not_stolen_by_other_profiles():
         [_unibank_row("05.01.2026", None, 34249.63, "hesabin mohkemlendirilmesi")]
     )
     _, summary, _ = categorize_statement_verbose(raw)
-    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 34249.63, "say": 1}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 34249.63, "say": 1}
 
 
 def test_unibank_skip_summary_rows():
@@ -2096,8 +2107,8 @@ def test_unibank_konvertasiya_debit_komisiya():
 
 
 def test_unibank_konvertasiya_kredit_catchall_daxil():
-    """KRİTİK: kredit 'konvertasiya' → KOMİSİYA deyil, DAXİL OLMALAR."""
-    assert _match_category("", "konvertasiya", "100", 0, profile="unibank") == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    """KRİTİK: kredit 'konvertasiya' → KOMİSİYA deyil; yeni Konvertasiya kateqoriyasına düşür."""
+    assert _match_category("", "konvertasiya", "100", 0, profile="unibank") == "Konvertasiya"
     assert _match_category("", "konvertasiya", "100", 0, profile="unibank") != "KOMİSİYA"
 
 
@@ -2637,3 +2648,72 @@ def test_all_eleven_profiles_sequential_no_mix():
     bob = _bob_xlsx([_bob_row("01.05.2026", "VASIF DADASOV", "Elektron qaima-faktura", profit=100)])
     _, s11, _ = categorize_statement_verbose(bob)
     assert s11["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+
+# ===== Yeni qlobal kateqoriyalar (16 kateqoriya) =====
+
+
+def test_hesab_mohkemlenmesi():
+    """Hesab Möhkəmlənməsi: hesablar arası köçürmə / hesabın möhkəmləndirilməsi (VTB nümunəsi)."""
+    assert _match_category(
+        "GLOBAL EXPORTS MMC", "SHIRKET DAXILI HESABIN MOHKEMLENDIRILMESI", None, "2000", profile="vtb"
+    ) == "Hesab Möhkəmlənməsi"
+    assert _match_category(
+        "GLOBAL EXPORTS MMC", "hesablar arasi kocurme edilir", "80", None, profile="vtb"
+    ) == "Hesab Möhkəmlənməsi"
+    assert _match_category(
+        "GLOBAL EXPORTS MMC", "HESABIN MOHKEMLENDIRILMESI", "700", None, profile="access"
+    ) == "Hesab Möhkəmlənməsi"
+
+
+def test_nagdlasdirma_kredit_mexaric():
+    """Nağdlaşdırma: 'müqavilə üzrə kredit məxaric' (Turan nümunəsi) — Nağd ÇƏKİMDƏN AYRI."""
+    assert _match_category(
+        "", "09/06/2026 tarixli L032404/0001 nömrəli müqavilə üzrə kredit məxaric",
+        None, "-30000", profile="turan",
+    ) == "Nağdlaşdırma"
+
+
+def test_nagdlasdirma_isolated_from_nagd_cekim():
+    """'Nağdlaşdırma üçün S/V' Nağdlaşdırma deyil, Nağd ÇƏKİM komissiyası qalır (ayrı sabit)."""
+    assert _match_category("", "Nağdlaşdırma üçün S/V", None, "-49", profile="access") == "Nağd çəkim komissiyası"
+    assert _match_category("", "Nağdlaşdırma üçün S/V", None, "-49", profile="access") != "Nağdlaşdırma"
+
+
+def test_konvertasiya():
+    """Konvertasiya: valyuta satışı / valyuta mübadiləsi (Ziraat + Unibank nümunəsi)."""
+    assert _match_category(
+        "İNTEKS MMC", "Valyuta Satışı 1.963", "1198804.1", None, profile="ziraat"
+    ) == "Konvertasiya"
+    assert _match_category("", "valyuta mübadilesi", "100", None, profile="unibank") == "Konvertasiya"
+
+
+def test_bank_xerci():
+    """Bank xərci: aylıq ödəniş / ay ödənişi (sintetik — real fayllarda 0 uyğunluq)."""
+    assert _match_category("X MMC", "kredit üzrə aylıq ödənişi", None, "-500", profile="atb") == "Bank xərci"
+    assert _match_category("X MMC", "müqavilə üzrə ay ödənişi", None, "-250", profile="rabite") == "Bank xərci"
+
+
+def test_divident_odenis():
+    """Divident ödəniş: divident/dividend (ATB nümunəsi)."""
+    assert _match_category(
+        "GLOBAL EXPORTS MMC", "divident ödənişi 2024 MV əsasən ödənilir", None, "-5000", profile="atb"
+    ) == "Divident ödəniş"
+
+
+def test_new_categories_after_specific_rules():
+    """Spesifik qaydalar qalib gəlir: 'xidmət haqqı' KOMİSİYA, 'konvertasiya' unibank-da KOMİSİYA."""
+    assert _match_category(
+        "AZIPS", "AZIPS xidmət haqqı, VESAIT HESABIN MOHKEMLENDIRILMESI", None, "-68.61", profile="turan"
+    ) == "KOMİSİYA"
+    assert _match_category("", "konvertasiya", None, "-100", profile="unibank") == "KOMİSİYA"
+
+
+def test_icbari_tibbi_global_vergi():
+    """'İCBARI TIBBI SIGORTA' qlobal TAX keyword-dir — Ziraat və ATB üçün VERGİ (ATB-yə xas DEYİL)."""
+    assert _match_category(
+        "İcbari Tibbi Sığorta üzrə DA", "sərəncamın tam ödənişi", None, "-50", profile="ziraat"
+    ) == "VERGİ MƏXARİC"
+    assert _match_category(
+        "İcbari Tibbi Sığorta üzrə DA", "sərəncamın tam ödənişi", None, "-50", profile="atb"
+    ) == "VERGİ MƏXARİC"

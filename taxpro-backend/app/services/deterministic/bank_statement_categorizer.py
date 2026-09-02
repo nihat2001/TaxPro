@@ -41,9 +41,14 @@ Kateqoriyalar (prioritet sırası ilə, yoxsa boş qalır):
   6. "VERGİ MƏXARİC"           (debit + dövlət/vergi açar sözü)
   7. "MAAŞ MƏXARİC"            (debit + maaş pattern-i)
   8. "TƏSİSÇİDƏN BORC"         (sender NAGD YATIRMA/CASH DEPOSIT — kredit və ya debit)
-  9. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
-  10. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
-  11. "Terminal-Komissiya"       (kapital: Pos-Terminal ∧ Xidmət haqqı; İcmal = fee)
+  9. "Hesab Möhkəmlənməsi"     (hesablar arası köçürmə / hesabın möhkəmləndirilməsi)
+  10. "Nağdlaşdırma"           (müqavilə üzrə kredit məxaric — Nağd ÇƏKİMDƏN AYRI)
+  11. "Konvertasiya"           (alış əməliyyatı / valyuta / əskinaz / konvertasiya)
+  12. "Bank xərci"             (ay ödənişi / aylıq ödəniş)
+  13. "Divident ödəniş"        (divident / dividend)
+  14. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
+  15. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
+  16. "Terminal-Komissiya"       (kapital: Pos-Terminal ∧ Xidmət haqqı; İcmal = fee)
 1-3 detail pattern-ləri CATEGORY_RULES ilə; 4-10 üçün VAT_PATTERNS,
 DUTY_PATTERNS, TAX_AUTHORITY_KEYWORDS, SALARY_PATTERNS, _FOUNDER_*
 sabitləri istifadə olunur. Sıra önəmlidir — daha spesifik olanlar əvvəl
@@ -319,6 +324,36 @@ _CATCHALL_NO_SENDER = ("turan", "unibank")
 # buna görə KOMİSİYA raw (lowered) mətndə yoxlanılır ('Комиссия за срочность').
 _KOMISIYA_CYRILLIC = "комиссия"
 
+# ===== Yeni qlobal kateqoriyalar (bütün profillərdə; catch-all-dan ƏVVƏL yoxlanır) =====
+
+# Hesab Möhkəmlənməsi: hesablar arası köçürmə / hesabın möhkəmləndirilməsi.
+_HESAB_MOHKEMLENME_TOKENS = (
+    "hesablararasikocurme",
+    "hesabinmohkemlend",
+    "hesabinmohkemlenmesi",
+)
+
+# Nağdlaşdırma: 'müqavilə üzrə kredit məxaric' — Nağd ÇƏKİM KOMİSSİYASINDAN AYRI.
+_NAGD_LASDIRMA_TRIGGER = "muqavileuzrekreditmexaric"
+
+# Konvertasiya: alış əməliyyatı / valyuta / əskinaz / konvertasiya.
+_KONVERTASIYA_TOKENS = ("alisemeliyyati", "valyuta", "eskinas", "konvertasiya")
+
+# Bank xərci: aylıq ödəniş (ay ödənişi / aylıq ödəniş / aylıq ödənişi).
+_BANK_XERCI_TRIGGERS = ("ayodenisi", "ayliqodenis", "ayliqodenisi")
+
+# Divident ödəniş: divident/dividend.
+_DIVIDENT_TOKENS = ("divident", "dividend")
+
+# Yeni qlobal kateqoriyaların _CATEGORY_ORDER-da yeri (catch-all-dan əvvəl).
+_NEW_GLOBAL_CATEGORIES = (
+    "Hesab Möhkəmlənməsi",
+    "Nağdlaşdırma",
+    "Konvertasiya",
+    "Bank xərci",
+    "Divident ödəniş",
+)
+
 # Yelo: BANK FAİZ XƏRCİ üçün çevik yoxlama (faiz ∧ ödəmə).
 _YELO_FAIZ_TOKEN = "faiz"
 _YELO_ODEME_TOKEN = "odeme"
@@ -415,6 +450,7 @@ _CATEGORY_ORDER: list[str] = [name for name, _ in CATEGORY_RULES] + [
     "VERGİ MƏXARİC",
     "MAAŞ MƏXARİC",
     "TƏSİSÇİDƏN BORC",
+    *_NEW_GLOBAL_CATEGORIES,
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
     "Terminal-Komissiya",
@@ -544,6 +580,18 @@ def _match_category(
     # (Kredit və ya Debit — hər iki istiqamət, tesisciden şərti yoxdur).
     if _sender_has(sender, _FOUNDER_SENDER_TOKENS) and (kredit_filled or debit_filled):
         return "TƏSİSÇİDƏN BORC"
+
+    # Yeni qlobal kateqoriyalar — spesifik qaydalardan sonra, catch-all-dan əvvəl.
+    if any(t in norm_detail for t in _HESAB_MOHKEMLENME_TOKENS):
+        return "Hesab Möhkəmlənməsi"
+    if _NAGD_LASDIRMA_TRIGGER in norm_detail:
+        return "Nağdlaşdırma"
+    if any(t in norm_detail for t in _KONVERTASIYA_TOKENS):
+        return "Konvertasiya"
+    if any(t in norm_detail for t in _BANK_XERCI_TRIGGERS):
+        return "Bank xərci"
+    if any(t in norm_detail for t in _DIVIDENT_TOKENS):
+        return "Divident ödəniş"
 
     # Catch-all fallback: sender boş deyilsə, əvvəlki heç bir qayda düşməyibsə.
     # Kredit dolu → DİGƏR ŞİRKƏT DAXİL OLMALAR, Debit dolu → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ.

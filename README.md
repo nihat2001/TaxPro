@@ -97,8 +97,9 @@ sequenceDiagram
 Deterministik emal — AI/ML yoxdur, yalnız sabit pattern-matching. Format profilləri `_FORMAT_PROFILES`-də
 avtomatik tanınır (hər bank üçün unikal required header token-ləri; profillər bir-birinə qarışmır).
 
-**11 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
-RÜSUM · VERGİ MƏXARİC · MAAŞ MƏXARİC · TƏSİSÇİDƏN BORC · DİGƏR ŞİRKƏT DAXİL OLMALAR ·
+**16 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
+RÜSUM · VERGİ MƏXARİC · MAAŞ MƏXARİC · TƏSİSÇİDƏN BORC · Hesab Möhkəmlənməsi · Nağdlaşdırma ·
+Konvertasiya · Bank xərci · Divident ödəniş · DİGƏR ŞİRKƏT DAXİL OLMALAR ·
 DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
 
 **Dəstəklənən format profilləri (11):**
