@@ -2102,8 +2102,15 @@ def test_unibank_skip_summary_rows():
 
 
 def test_unibank_konvertasiya_debit_komisiya():
-    """Debit 'konvertasiya' → KOMİSİYA (debit-istiqamət qoruyucusu ilə)."""
-    assert _match_category("", "konvertasiya", 0, "208.25", profile="unibank") == "KOMİSİYA"
+    """Unibank: kiçik məbləğli debit 'konvertasiya' (< 1000 AZN) → KOMİSİYA."""
+    assert _match_category("", "konvertasiya", 0, "208.25", profile="unibank", amount=208.25) == "KOMİSİYA"
+
+
+def test_unibank_konvertasiya_large_amount():
+    """Unibank: böyük məbləğli 'konvertasiya' (≥ 1000 AZN) → Konvertasiya."""
+    assert _match_category("", "konvertasiya", 0, "236013.75", profile="unibank", amount=236013.75) == "Konvertasiya"
+    assert _match_category("", "valyuta mübadilesi", 0, "13679.88", profile="unibank", amount=13679.88) == "Konvertasiya"
+    assert _match_category("", "valyuta mübadilesi", 0, "20.12", profile="unibank", amount=20.12) == "KOMİSİYA"
 
 
 def test_unibank_konvertasiya_kredit_catchall_daxil():
@@ -2309,14 +2316,16 @@ def test_rabite_komisiya_sender_token():
     ) == "KOMİSİYA"
 
 
-def test_rabite_komisiya_maas_guard():
-    """KRİTİK: 'Haqq və komissiya gəlirləri' + detail 'Emek haqqi' → MAAŞ (KOMİSİYA deyil)."""
+def test_rabite_komisiya_sender_dominates_maas_text():
+    """'Haqq və komissiya gəlirləri' + detail 'Emek haqqi' → KOMİSİYA (maaş-guard yoxdur):
+    'Emek haqqı İyun' mətnli kiçik məbləğ maaş köçürməsinin bank komissiyasıdır."""
     assert _match_category(
-        "Haqq və komissiya gəlirləri", "Emek haqqi İyun", "0", "2943.31", profile="rabite"
+        "Haqq və komissiya gəlirləri", "Emek haqqi İyun", "0", "19.13", profile="rabite"
+    ) == "KOMİSİYA"
+    # Əsl maaş (sender = şirkət) MAAŞ-da qalır
+    assert _match_category(
+        "PARROTIAS MMC", "Emek haqqi İyun", "0", "2943.31", profile="rabite"
     ) == "MAAŞ MƏXARİC"
-    assert _match_category(
-        "Haqq və komissiya gəlirləri", "Emek haqqi İyun", "0", "2943.31", profile="rabite"
-    ) != "KOMİSİYA"
 
 
 def test_rabite_komisiya_kredit_daxil():
@@ -2358,9 +2367,9 @@ def test_rabite_end_to_end_counts():
     rows.append([None, None, None, None, None, "235233.29", "240603.66", None, None])
     raw = _rabite_xlsx(rows)
     out, summary, unclassified = categorize_statement_verbose(raw)
-    assert summary["KOMİSİYA"] == {"cem": pytest.approx(53.0), "say": 53}
+    assert summary["KOMİSİYA"] == {"cem": pytest.approx(8882.93), "say": 56}
     assert summary["VERGİ MƏXARİC"] == {"cem": 112168.0, "say": 16}
-    assert summary["MAAŞ MƏXARİC"] == {"cem": pytest.approx(19029.96), "say": 6}
+    assert summary["MAAŞ MƏXARİC"] == {"cem": pytest.approx(10200.03), "say": 3}
     assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 6705.0, "say": 149}
     assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": pytest.approx(6864.48), "say": 54}
     assert unclassified == []
@@ -2546,10 +2555,20 @@ def test_bankofbaku_vergi():
 
 
 def test_bankofbaku_maas():
-    """'əmək haqqı' detail → MAAŞ MƏXARİC."""
+    """'əmək haqqı' detail → MAAŞ MƏXARİC (böyük məbləğ)."""
     assert _match_category(
-        "3821000012508814A83", "aprel əmək haqqı", 0, "1790", profile="bankofbaku"
+        "3821000012508814A83", "aprel əmək haqqı", 0, "1790", profile="bankofbaku", amount=1790.0
     ) == "MAAŞ MƏXARİC"
+
+
+def test_bankofbaku_emek_haqqi_small_amount_komisiya():
+    """KRİTİK: 'əmək haqqı' mətnli kiçik məbləğ (≤ 45 AZN) → KOMİSİYA (maaş komissiyası)."""
+    assert _match_category(
+        "3821000012508814A83", "aprel əmək haqqı", 0, "12.53", profile="bankofbaku", amount=12.53
+    ) == "KOMİSİYA"
+    assert _match_category(
+        "3821000012508814A83", "aprel əmək haqqı", 0, "12.53", profile="bankofbaku", amount=12.53
+    ) != "MAAŞ MƏXARİC"
 
 
 def test_bankofbaku_end_to_end_counts():
@@ -2702,11 +2721,11 @@ def test_divident_odenis():
 
 
 def test_new_categories_after_specific_rules():
-    """Spesifik qaydalar qalib gəlir: 'xidmət haqqı' KOMİSİYA, 'konvertasiya' unibank-da KOMİSİYA."""
+    """Spesifik qaydalar qalib gəlir: 'xidmət haqqı' KOMİSİYA, kiçik 'konvertasiya' unibank-da KOMİSİYA."""
     assert _match_category(
         "AZIPS", "AZIPS xidmət haqqı, VESAIT HESABIN MOHKEMLENDIRILMESI", None, "-68.61", profile="turan"
     ) == "KOMİSİYA"
-    assert _match_category("", "konvertasiya", None, "-100", profile="unibank") == "KOMİSİYA"
+    assert _match_category("", "konvertasiya", None, "-100", profile="unibank", amount=100.0) == "KOMİSİYA"
 
 
 def test_icbari_tibbi_global_vergi():

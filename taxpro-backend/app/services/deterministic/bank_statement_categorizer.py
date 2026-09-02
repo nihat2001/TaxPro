@@ -294,7 +294,7 @@ _KOMISIYA_EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
     "yelo": ("debbeodeme", "emeliyyatmesref", "xidmethaqqi"),
     "turan": ("xidmethaqqi", "cekkitabcasi", "hesabacilmasi"),
     "atb": ("xidmethaqqi",),
-    "unibank": ("xidmethaqqi", "konvertasiya"),
+    "unibank": ("xidmethaqqi",),
 }
 
 # ATB: 'xidmet haqqi' yalnız DEBIT (məxaric) sətirlərində KOMİSİYA-dır;
@@ -344,6 +344,13 @@ _BANK_XERCI_TRIGGERS = ("ayodenisi", "ayliqodenis", "ayliqodenisi")
 
 # Divident ödəniş: divident/dividend.
 _DIVIDENT_TOKENS = ("divident", "dividend")
+
+# Bank of Baku: 'əmək haqqı' mətnli məbləğ ≤ bu hədd → komissiya (MAAŞ yox, KOMİSİYA).
+_BOB_MAAS_COMMISSION_MAX = 45.0
+
+# Unibank: konvertasiya məbləği bu hədddən azdırsa → komissiya (KOMİSİYA),
+# əks halda əsl konvertasiya (Konvertasiya).
+_UNIBANK_KONVERTASIYA_MIN = 1000.0
 
 # Yeni qlobal kateqoriyaların _CATEGORY_ORDER-da yeri (catch-all-dan əvvəl).
 _NEW_GLOBAL_CATEGORIES = (
@@ -497,6 +504,7 @@ def _match_category(
     kredit: Any,
     debit: Any,
     profile: str = "standard",
+    amount: float | None = None,
 ) -> str | None:
     """Sətir kontekstini prioritet sırası ilə kateqoriyalaşdırır.
 
@@ -534,12 +542,11 @@ def _match_category(
             if profile in _KOMISIYA_EXTRA_DEBIT_ONLY:
                 extra = extra and _has_amount(debit)  # yalnız debit → KOMİSİYA
             # Rabitə: sender-də 'Haqq və komissiya gəlirləri' + debit → KOMİSİYA.
-            # Maaş-guard: detail 'Emek haqqi' olanlar MAAŞ-a qalır.
+            # Detail 'Emek haqqi' olsa da (məs. 'Emek haqqı İyun \ 19.13 AZN') bu,
+            # maaş köçürməsinin bank komissiyasıdır — maaş-guard tətbiq edilmir.
             if profile == "rabite" and _has_amount(debit):
                 norm_sender_here = normalize_text(_cell_text(sender))
-                if _KOMISIYA_SENDER_TOKEN in norm_sender_here and not any(
-                    p in norm_detail for p in SALARY_PATTERNS
-                ):
+                if _KOMISIYA_SENDER_TOKEN in norm_sender_here:
                     extra = True
             matched = (
                 any(p in norm_detail for p in patterns)
@@ -574,6 +581,10 @@ def _match_category(
         return "VERGİ MƏXARİC"
 
     if debit_filled and any(p in norm_detail for p in SALARY_PATTERNS):
+        # Bank of Baku: 'əmək haqqı' mətnli kiçik məbləğ (≤ 45 AZN) əsl maaş deyil,
+        # maaş köçürməsinin bank komissiyasıdır → KOMİSİYA (yalnız bankofbaku).
+        if profile == "bankofbaku" and amount is not None and amount <= _BOB_MAAS_COMMISSION_MAX:
+            return "KOMİSİYA"
         return "MAAŞ MƏXARİC"
 
     # TƏSİSÇİDƏN BORC: sender-də NAGD YATIRMA/CASH DEPOSIT keçən hər sətir
@@ -587,6 +598,10 @@ def _match_category(
     if _NAGD_LASDIRMA_TRIGGER in norm_detail:
         return "Nağdlaşdırma"
     if any(t in norm_detail for t in _KONVERTASIYA_TOKENS):
+        # Unibank: kiçik məbləğ (< 1000 AZN) konvertasiya üzrə bank komissiyasıdır
+        # → KOMİSİYA; böyük məbləğ (≥ 1000 AZN) əsl konvertasiyadır → Konvertasiya.
+        if profile == "unibank" and amount is not None and amount < _UNIBANK_KONVERTASIYA_MIN:
+            return "KOMİSİYA"
         return "Konvertasiya"
     if any(t in norm_detail for t in _BANK_XERCI_TRIGGERS):
         return "Bank xərci"
@@ -988,7 +1003,9 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             sender = row[sender_col].value if sender_col is not None else None
             kredit = row[kredit_col].value if kredit_col is not None else None
             debit = row[debit_col].value
-        category = _match_category(sender, detail, kredit, debit, profile)
+        category = _match_category(
+            sender, detail, kredit, debit, profile, amount=_row_amount(debit, kredit)
+        )
         if category is None:
             unclassified.append(
                 {
@@ -1267,7 +1284,9 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                     else None
                 )
                 debit_value = values[debit_col] if debit_col < len(values) else None
-            category = _match_category(sender, detail, kredit, debit_value, profile)
+            category = _match_category(
+                sender, detail, kredit, debit_value, profile, amount=_row_amount(debit_value, kredit)
+            )
             if category is None:
                 unclassified.append(
                     {
