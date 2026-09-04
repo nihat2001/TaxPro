@@ -2964,3 +2964,237 @@ def test_all_twelve_profiles_sequential_no_mix():
     pasha = _pasha_xlsx([_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10)])
     _, s12, _ = categorize_statement_verbose(pasha)
     assert s12["KOMİSİYA"] == {"cem": 10.0, "say": 1}
+
+
+# ===== Bank Respublika format dəstəyi (Header 13-cü sətirdə; Kredit/Debet ayrı, sender = Göndərənin adı/Alanın adı) =====
+
+BR_HEADER = [
+    "",
+    "Tarix",
+    "Sənədin N",
+    "Göndərənin adı/Alanın adı",
+    "VÖEN",
+    "Hesab",
+    "Ödənişin təyinatı",
+    "Kredit",
+    "Debet",
+    "Qalıq",
+]
+
+
+def _br_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(4):
+        ws.append([None] * 5)
+    ws.append([None, "Dövr:  01.01.2025 - 31.12.2025", None, None, None, None, None, None, None, "Çıxarışın tarixi"])
+    ws.append([None, "Dövrdən öncəki son əməliyyat tarixi :  27.12.2024", None, None, None, None, None, None, None, "24.02.2026"])
+    ws.append([None] * 5)
+    ws.append([None, "Hesabın sahibi", "AZERBAIJAN GRAND MACHINERY MMC", None, None, None, None, "Giriş qalığı", None, 16582.96])
+    ws.append([None, "VÖEN", "7201226221", None, None, None, None, "Kredit dövriyyəsi", None, 79656.65])
+    ws.append([None, "Hesabın nömrəsi", "AZ33BRES40060AZ0401346563001", None, None, None, None, "Debet dövriyyəsi", None, 96238.8])
+    ws.append([None, "Valyutanın kodu", "AZN", None, None, None, None, "Çıxış qalığı", None, 0.81])
+    ws.append([None] * 5)
+    ws.append(BR_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _br_row(tarix, sender, teyinat, kredit=None, debet=None):
+    return [
+        None,
+        tarix,
+        "IBINTR1736149919002381",
+        sender,
+        "1301650741",
+        "AZ61BRES00380394400111275201",
+        teyinat,
+        kredit,
+        debet,
+        "14480.96",
+    ]
+
+
+def test_bankrespublika_profile_detected_header_on_row_13():
+    """Bank Respublika başlığı 13-cü sətirdədir (index 12)."""
+    raw = _br_xlsx(
+        [_br_row("06.01.2025", "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ", debet=3627.93)]
+    )
+    _, summary, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 1  # əsas borc → kateqoriyasız
+
+
+def test_bankrespublika_komisiya_xidmet_haqqi():
+    """'saylı əməliyyat üzrə xidmət haqqı' + sender Bank Respublika → KOMİSİYA."""
+    assert _match_category(
+        "Bank Respublika ASC", "CIBAZA1736151720047307 saylı əməliyyat üzrə xidmət haqqı",
+        None, "1", profile="bankrespublika",
+    ) == "KOMİSİYA"
+
+
+def test_bankrespublika_faiz_kredit_bank_faiz():
+    """'KREDİTƏ GÖRƏ FAİZ ÖDƏNİŞİ' / 'GECİKDİRİLMİŞ FAIZ' → BANK FAİZ XƏRCİ."""
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ FAİZ ÖDƏNİŞİ",
+        None, "635.69", profile="bankrespublika",
+    ) == "BANK FAİZ XƏRCİ"
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDITE GORE GECIKDIRILMISH HESABLANAN FAIZ",
+        None, "0.93", profile="bankrespublika",
+    ) == "BANK FAİZ XƏRCİ"
+
+
+def test_bankrespublika_cerime_kredit_bank_faiz():
+    """'KREDİTİN ƏSAS BORC ÜZRƏ CƏRİMƏNİN ÖDƏNİŞİ' → BANK FAİZ (əsas borc istisnasından əvvəl)."""
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTİN ƏSAS BORC ÜZRƏ CƏRİMƏNİN ÖDƏNİŞİ",
+        None, "0.48", profile="bankrespublika",
+    ) == "BANK FAİZ XƏRCİ"
+
+
+def test_bankrespublika_esas_borc_uncategorized():
+    """KRİTİK: 'əsas borc' (faiz/cəriməsiz) → kateqoriyasız, catch-all deyil."""
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ",
+        None, "3627.93", profile="bankrespublika",
+    ) is None
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ GECİKDİRİLMİŞ ƏSAS BORCUN ÖDƏNİŞ",
+        None, "1119.22", profile="bankrespublika",
+    ) is None
+
+
+def test_bankrespublika_tesisciden_without_sender_token():
+    """'TESİSCİDEN MADAXİL' + şəxs sender (NAGD YATIRMA yox) → TƏSİSÇİDƏN BORC."""
+    assert _match_category(
+        "HƏSƏNOV ÜLVİ ARAZ OĞLU", "TESİSCİDEN MADAXİL", "15000", None, profile="bankrespublika"
+    ) == "TƏSİSÇİDƏN BORC"
+
+
+def test_bankrespublika_masgulluq_vergi():
+    """'Dovlat Masgulluq Agentliyi' → VERGİ MƏXARİC (qlobal TAX keyword)."""
+    assert _match_category(
+        "Dovlat Masgulluq Agentliyi", "VERGI / DIGƏR. Dovlat Masgulluq Agentliyi",
+        None, "1.33", profile="bankrespublika",
+    ) == "VERGİ MƏXARİC"
+
+
+def test_bankrespublika_mohkemlenme_global():
+    """'hesabın möhkəmləndirilməsi' → Hesab Möhkəmlənməsi (qlobal qayda, yeni iş yox)."""
+    assert _match_category(
+        "AZERBAIJAN GRAND MACHINERY MMC", "IPS: 7201226221, AZERBAIJAN GRAND MACHINERY MMC; hesabın möhkəmləndirilməsi",
+        "4270", None, profile="bankrespublika",
+    ) == "Hesab Möhkəmlənməsi"
+
+
+def test_bankrespublika_esas_borc_isolated_from_other_profiles():
+    """'əsas borc' istisnası yalnız bankrespublika üçündür (digər profillər təsirlənmir)."""
+    assert _match_category(
+        "X MMC", "KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ", None, "100", profile="standard"
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_bankrespublika_end_to_end_counts():
+    """Real Bank Respublika strukturuna uyğun end-to-end — proqnoz 5/13/1/1/7/2/11 = 40, uncl 13."""
+    rows = []
+    for _ in range(5):
+        rows.append(_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1))
+    for _ in range(13):
+        rows.append(_br_row("06.01.2025", "AZERBAIJAN GRAND MACHINERY MMC", "KREDİTƏ GÖRƏ FAİZ ÖDƏNİŞİ", debet=10))
+    rows.append(_br_row("06.01.2025", "HƏSƏNOV ÜLVİ ARAZ OĞLU", "TESİSCİDEN MADAXİL", kredit=15000))
+    rows.append(_br_row("06.01.2025", "Dovlat Masgulluq Agentliyi", "VERGI / DIGƏR. Dovlat Masgulluq Agentliyi", debet=1.33))
+    for _ in range(7):
+        rows.append(_br_row("06.01.2025", "AZERBAIJAN GRAND MACHINERY MMC", "hesabın möhkəmləndirilməsi", kredit=100))
+    for _ in range(2):
+        rows.append(_br_row("06.01.2025", "ARAZ HƏSƏNOV ƏNVƏR OĞLU", "KREDIT ODANISI", kredit=1000))
+    for _ in range(11):
+        rows.append(_br_row("06.01.2025", "F AYDINOGLU MMC", "MUQAVILEYE ESASEN", debet=100))
+    for _ in range(13):
+        rows.append(_br_row("06.01.2025", "AZERBAIJAN GRAND MACHINERY MMC", "KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ", debet=100))
+    raw = _br_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 5.0, "say": 5}
+    assert summary["BANK FAİZ XƏRCİ"] == {"cem": 130.0, "say": 13}
+    assert summary["TƏSİSÇİDƏN BORC"] == {"cem": 15000.0, "say": 1}
+    assert summary["VERGİ MƏXARİC"] == {"cem": pytest.approx(1.33), "say": 1}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 700.0, "say": 7}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 2000.0, "say": 2}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1100.0, "say": 11}
+    assert len(unclassified) == 13
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=13, column=2).value == "Tarix"
+    assert main.cell(row=13, column=11).value == "Kateqoriya"
+    assert main.cell(row=13, column=12).value == "İcmal"
+    assert wb.active.title == "Xülasə"
+
+
+def test_bankrespublika_finalize():
+    """Bank Respublika profili finalize ilə uyğun işləyir."""
+    raw = _br_xlsx(
+        [_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1)]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+
+def test_all_thirteen_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat + atb + unibank + rabite + bankofbaku + pasha + bankrespublika — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s8, _ = categorize_statement_verbose(atb)
+    assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+    uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, s9, _ = categorize_statement_verbose(uni)
+    assert s9["Konvertasiya"] == {"cem": 100.0, "say": 1}
+
+    rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
+    _, s10, _ = categorize_statement_verbose(rab)
+    assert s10["KOMİSİYA"] == {"cem": 127.12, "say": 1}
+
+    bob = _bob_xlsx([_bob_row("01.05.2026", "VASIF DADASOV", "Elektron qaima-faktura", profit=100)])
+    _, s11, _ = categorize_statement_verbose(bob)
+    assert s11["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    pasha = _pasha_xlsx([_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10)])
+    _, s12, _ = categorize_statement_verbose(pasha)
+    assert s12["KOMİSİYA"] == {"cem": 10.0, "say": 1}
+
+    br = _br_xlsx([_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1)])
+    _, s13, _ = categorize_statement_verbose(br)
+    assert s13["KOMİSİYA"] == {"cem": 1.0, "say": 1}

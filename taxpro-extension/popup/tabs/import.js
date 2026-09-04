@@ -296,6 +296,7 @@
     bindBankCard("rabite", "taxpro_rabite_bank_cizarsisi.xlsx");
     bindBankCard("bankofbaku", "taxpro_bankofbaku_bank_cizarsisi.xlsx");
     bindBankCard("pasha", "taxpro_pasha_bank_cizarsisi.xlsx");
+    bindBankCard("bankrespublika", "taxpro_bankrespublika_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);

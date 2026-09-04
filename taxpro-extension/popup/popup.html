@@ -308,6 +308,22 @@
             <button id="pashaReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-label">BANK RESPUBLİKA ÇIXARIŞI KATEQORİYALAŞDIRMASI</div>
+          <div class="form-group">
+            <label class="file-label" for="bankrespublikaStatementFile">Çıxarış seçin (.xlsx, .csv)</label>
+            <input type="file" id="bankrespublikaStatementFile" accept=".xlsx,.csv" />
+          </div>
+          <button id="bankrespublikaStatementBtn" class="btn primary block" type="button">Kateqoriyalaşdır və endir</button>
+          <div id="bankrespublikaStatementResult" class="import-result" hidden></div>
+
+          <div id="bankrespublikaReview" class="review-section" hidden>
+            <div class="card-label" id="bankrespublikaReviewTitle">Tanınmamış əməliyyatlar</div>
+            <div id="bankrespublikaReviewList" class="review-list"></div>
+            <button id="bankrespublikaReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
+          </div>
+        </div>
       </section>
     </main>
 
