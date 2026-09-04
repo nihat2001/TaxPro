@@ -5,6 +5,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.services.deterministic.bank_statement_categorizer import (
     _extract_sender_name,
+    _extract_sender_name_pasha,
     _extract_terminal_fee,
     _match_category,
     _split_signed_amount,
@@ -2101,16 +2102,12 @@ def test_unibank_skip_summary_rows():
     assert main.cell(row=16, column=10).value is None  # boş sətir
 
 
-def test_unibank_konvertasiya_debit_komisiya():
-    """Unibank: kiçik məbləğli debit 'konvertasiya' (< 1000 AZN) → KOMİSİYA."""
-    assert _match_category("", "konvertasiya", 0, "208.25", profile="unibank", amount=208.25) == "KOMİSİYA"
-
-
-def test_unibank_konvertasiya_large_amount():
-    """Unibank: böyük məbləğli 'konvertasiya' (≥ 1000 AZN) → Konvertasiya."""
-    assert _match_category("", "konvertasiya", 0, "236013.75", profile="unibank", amount=236013.75) == "Konvertasiya"
-    assert _match_category("", "valyuta mübadilesi", 0, "13679.88", profile="unibank", amount=13679.88) == "Konvertasiya"
-    assert _match_category("", "valyuta mübadilesi", 0, "20.12", profile="unibank", amount=20.12) == "KOMİSİYA"
+def test_unibank_konvertasiya_all_amounts():
+    """Unibank: 'konvertasiya'/'valyuta mübadilesi' mətnli bütün 12 sətir, məbləğindən
+    asılı olmayaraq → Konvertasiya (kiçik məbləğlər də daxil)."""
+    for amt in (236013.75, 76962.09, 42637.38, 13679.88, 208.25, 129.89, 67.91, 37.62, 20.12, 17.98, 0.11, 0.02):
+        assert _match_category("", "konvertasiya", 0, str(amt), profile="unibank", amount=amt) == "Konvertasiya"
+        assert _match_category("", "valyuta mübadilesi", 0, str(amt), profile="unibank", amount=amt) == "Konvertasiya"
 
 
 def test_unibank_konvertasiya_kredit_catchall_daxil():
@@ -2139,7 +2136,7 @@ def test_unibank_vergi():
 
 
 def test_unibank_end_to_end_counts():
-    """Real Unibank strukturuna uyğun end-to-end — proqnoz 11/18/2/57/63 = 151, skip 3."""
+    """Real Unibank strukturuna uyğun end-to-end — KOMİSİYA 1, Konvertasiya 10, 18/2/57/63 = 151, skip 3."""
     rows = []
     for _ in range(10):
         rows.append(_unibank_row("05.01.2026", None, 100, "konvertasiya"))
@@ -2157,7 +2154,8 @@ def test_unibank_end_to_end_counts():
     rows.append([None, None, None, None, None, None, None, None, None])
     raw = _unibank_xlsx(rows)
     out, summary, unclassified = categorize_statement_verbose(raw)
-    assert summary["KOMİSİYA"] == {"cem": 5000.0, "say": 11}
+    assert summary["KOMİSİYA"] == {"cem": 4000.0, "say": 1}
+    assert summary["Konvertasiya"] == {"cem": 1000.0, "say": 10}
     assert summary["VERGİ MƏXARİC"] == {"cem": 180.0, "say": 18}
     assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 200.0, "say": 2}
     assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 5700.0, "say": 57}
@@ -2169,7 +2167,7 @@ def test_unibank_end_to_end_counts():
     assert main.cell(row=13, column=1).value == "VÖEN\n(TIN)"
     assert main.cell(row=13, column=10).value == "Kateqoriya"
     assert main.cell(row=13, column=11).value == "İcmal"
-    assert main.cell(row=14, column=10).value == "KOMİSİYA"
+    assert main.cell(row=14, column=10).value == "Konvertasiya"
     assert main.cell(row=14, column=11).value == 100.0
     assert main.cell(row=165, column=10).value is None  # Yekun (Summary)
     assert main.cell(row=166, column=10).value is None  # boş
@@ -2183,7 +2181,7 @@ def test_unibank_finalize():
     _, _, unclassified = categorize_statement_verbose(raw)
     assert len(unclassified) == 0
     out, summary = finalize_statement(raw, {})
-    assert summary["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+    assert summary["Konvertasiya"] == {"cem": 100.0, "say": 1}
 
 
 def test_all_nine_profiles_sequential_no_mix():
@@ -2222,7 +2220,7 @@ def test_all_nine_profiles_sequential_no_mix():
 
     uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
     _, s9, _ = categorize_statement_verbose(uni)
-    assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+    assert s9["Konvertasiya"] == {"cem": 100.0, "say": 1}
 
 
 # ===== Rabitə Bank format dəstəyi (Header 10-cu sətirdə; Debet/Kredit ayrı, sender = Qarşı tərəfin adı) =====
@@ -2432,7 +2430,7 @@ def test_all_ten_profiles_sequential_no_mix():
 
     uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
     _, s9, _ = categorize_statement_verbose(uni)
-    assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+    assert s9["Konvertasiya"] == {"cem": 100.0, "say": 1}
 
     rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
     _, s10, _ = categorize_statement_verbose(rab)
@@ -2658,7 +2656,7 @@ def test_all_eleven_profiles_sequential_no_mix():
 
     uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
     _, s9, _ = categorize_statement_verbose(uni)
-    assert s9["KOMİSİYA"] == {"cem": 100.0, "say": 1}
+    assert s9["Konvertasiya"] == {"cem": 100.0, "say": 1}
 
     rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
     _, s10, _ = categorize_statement_verbose(rab)
@@ -2721,11 +2719,11 @@ def test_divident_odenis():
 
 
 def test_new_categories_after_specific_rules():
-    """Spesifik qaydalar qalib gəlir: 'xidmət haqqı' KOMİSİYA, kiçik 'konvertasiya' unibank-da KOMİSİYA."""
+    """Spesifik qaydalar qalib gəlir: 'xidmət haqqı' KOMİSİYA; unibank 'konvertasiya' → Konvertasiya."""
     assert _match_category(
         "AZIPS", "AZIPS xidmət haqqı, VESAIT HESABIN MOHKEMLENDIRILMESI", None, "-68.61", profile="turan"
     ) == "KOMİSİYA"
-    assert _match_category("", "konvertasiya", None, "-100", profile="unibank", amount=100.0) == "KOMİSİYA"
+    assert _match_category("", "konvertasiya", None, "-100", profile="unibank", amount=100.0) == "Konvertasiya"
 
 
 def test_icbari_tibbi_global_vergi():
@@ -2736,3 +2734,233 @@ def test_icbari_tibbi_global_vergi():
     assert _match_category(
         "İcbari Tibbi Sığorta üzrə DA", "sərəncamın tam ödənişi", None, "-50", profile="atb"
     ) == "VERGİ MƏXARİC"
+
+
+# ===== Pasha Bank format dəstəyi (Header 13-cü sətirdə; Mədaxil/Məxaric ayrı, sender = Ödəyən/Benefisiar) =====
+
+PASHA_HEADER = [
+    "  ",
+    "İcra tarixi",
+    "Ödəyən/Benefisiar",
+    "Təyinat",
+    "İstinad No",
+    "VÖEN",
+    "Mədaxil",
+    "Məxaric",
+    "Balans",
+]
+
+
+def _pasha_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(6):
+        ws.append([""] * 5)
+    ws.append(["HESAB ÜZRƏ ÇIXARIŞ", None, None, None, "PARROTIAS LLC"])
+    ws.append(["IBAN: ", "AZ93PAHA40060AZNHC0100282767", None, None, "Ünvan: STR"])
+    ws.append(["Müddət:", "01.07.2025 - 30.06.2026", None, None, "VÖEN: 1306715831"])
+    ws.append(["Tarix: ", "18.08.2026 10:54", None, None, "1306715831"])
+    for _ in range(2):
+        ws.append([""] * 5)
+    ws.append(PASHA_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _pasha_row(icra_tarixi, sender, teyinat, medaxil=None, mexaric=None):
+    return [
+        icra_tarixi,
+        icra_tarixi,
+        sender,
+        teyinat,
+        "005ZTRF251830094",
+        "",
+        medaxil,
+        mexaric,
+        "1000",
+    ]
+
+
+def test_pasha_profile_detected_header_on_row_13():
+    """Pasha başlığı 13-cü sətirdədir (index 12); meta sətirlər skan edilməlidir."""
+    raw = _pasha_xlsx(
+        [_pasha_row("02.07.2025", "Pasha Bank", "Loan Disbursement DC00282767-11", medaxil=173915)]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 173915.0, "say": 1}
+
+
+def test_pasha_not_stolen_by_other_profiles():
+    """Mövcud 11 profil Pasha başlığını tanımır."""
+    raw = _pasha_xlsx(
+        [_pasha_row("02.07.2025", "Pasha Bank", "OZEL TARIFE QOSULMASI UZRE XIDMET HAQQI", mexaric=869.58)]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 869.58, "say": 1}
+
+
+def test_pasha_extract_sender_name():
+    """'_x000D_' artefaktı ilə sender adının çıxarılması."""
+    assert _extract_sender_name_pasha("AZ83IBAZ40050019441807509204_x000D_AZERFON MMC_x000D_") == "AZERFON MMC"
+    assert _extract_sender_name_pasha("Pasha Bank") == "Pasha Bank"
+    assert _extract_sender_name_pasha("") == ""
+    assert _extract_sender_name_pasha(None) == ""
+
+
+def test_pasha_komisiya_no_maas_guard():
+    """'EMEK HAQQI SIFARISI UZRE XIDMET HAQQI' → KOMİSİYA (maaş-guard yox)."""
+    assert _match_category(
+        "Pasha Bank", "266340 NOMRELI EMEK HAQQI SIFARISI UZRE XIDMET HAQQI",
+        None, "84", profile="pasha",
+    ) == "KOMİSİYA"
+    assert _match_category(
+        "Pasha Bank", "266340 NOMRELI EMEK HAQQI SIFARISI UZRE XIDMET HAQQI",
+        None, "84", profile="pasha",
+    ) != "MAAŞ MƏXARİC"
+
+
+def test_pasha_komisiya_isolated_from_bob_kapital():
+    """Pasha no-guard qaydası bankofbaku/kapital 'əmək haqqı' davranışına təsir etmir."""
+    assert _match_category("X", "aprel əmək haqqı", None, "1790", profile="bankofbaku", amount=1790.0) == "MAAŞ MƏXARİC"
+    assert _match_category("X", "Emek haqqi kartlarinin xidmet haqqi", None, "5.00", profile="kapital") == "MAAŞ MƏXARİC"
+
+
+def test_komite_not_komisiya_global():
+    """QLOBAL: 'KOMİTƏ' sözü 'KOM' substring-i ilə KOMİSİYA-ya düşməməli."""
+    assert _match_category(
+        "Pasha Bank", "Internal payment DOVLET GOMRUK KOMITESI", None, "50", profile="pasha"
+    ) == "RÜSUM"
+    assert _match_category(
+        "Pasha Bank", "Internal payment DOVLET GOMRUK KOMITESI", None, "50", profile="pasha"
+    ) != "KOMİSİYA"
+
+
+def test_komite_does_not_break_real_komisiya():
+    """'KOM' olan real komissiya sətirləri komite istisnasından təsirlənmir."""
+    assert _match_category("", "DK KOM", None, "2.00", profile="standard") == "KOMİSİYA"
+    assert _match_category("", "KOMISSIYA 0.50 AZN", None, "0.50", profile="standard") == "KOMİSİYA"
+    assert _match_category("", "PAYMENT ORDER COMMISSION", None, "1.00", profile="standard") == "KOMİSİYA"
+
+
+def test_gomruk_rusum():
+    """'GOMRUK'/'GÖMRÜK' → RÜSUM (DUTY_PATTERNS)."""
+    assert _match_category("", "Gömrük rüsumu ödənişi", None, "10.00", profile="standard") == "RÜSUM"
+
+
+def test_pasha_skip_summary_rows():
+    """DÖVRÜN ƏVVƏLİNƏ BALANS / POS yığım sətirləri (İcra tarixi boş) atlanmalıdır."""
+    raw = _pasha_xlsx(
+        [
+            _pasha_row("02.07.2025", "Pasha Bank", "Loan Disbursement DC00282767-11", medaxil=173915),
+            ["01.07.2025", None, "PARROTIAS LLC", "07-JUL-25 POS Transactions total purchase Count : 2", None, "", 9.81, None, 48828.99],
+            ["01.07.2025", None, "DÖVRÜN ƏVVƏLİNƏ BALANS AZN", None, None, None, None, None, 480.44],
+        ]
+    )
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 173915.0, "say": 1}
+    assert len(unclassified) == 0
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=15, column=10).value is None  # POS yığım
+    assert main.cell(row=16, column=10).value is None  # balans
+
+
+def test_pasha_end_to_end_counts():
+    """Real Pasha strukturuna uyğun end-to-end — proqnoz 9/2/14/13/183/800 = 1021, uncl 7, skip 50."""
+    rows = []
+    for _ in range(9):
+        rows.append(_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10))
+    for _ in range(2):
+        rows.append(_pasha_row("02.07.2025", "Pasha Bank", "Internal payment DOVLET GOMRUK KOMITESI", mexaric=10))
+    for _ in range(14):
+        rows.append(_pasha_row("02.07.2025", "HÖP", "Dövlət Vergi Xidməti", mexaric=10))
+    for _ in range(13):
+        rows.append(_pasha_row("02.07.2025", "GLOBAL EXPORTS", "SHIRKET DAXILI HESABIN MOHKEMLENDIRILMESI", medaxil=100))
+    for _ in range(183):
+        rows.append(_pasha_row("02.07.2025", "AZERFON MMC_x000D_", "Outgoing XOHKS payment", medaxil=100))
+    for _ in range(800):
+        rows.append(_pasha_row("02.07.2025", "Pasha Bank", "Loan Payment DC00282767-09", mexaric=10))
+    for _ in range(7):
+        rows.append(_pasha_row("02.07.2025", None, "Salary and other Payments: SALARY AMOUNT TRANSFER", mexaric=100))
+    raw = _pasha_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 90.0, "say": 9}
+    assert summary["RÜSUM"] == {"cem": 20.0, "say": 2}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 140.0, "say": 14}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 1300.0, "say": 13}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 18300.0, "say": 183}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 8000.0, "say": 800}
+    assert len(unclassified) == 7
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=13, column=1).value == "  "
+    assert main.cell(row=13, column=10).value == "Kateqoriya"
+    assert main.cell(row=13, column=11).value == "İcmal"
+    assert wb.active.title == "Xülasə"
+
+
+def test_pasha_finalize():
+    """Pasha profili finalize ilə uyğun işləyir."""
+    raw = _pasha_xlsx(
+        [_pasha_row("02.07.2025", "Pasha Bank", "OZEL TARIFE QOSULMASI UZRE XIDMET HAQQI", mexaric=869.58)]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["KOMİSİYA"] == {"cem": 869.58, "say": 1}
+
+
+def test_all_twelve_profiles_sequential_no_mix():
+    """standard + turan + kapital + yelo + access + vtb + ziraat + atb + unibank + rabite + bankofbaku + pasha — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s2, _ = categorize_statement_verbose(tur)
+    assert s2["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s3, _ = categorize_statement_verbose(kap)
+    assert s3["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s4, _ = categorize_statement_verbose(yelo)
+    assert s4["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s5, _ = categorize_statement_verbose(access)
+    assert s5["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s6, _ = categorize_statement_verbose(vtb)
+    assert s6["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s7, _ = categorize_statement_verbose(zir)
+    assert s7["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s8, _ = categorize_statement_verbose(atb)
+    assert s8["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+    uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, s9, _ = categorize_statement_verbose(uni)
+    assert s9["Konvertasiya"] == {"cem": 100.0, "say": 1}
+
+    rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
+    _, s10, _ = categorize_statement_verbose(rab)
+    assert s10["KOMİSİYA"] == {"cem": 127.12, "say": 1}
+
+    bob = _bob_xlsx([_bob_row("01.05.2026", "VASIF DADASOV", "Elektron qaima-faktura", profit=100)])
+    _, s11, _ = categorize_statement_verbose(bob)
+    assert s11["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    pasha = _pasha_xlsx([_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10)])
+    _, s12, _ = categorize_statement_verbose(pasha)
+    assert s12["KOMİSİYA"] == {"cem": 10.0, "say": 1}

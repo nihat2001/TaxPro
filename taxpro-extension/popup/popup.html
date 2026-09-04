@@ -292,6 +292,22 @@
             <button id="bankofbakuReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-label">PASHA BANK ÇIXARIŞI KATEQORİYALAŞDIRMASI</div>
+          <div class="form-group">
+            <label class="file-label" for="pashaStatementFile">Çıxarış seçin (.xlsx, .csv)</label>
+            <input type="file" id="pashaStatementFile" accept=".xlsx,.csv" />
+          </div>
+          <button id="pashaStatementBtn" class="btn primary block" type="button">Kateqoriyalaşdır və endir</button>
+          <div id="pashaStatementResult" class="import-result" hidden></div>
+
+          <div id="pashaReview" class="review-section" hidden>
+            <div class="card-label" id="pashaReviewTitle">Tanınmamış əməliyyatlar</div>
+            <div id="pashaReviewList" class="review-list"></div>
+            <button id="pashaReviewConfirmBtn" class="btn primary block" type="button">Təsdiqlə və yenidən yüklə</button>
+          </div>
+        </div>
       </section>
     </main>
 

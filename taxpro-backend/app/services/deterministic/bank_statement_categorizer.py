@@ -27,6 +27,12 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - bankofbaku: Header 12-ci sətirdə, Profit/Expenditure, sender = Debet Account;
               xüsusi pattern yoxdur — ümumi zəncir kifayətdir; boş təyinat/son meta
               sətirləri atlanır
+  - pasha:    Header 13-cü sətirdə, Mədaxil/Məxaric ayrı, sender = Ödəyən/Benefisiar
+              ('_x000D_' artefaktı ilə — 2-ci seqment); 'xidmet haqqi' debit-də
+              KOMİSİYA, maaş-guard olmadan ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI');
+              balans/POS yığım sətirləri atlanır
+Qlobal: 'KOMİTƏ' ('KOMITESI') 'KOM' substring-i ilə KOMİSİYA-ya düşmür;
+              'GOMRUK'/'GÖMRÜK' → RÜSUM (DUTY_PATTERNS)
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -254,6 +260,21 @@ _FORMAT_PROFILES = [
             "kateqoriya": "kateqoriya",
         },
     },
+    {
+        "name": "pasha",  # Pasha Bank (Header 13-cü sətirdə; Mədaxil/Məxaric ayrı, sender = Ödəyən/Benefisiar)
+        "required": ("icratarixi", "odeyenbenefisiar", "teyinat", "istinadno", "medaxil", "mexaric", "balans"),
+        "fields": {
+            "icratarixi": "emeliyyat_tarixi",
+            "odeyenbenefisiar": "gonderen_alici",
+            "teyinat": "teyinat",
+            "istinadno": "istinad_no",
+            "voen": "gonderen_tax",
+            "medaxil": "medaxil",
+            "mexaric": "mexaric",
+            "balans": "balans",
+            "kateqoriya": "kateqoriya",
+        },
+    },
 ]
 
 # Kateqoriya qaydaları — sıra vacibdir.
@@ -301,7 +322,8 @@ _KOMISIYA_EXTRA_PATTERNS: dict[str, tuple[str, ...]] = {
 # kredit (mədaxil) 'xidmet haqqi' catch-all-a (DAXİL OLMALAR) qalmalıdır.
 # Unibank: 'konvertasiya'/'xidmet haqqi' eyni istiqamət qaydası ilə.
 # Rabitə: sender 'Haqq və komissiya gəlirləri' debit-də KOMİSİYA-dır (detail-a yox).
-_KOMISIYA_EXTRA_DEBIT_ONLY = ("atb", "unibank", "rabite")
+# Pasha: 'xidmet haqqi' yalnız debit-də KOMİSİYA (kredit → DAXİL).
+_KOMISIYA_EXTRA_DEBIT_ONLY = ("atb", "unibank", "rabite", "pasha")
 
 # Rabitə: sender token-i — 'Haqq və komissiya gəlirləri' (normalize: komissiyagelir).
 _KOMISIYA_SENDER_TOKEN = "komissiyagelir"
@@ -345,12 +367,17 @@ _BANK_XERCI_TRIGGERS = ("ayodenisi", "ayliqodenis", "ayliqodenisi")
 # Divident ödəniş: divident/dividend.
 _DIVIDENT_TOKENS = ("divident", "dividend")
 
+# Qlobal istisna: 'KOMİTƏ'/'KOMITESI' (komitə) sözü 'KOM' substring-i ilə
+# səhvən KOMİSİYA-ya düşməməlidir (məs. 'DOVLET GOMRUK KOMITESI' → RÜSUM).
+_KOMITE_TOKENS = ("komite",)
+
+# Pasha: 'xidmət haqqı' → KOMİSİYA, maaş-guard olmadan.
+# '266340 NOMRELI EMEK HAQQI SIFARISI UZRE XIDMET HAQQI' maaş ödənişi deyil —
+# bankın 'əmək haqqı sifarişi' xidmətinə görə tutduğu komissiyadır.
+_PASHA_KOMISIYA_TOKEN = "xidmethaqqi"
+
 # Bank of Baku: 'əmək haqqı' mətnli məbləğ ≤ bu hədd → komissiya (MAAŞ yox, KOMİSİYA).
 _BOB_MAAS_COMMISSION_MAX = 45.0
-
-# Unibank: konvertasiya məbləği bu hədddən azdırsa → komissiya (KOMİSİYA),
-# əks halda əsl konvertasiya (Konvertasiya).
-_UNIBANK_KONVERTASIYA_MIN = 1000.0
 
 # Yeni qlobal kateqoriyaların _CATEGORY_ORDER-da yeri (catch-all-dan əvvəl).
 _NEW_GLOBAL_CATEGORIES = (
@@ -444,8 +471,8 @@ SALARY_PATTERNS: list[str] = ["maasodemesi", "maaspaket", "emekhaqq"]
 # ƏDV ÖDƏNİŞİ üçün normalize pattern-ləri (EDV/ƏDV/EDV ODENILIR/ƏDV ÖDƏNİLİR).
 VAT_PATTERNS: list[str] = ["edv"]
 
-# RÜSUM üçün normalize pattern-ləri (RUSUM/RÜSUM/DOVLET RUSUMU/DÖVLƏT RÜSUMU).
-DUTY_PATTERNS: list[str] = ["rusum"]
+# RÜSUM üçün normalize pattern-ləri (RUSUM/RÜSUM/DOVLET RUSUMU/DÖVLƏT RÜSUMU/GÖMRÜK).
+DUTY_PATTERNS: list[str] = ["rusum", "gomruk"]
 
 # TƏSİSÇİDƏN BORC: sender token-ləri (NAGD YATIRMA / CASH DEPOSIT).
 _FOUNDER_SENDER_TOKENS: tuple[str, ...] = ("nagdyatirma", "cashdeposit")
@@ -539,6 +566,10 @@ def _match_category(
             )
         elif category == "KOMİSİYA":
             extra = _match_komisiya_extra(profile, norm_detail)
+            # Pasha: 'xidmət haqqı' → KOMİSİYA, maaş-guard olmadan
+            # ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI' maaş ödənişi deyil).
+            if profile == "pasha":
+                extra = extra or _match_pasha_komisiya(norm_detail)
             if profile in _KOMISIYA_EXTRA_DEBIT_ONLY:
                 extra = extra and _has_amount(debit)  # yalnız debit → KOMİSİYA
             # Rabitə: sender-də 'Haqq və komissiya gəlirləri' + debit → KOMİSİYA.
@@ -548,8 +579,16 @@ def _match_category(
                 norm_sender_here = normalize_text(_cell_text(sender))
                 if _KOMISIYA_SENDER_TOKEN in norm_sender_here:
                     extra = True
+            # Qlobal istisna: 'KOMİTƏ' ('KOMITESI') sözü 'KOM' substring-i ilə
+            # səhvən KOMİSİYA-ya düşməməli (məs. 'DOVLET GOMRUK KOMITESI' → RÜSUM).
+            has_komite = any(k in norm_detail for k in _KOMITE_TOKENS)
+            generic_kom = (
+                "commission" in norm_detail
+                if has_komite
+                else any(p in norm_detail for p in patterns)
+            )
             matched = (
-                any(p in norm_detail for p in patterns)
+                generic_kom
                 or extra
                 or (profile == "vtb" and _KOMISIYA_CYRILLIC in lowered)
             )
@@ -598,10 +637,6 @@ def _match_category(
     if _NAGD_LASDIRMA_TRIGGER in norm_detail:
         return "Nağdlaşdırma"
     if any(t in norm_detail for t in _KONVERTASIYA_TOKENS):
-        # Unibank: kiçik məbləğ (< 1000 AZN) konvertasiya üzrə bank komissiyasıdır
-        # → KOMİSİYA; böyük məbləğ (≥ 1000 AZN) əsl konvertasiyadır → Konvertasiya.
-        if profile == "unibank" and amount is not None and amount < _UNIBANK_KONVERTASIYA_MIN:
-            return "KOMİSİYA"
         return "Konvertasiya"
     if any(t in norm_detail for t in _BANK_XERCI_TRIGGERS):
         return "Bank xərci"
@@ -655,6 +690,31 @@ def _extract_sender_name(raw_cell: Any) -> str:
     if len(parts) >= 2:
         return parts[1]
     return text
+
+
+def _extract_sender_name_pasha(raw_cell: Any) -> str:
+    """Pasha sender-i: '_x000D_' (carriage-return artefaktı) ilə split edir.
+
+    Format: 'IBAN_x000D_AD_x000D_' → ad hissəsi (adətən 2-ci seqment).
+    Sadə mətn ('Pasha Bank') olduğu kimi saxlanılır.
+    """
+    text = _cell_text(raw_cell)
+    if not text:
+        return ""
+    parts = [p.strip() for p in text.split("_x000D_") if p.strip()]
+    if len(parts) >= 2:
+        return parts[1]
+    return text
+
+
+def _match_pasha_komisiya(norm_detail: str) -> bool:
+    """Pasha: 'xidmət haqqı' → KOMİSİYA, maaş-guard OLMAYAN məntiq.
+
+    Kapital-dan fərqlidir: 'EMEK HAQQI SIFARISI UZRE XIDMET HAQQI' maaş
+    ödənişi deyil — bankın 'əmək haqqı sifarişi' xidmətinə görə komissiyadır,
+    ona görə mətndə emekhaqq olsa belə KOMİSİYA-ya düşməlidir.
+    """
+    return _PASHA_KOMISIYA_TOKEN in norm_detail
 
 
 def _split_signed_amount(value: Any) -> tuple[str | None, str | None]:
@@ -905,6 +965,12 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
         mexaric_col = col_map["mexaric"]
         sender_col = col_map.get("gonderen_alici")
         tarix_col = col_map.get("emeliyyat_tarixi")
+    elif profile == "pasha":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
+        tarix_col = col_map.get("emeliyyat_tarixi")
     elif profile == "yelo":
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
@@ -986,6 +1052,18 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             detail = row[teyinat_col].value
             if not _cell_text(tarix) or not _cell_text(detail):
                 continue  # boş whitespace təyinat / son meta sətirləri — atla
+            kredit = row[medaxil_col].value
+            debit = row[mexaric_col].value
+        elif profile == "pasha":
+            tarix = row[tarix_col].value if tarix_col is not None else None
+            sender = (
+                _extract_sender_name_pasha(row[sender_col].value)
+                if sender_col is not None
+                else ""
+            )
+            detail = row[teyinat_col].value
+            if not _cell_text(tarix) or not _cell_text(detail):
+                continue  # yekun/balans/POS yığım sətirləri — atla
             kredit = row[medaxil_col].value
             debit = row[mexaric_col].value
         elif profile == "yelo":
@@ -1102,6 +1180,12 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
         sender_col = col_map.get("gonderen_alici")
         tarix_col = col_map.get("emeliyyat_tarixi")
     elif profile == "bankofbaku":
+        teyinat_col = col_map["teyinat"]
+        medaxil_col = col_map["medaxil"]
+        mexaric_col = col_map["mexaric"]
+        sender_col = col_map.get("gonderen_alici")
+        tarix_col = col_map.get("emeliyyat_tarixi")
+    elif profile == "pasha":
         teyinat_col = col_map["teyinat"]
         medaxil_col = col_map["medaxil"]
         mexaric_col = col_map["mexaric"]
@@ -1253,6 +1337,22 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                     continue  # boş whitespace təyinat / son meta sətirləri — atla
                 kredit = values[medaxil_col] if medaxil_col < len(values) else None
                 debit_value = values[mexaric_col] if mexaric_col < len(values) else None
+            elif profile == "pasha":
+                tarix = (
+                    values[tarix_col]
+                    if tarix_col is not None and tarix_col < len(values)
+                    else ""
+                )
+                sender = (
+                    _extract_sender_name_pasha(values[sender_col])
+                    if sender_col is not None and sender_col < len(values)
+                    else ""
+                )
+                detail = values[teyinat_col] if teyinat_col < len(values) else ""
+                if not _cell_text(tarix) or not _cell_text(detail):
+                    continue  # yekun/balans/POS yığım sətirləri — atla
+                kredit = values[medaxil_col] if medaxil_col < len(values) else None
+                debit_value = values[mexaric_col] if mexaric_col < len(values) else None
             elif profile == "yelo":
                 sender = (
                     values[odeyen_col]
@@ -1367,7 +1467,7 @@ def _locate_columns(wb):
             debit_col = kredit_col = mebleg_col = None
             if profile in ("kapital", "turan"):
                 mebleg_col = col_map["mebleg"] + 1
-            elif profile in ("yelo", "access", "vtb", "ziraat", "atb", "unibank", "rabite", "bankofbaku"):
+            elif profile in ("yelo", "access", "vtb", "ziraat", "atb", "unibank", "rabite", "bankofbaku", "pasha"):
                 debit_col = col_map["mexaric"] + 1
                 kredit_col = col_map["medaxil"] + 1
             else:
