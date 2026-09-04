@@ -540,6 +540,9 @@ _CATEGORY_ORDER: list[str] = [name for name, _ in CATEGORY_RULES] + [
 
 _SUMMARY_SHEET_NAME = "Xülasə"
 
+# 3-cü sheet: kateqoriyaları Mədaxil/Məxaric (kredit/debit) istiqaməti üzrə ayırır.
+_MADAXIL_MAXARIC_SHEET_NAME = "Mədaxil və Məxaric"
+
 # Kateqoriya sütununun dərhal sağında əlavə olunan sətir-üzrə məbləğ sütunu.
 _AMOUNT_COLUMN_TITLE = "İcmal"
 
@@ -975,6 +978,145 @@ def _add_summary_sheet(wb: Workbook, summary: dict) -> None:
     wb.active = wb.sheetnames.index(_SUMMARY_SHEET_NAME)
 
 
+def _build_madaxil_maxaric_sheet(
+    wb: Workbook,
+    categorized_rows: list[tuple[str, str, float]],
+    opening_balance: float | None,
+    closing_balance: float | None,
+    total_madaxil: float = 0.0,
+    total_mexaric: float = 0.0,
+):
+    """'Mədaxil və Məxaric' sheet-i — kateqoriyalar istiqamət üzrə ayrılır.
+
+    categorized_rows: (kateqoriya, istiqamət, məbləğ) — istiqamət 'kredit'/'debit'.
+    Eyni kateqoriya hər iki istiqamətdə ola bilər → hər iki tərəfdə ayrı sətir.
+    Yalnız faylda faktiki mövcud kateqoriyalar göstərilir (sıfır sətir əlavə edilmir).
+    total_madaxil/total_mexaric: bütün kredit/debit sətirlərinin cəmi (unclassified daxil);
+    verilməzsə categorized_rows cəmi istifadə olunur.
+    """
+    credits: dict[str, float] = {}
+    debits: dict[str, float] = {}
+    for category, direction, amount in categorized_rows:
+        if direction == "kredit":
+            credits[category] = credits.get(category, 0.0) + amount
+        else:
+            debits[category] = debits.get(category, 0.0) + amount
+
+    if not total_madaxil and not total_mexaric:
+        total_madaxil = round(sum(credits.values()), 2)
+        total_mexaric = round(sum(debits.values()), 2)
+
+    ws = wb.create_sheet(_MADAXIL_MAXARIC_SHEET_NAME)
+    ws["A1"] = "İlkin qalıq:"
+    ws["B1"] = opening_balance
+    ws["D1"] = "Son qalıq:"
+    ws["E1"] = closing_balance
+    ws["A2"] = "MƏDAXİL:"
+    ws["B2"] = round(total_madaxil, 2)
+    ws["D2"] = "MƏXARİC:"
+    ws["E2"] = round(total_mexaric, 2)
+
+    # Başlıq sətri (sətir 4): sol blok kredit, sağ blok debit.
+    ws["A4"] = "Təyinat"
+    ws["B4"] = "Məbləğ"
+    ws["D4"] = "Təyinat"
+    ws["E4"] = "Məbləğ"
+
+    credit_order = [c for c in _CATEGORY_ORDER if c in credits]
+    debit_order = [c for c in _CATEGORY_ORDER if c in debits]
+
+    row = 5
+    for cat in credit_order:
+        ws.cell(row=row, column=1, value=cat)
+        ws.cell(row=row, column=2, value=round(credits[cat], 2))
+        row += 1
+    row = 5
+    for cat in debit_order:
+        ws.cell(row=row, column=4, value=cat)
+        ws.cell(row=row, column=5, value=round(debits[cat], 2))
+        row += 1
+
+    # Başlıq sətri bold + fon.
+    for col in (1, 2, 4, 5):
+        cell = ws.cell(row=4, column=col)
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+    for col in (1, 2, 4, 5):
+        for r in (1, 2):
+            cell = ws.cell(row=r, column=col)
+            if cell.value is not None:
+                cell.font = _HEADER_FONT
+
+    # Məbləğ sütunları (#,##0.00, sağa düzləndirmə) + avto-fit.
+    _style_amount_column(ws, 2, 2, max(ws.max_row, 2))
+    _style_amount_column(ws, 5, 2, max(ws.max_row, 2))
+    _auto_fit_columns(ws)
+    # Xülasə aktiv qalsın (create_sheet yeni sheet-i aktiv edir).
+    if _SUMMARY_SHEET_NAME in wb.sheetnames:
+        wb.active = wb.sheetnames.index(_SUMMARY_SHEET_NAME)
+    return ws
+
+
+def _collect_madaxil_maxaric_from_sheet(
+    ws,
+    header_row: int,
+    cat_col: int,
+    amount_col: int,
+    profile: str,
+    debit_col: int | None,
+    kredit_col: int | None,
+    mebleg_col: int | None,
+    balans_col: int | None,
+) -> tuple[list[tuple[str, str, float]], float, float, float | None, float | None]:
+    """Esas sheet-dən kateqoriya+istiqamət+məbləğ, cəmlər və ilk/son balansı toplayır.
+
+    finalize override-larından sonra 3-cü sheet-i yenidən qurmaq üçün.
+    MƏDAXİL/MƏXARİC cəmləri bütün sətirləri (unclassified daxil) əhatə edir.
+    """
+    categorized_rows: list[tuple[str, str, float]] = []
+    first_balance: float | None = None
+    last_balance: float | None = None
+    total_madaxil = 0.0
+    total_mexaric = 0.0
+
+    for row in ws.iter_rows(min_row=header_row + 1):
+        category = row[cat_col - 1].value
+        if category and category not in _CATEGORY_ORDER:
+            continue
+        if balans_col is not None:
+            bal = _parse_amount(row[balans_col - 1].value)
+            if first_balance is None and bal is not None:
+                first_balance = bal
+            if bal is not None:
+                last_balance = bal
+        if profile in ("kapital", "turan"):
+            mebleg = row[mebleg_col - 1].value if mebleg_col else None
+            debit_s, kredit_s = _split_signed_amount(mebleg)
+            debit_amt = abs(_parse_amount(debit_s)) if debit_s else None
+            kredit_amt = abs(_parse_amount(kredit_s)) if kredit_s else None
+        else:
+            debit_amt = (
+                abs(_parse_amount(row[debit_col - 1].value))
+                if debit_col and _has_amount(row[debit_col - 1].value)
+                else None
+            )
+            kredit_amt = (
+                abs(_parse_amount(row[kredit_col - 1].value))
+                if kredit_col and _has_amount(row[kredit_col - 1].value)
+                else None
+            )
+        if kredit_amt is not None:
+            total_madaxil += kredit_amt
+        if debit_amt is not None:
+            total_mexaric += debit_amt
+        if category:
+            if kredit_amt is not None:
+                categorized_rows.append((category, "kredit", kredit_amt))
+            if debit_amt is not None:
+                categorized_rows.append((category, "debit", debit_amt))
+    return categorized_rows, total_madaxil, total_mexaric, first_balance, last_balance
+
+
 def _last_column(ws) -> int:
     """Vəziyyəti olan sonuncu sütunun 1-əsaslı indeksi."""
     max_col = 1
@@ -1088,7 +1230,19 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
 
     summary = _empty_summary()
     unclassified: list[dict] = []
+    categorized_rows: list[tuple[str, str, float]] = []
+    balans_col = col_map.get("balans")
+    first_balance: float | None = None
+    last_balance: float | None = None
+    total_madaxil = 0.0
+    total_mexaric = 0.0
     for row in ws.iter_rows(min_row=header_row_idx + 2):
+        if balans_col is not None:
+            bal = _parse_amount(row[balans_col].value)
+            if first_balance is None and bal is not None:
+                first_balance = bal
+            if bal is not None:
+                last_balance = bal
         if profile == "kapital":
             sender = (
                 _extract_sender_name(row[eks_hesab_col].value)
@@ -1189,6 +1343,10 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             sender = row[sender_col].value if sender_col is not None else None
             kredit = row[kredit_col].value if kredit_col is not None else None
             debit = row[debit_col].value
+        if _has_amount(kredit):
+            total_madaxil += abs(_parse_amount(kredit))
+        if _has_amount(debit):
+            total_mexaric += abs(_parse_amount(debit))
         category = _match_category(
             sender, detail, kredit, debit, profile, amount=_row_amount(debit, kredit)
         )
@@ -1221,11 +1379,24 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             entry["cem"] = float(entry["cem"]) + amount
             ws.cell(row=row[0].row, column=amount_col).value = amount
 
+        # Mədaxil/Məxaric sheet-i üçün kateqoriya + istiqamət toplanması.
+        if _has_amount(kredit):
+            categorized_rows.append(
+                (category, "kredit", abs(_parse_amount(kredit)))
+            )
+        if _has_amount(debit):
+            categorized_rows.append(
+                (category, "debit", abs(_parse_amount(debit)))
+            )
+
     _style_header_row(ws, header_row_idx + 1, amount_col)
     _style_amount_column(ws, amount_col, header_row_idx + 2, ws.max_row)
     _auto_fit_columns(ws)
 
     _add_summary_sheet(wb, summary)
+    _build_madaxil_maxaric_sheet(
+        wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
+    )
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1336,6 +1507,12 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
 
     summary = _empty_summary()
     unclassified: list[dict] = []
+    categorized_rows: list[tuple[str, str, float]] = []
+    balans_col = col_map.get("balans")
+    first_balance: float | None = None
+    last_balance: float | None = None
+    total_madaxil = 0.0
+    total_mexaric = 0.0
     wb = Workbook()
     ws = wb.active
     ws.title = "Çıxarış"
@@ -1352,6 +1529,12 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
             ws.cell(row=r_idx + 1, column=amount_col_1, value=_AMOUNT_COLUMN_TITLE)
 
         if r_idx > header_row_idx:
+            if balans_col is not None and balans_col < len(values):
+                bal = _parse_amount(values[balans_col])
+                if first_balance is None and bal is not None:
+                    first_balance = bal
+                if bal is not None:
+                    last_balance = bal
             if profile == "kapital":
                 sender = (
                     _extract_sender_name(values[eks_hesab_col])
@@ -1536,6 +1719,10 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                     else None
                 )
                 debit_value = values[debit_col] if debit_col < len(values) else None
+            if _has_amount(kredit):
+                total_madaxil += abs(_parse_amount(kredit))
+            if _has_amount(debit_value):
+                total_mexaric += abs(_parse_amount(debit_value))
             category = _match_category(
                 sender, detail, kredit, debit_value, profile, amount=_row_amount(debit_value, kredit)
             )
@@ -1568,11 +1755,22 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 entry["cem"] = float(entry["cem"]) + amount
                 ws.cell(row=r_idx + 1, column=amount_col_1, value=amount)
 
+            # Mədaxil/Məxaric sheet-i üçün kateqoriya + istiqamət toplanması.
+            if _has_amount(kredit):
+                categorized_rows.append((category, "kredit", abs(_parse_amount(kredit))))
+            if _has_amount(debit_value):
+                categorized_rows.append(
+                    (category, "debit", abs(_parse_amount(debit_value)))
+                )
+
     _style_header_row(ws, header_row_idx + 1, amount_col_1)
     _style_amount_column(ws, amount_col_1, header_row_idx + 2, ws.max_row)
     _auto_fit_columns(ws)
 
     _add_summary_sheet(wb, summary)
+    _build_madaxil_maxaric_sheet(
+        wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
+    )
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1616,6 +1814,8 @@ def _locate_columns(wb):
             header_row = header_row_idx + 1
             cat_col = col_map["kateqoriya"] + 1
             amount_col = cat_col + 1
+            balans_col = col_map.get("balans")
+            balans_col = balans_col + 1 if balans_col is not None else None
             debit_col = kredit_col = mebleg_col = None
             if profile in ("kapital", "turan"):
                 mebleg_col = col_map["mebleg"] + 1
@@ -1626,7 +1826,7 @@ def _locate_columns(wb):
                 debit_col = col_map["debit"] + 1
                 kredit = col_map.get("kredit")
                 kredit_col = kredit + 1 if kredit is not None else None
-            return sheet, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col
+            return sheet, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col, balans_col
     raise ValueError("Kateqoriyalaşdırılmış faylda başlıq sətri tapılmadı.")
 
 
@@ -1667,9 +1867,17 @@ def finalize_statement(raw_bytes: bytes, selections: dict[int, str]) -> tuple[by
         parsed[row_index] = category
 
     wb = load_workbook(io.BytesIO(out_bytes))
-    (ws, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col) = (
-        _locate_columns(wb)
-    )
+    (
+        ws,
+        header_row,
+        cat_col,
+        amount_col,
+        profile,
+        debit_col,
+        kredit_col,
+        mebleg_col,
+        balans_col,
+    ) = _locate_columns(wb)
 
     for row_index, category in parsed.items():
         if not category:
@@ -1688,6 +1896,18 @@ def finalize_statement(raw_bytes: bytes, selections: dict[int, str]) -> tuple[by
     new_summary = _summarize_sheet(ws, header_row, cat_col, amount_col)
     del wb[_SUMMARY_SHEET_NAME]
     _add_summary_sheet(wb, new_summary)
+
+    # 3-cü sheet-i override-lardan sonra yenidən qur (override kateqoriyaları əks olunsun).
+    if _MADAXIL_MAXARIC_SHEET_NAME in wb.sheetnames:
+        del wb[_MADAXIL_MAXARIC_SHEET_NAME]
+    categorized_rows, total_madaxil, total_mexaric, first_balance, last_balance = (
+        _collect_madaxil_maxaric_from_sheet(
+            ws, header_row, cat_col, amount_col, profile, debit_col, kredit_col, mebleg_col, balans_col
+        )
+    )
+    _build_madaxil_maxaric_sheet(
+        wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
+    )
 
     buf = io.BytesIO()
     wb.save(buf)

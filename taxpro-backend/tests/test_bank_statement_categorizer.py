@@ -495,7 +495,7 @@ def test_categorize_csv_to_xlsx():
     assert summary["KOMİSİYA"] == {"cem": 0.0, "say": 0}
 
     wb = _reload(out)
-    assert wb.sheetnames == ["Çıxarış", "Xülasə"]
+    assert wb.sheetnames == ["Çıxarış", "Xülasə", "Mədaxil və Məxaric"]
     assert wb.active.title == "Xülasə"
     ws = wb.active
     assert ws.title == "Xülasə"
@@ -3435,3 +3435,104 @@ def test_all_fourteen_profiles_sequential_no_mix():
     br = _br_xlsx([_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1)])
     _, s14, _ = categorize_statement_verbose(br)
     assert s14["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+
+# ===== 3-cü sheet: Mədaxil və Məxaric =====
+
+
+def _mm_sheet(out):
+    wb = _reload(out)
+    assert wb.sheetnames[-1] == "Mədaxil və Məxaric"
+    return wb["Mədaxil və Məxaric"]
+
+
+def test_madaxil_maxaric_sheet_structure_totals():
+    """3-cü sheet: MƏDAXİL/MƏXARİC cəmləri, İlkin/Son qalıq, kateqoriya-istiqamət ayrımı."""
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1", sender="X MMC"),
+        _row("MAAŞ PAKET", "-100.00", "2", sender="X MMC"),
+        _row("EDV ODENILIR", "-10.00", "3", sender="X MMC"),
+        _row("MAL SATISI", "", "4", sender="Y MMC", kredit="500.00"),  # kredit → DAXİL
+        _row("Com. bank komissiyası", "", "5", sender="X MMC", kredit="3.00"),  # kredit qaytarma
+    ]
+    out, _, _ = categorize_statement_verbose(_xlsx_bytes(META, STD_HEADER, rows))
+    ws = _mm_sheet(out)
+    # İlkin/Son qalıq (ilk/son balans "1000.00")
+    assert ws["B1"].value == 1000.0
+    assert ws["E1"].value == 1000.0
+    # MƏDAXİL = 500 + 3 = 503; MƏXARİC = 5.5 + 100 + 10 = 115.5
+    assert ws["B2"].value == pytest.approx(503.0)
+    assert ws["E2"].value == pytest.approx(115.5)
+    # Kredit blok: KOMİSİYA (3.00) + DAXİL (500.00)
+    credit_vals = {}
+    for r in ws.iter_rows(min_row=5):
+        cat, amt = r[0].value, r[1].value
+        if cat:
+            credit_vals[cat] = amt
+    assert credit_vals["KOMİSİYA"] == pytest.approx(3.0)
+    assert credit_vals["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == pytest.approx(500.0)
+    # Debit blok: KOMİSİYA (5.5) + MAAŞ (100) + ƏDV (10)
+    debit_vals = {}
+    for r in ws.iter_rows(min_row=5):
+        cat, amt = r[3].value, r[4].value
+        if cat:
+            debit_vals[cat] = amt
+    assert debit_vals["KOMİSİYA"] == pytest.approx(5.5)
+    assert debit_vals["MAAŞ MƏXARİC"] == pytest.approx(100.0)
+    assert debit_vals["ƏDV ÖDƏNİŞİ"] == pytest.approx(10.0)
+
+
+def test_madaxil_maxaric_category_both_directions():
+    """Eyni kateqoriya (KOMİSİYA) həm kredit həm debit → hər iki tərəfdə ayrı sətir."""
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1", sender="X MMC"),
+        _row("Com. bank komissiyası", "", "2", sender="X MMC", kredit="3.00"),  # qaytarma
+    ]
+    out, _, _ = categorize_statement_verbose(_xlsx_bytes(META, STD_HEADER, rows))
+    ws = _mm_sheet(out)
+    credit = {r[0].value: r[1].value for r in ws.iter_rows(min_row=5) if r[0].value}
+    debit = {r[3].value: r[4].value for r in ws.iter_rows(min_row=5) if r[3].value}
+    assert credit["KOMİSİYA"] == pytest.approx(3.0)
+    assert debit["KOMİSİYA"] == pytest.approx(5.5)
+
+
+def test_madaxil_maxaric_only_present_categories():
+    """Sıfır/olmayan kateqoriyalar göstərilmir (yalnız faktiki olanlar)."""
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1", sender="X MMC"),
+        _row("MAL SATISI", "", "2", sender="Y MMC", kredit="500.00"),
+    ]
+    out, _, _ = categorize_statement_verbose(_xlsx_bytes(META, STD_HEADER, rows))
+    ws = _mm_sheet(out)
+    credit = [r[0].value for r in ws.iter_rows(min_row=5) if r[0].value]
+    debit = [r[3].value for r in ws.iter_rows(min_row=5) if r[3].value]
+    assert "Nağd çəkim komissiyası" not in credit
+    assert "Nağd çəkim komissiyası" not in debit
+    assert "RÜSUM" not in debit
+    assert "KOMİSİYA" in debit
+    assert "DİGƏR ŞİRKƏT DAXİL OLMALAR" in credit
+
+
+def test_madaxil_maxaric_totals_include_unclassified():
+    """MƏDAXİL/MƏXARİC bütün sətirləri (unclassified daxil) əhatə edir."""
+    rows = [
+        _row("Com. bank komissiyası", "-5.50", "1", sender="X MMC"),
+        _row("ATM XIRDALAN", "-100.00", "2", sender=""),  # boş-sender → unclassified
+    ]
+    out, _, _ = categorize_statement_verbose(_xlsx_bytes(META, STD_HEADER, rows))
+    ws = _mm_sheet(out)
+    assert ws["E2"].value == pytest.approx(105.5)  # 5.5 + 100 (unclassified daxil)
+
+
+def test_madaxil_maxaric_finalize_rebuild():
+    """finalize-dan sonra 3-cü sheet override kateqoriyasını əks etdirir."""
+    raw = _xlsx_bytes(META, STD_HEADER, [_row("ATM XIRDALAN", "-100.00", "1")])
+    _, _, unclassified = categorize_statement_verbose(raw)
+    idx = unclassified[0]["row_index"]
+    out, _ = finalize_statement(raw, {idx: "KOMİSİYA"})
+    wb = _reload(out)
+    assert wb.sheetnames == ["Sheet", "Xülasə", "Mədaxil və Məxaric"]
+    ws = wb["Mədaxil və Məxaric"]
+    debit = [r[3].value for r in ws.iter_rows(min_row=5) if r[3].value]
+    assert "KOMİSİYA" in debit  # override-dan sonra kateqoriya blokda görünür
+    assert ws["E2"].value == pytest.approx(100.0)  # MƏXARİC dəyişməz
