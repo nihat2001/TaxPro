@@ -3198,3 +3198,240 @@ def test_all_thirteen_profiles_sequential_no_mix():
     br = _br_xlsx([_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1)])
     _, s13, _ = categorize_statement_verbose(br)
     assert s13["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+
+# ===== ABB format dəstəyi (Header 42-ci sətirdə; Debit/Kredit ayrı, sender = Əks hesab üzrə məlumatlar) =====
+
+ABB_HEADER = [
+    None,
+    "Əməliyyatın tarixi / Operation date",
+    "Əməliyyatın referensi / Reference İD",
+    "Əks hesab üzrə məlumatlar / Counterparty account details",
+    "Debit məbləğ / Debit amount",
+    "Kredit məbləğ / Credit amount",
+    "Ödənişin təyinatı / Description",
+    "Qarşı tərəfin VÖEN-i / Counterparty TAX ID",
+]
+
+
+def _abb_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(20):
+        ws.append([None] * 5)
+    ws.append([None, None, None, None, None, None, "HESABDAN ÇIXARIŞ - STATEMENT", None])
+    for _ in range(4):
+        ws.append([None] * 5)
+    ws.append([None, "Çıxarışın tarixi / Date of statement:", None, "01.07.2026", None, "Müddətin əvvəlinə qalıq / Starting balance:", None, "5486.43"])
+    ws.append([None] * 5)
+    ws.append([None, "Müştərinin adı / Customer name:", None, "ELYAR ALIYEV NIYAZ OGLU", None, "Debit dövriyyə / Debit turnover:", None, "83226.99"])
+    ws.append([None] * 5)
+    ws.append([None, "VÖEN / TAX ID:", None, "5702116832", None, "Kredit dövriyyə / Credit turnover:", None, "80177.84"])
+    ws.append([None] * 5)
+    ws.append([None, "IBAN / IBAN:", None, "AZ32IBAZ41040019446010977256", None, "Ümumi kommissiya məbləği / Total commission amount:", None, "188.47"])
+    ws.append([None] * 5)
+    ws.append([None, "Hesabın valyutası / Account currency", None, "AZN", None, "Yekun balans / Balance:", None, "2437.28"])
+    ws.append([None] * 5)
+    ws.append([None, "Xidmət olunan filial/şöbə / Serviced branch/departament:", None, "GOYCHAY FILIALI /256"])
+    ws.append([None] * 5)
+    ws.append([None, "Müddət tarixindən/tarixinədək / From date/to date", None, "01.01.2026 - 30.06.2026"])
+    for _ in range(3):
+        ws.append([None] * 5)
+    ws.append(ABB_HEADER)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _abb_row(tarix, sender, teyinat, kredit=None, debet=None):
+    return [
+        None,
+        tarix,
+        "105az21260021243",
+        sender,
+        debet,
+        kredit,
+        teyinat,
+        "",
+    ]
+
+
+def test_abb_profile_detected_before_kapital():
+    """ABB başlığı abb profili kimi tanınır (kapital oğurlamamalıdır)."""
+    raw = _abb_xlsx(
+        [_abb_row("02.01.2026", None, "Standing payment order~20260102~AZN~2116.69", kredit=2116.69)]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 2116.69, "say": 1}
+
+
+def test_kapital_not_stolen_by_abb():
+    """Kapital faylı abb tərəfindən oğurlanmır (abb kapital-dan əvvəldir amma uyğun gəlmir)."""
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s, _ = categorize_statement_verbose(kap)
+    assert s["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+
+def test_abb_standing_payment_order_uncategorized_sender():
+    """Standing payment order (sender boş) → DAXİL OLMALAR (sender şərti keçərsiz)."""
+    assert _match_category(
+        None, "Standing payment order~20260102~AZN~2116.69~BAKI", "2116.69", 0, profile="abb"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_abb_nagd_cekim_sadelesmis_vergi():
+    """'sadələşmiş vergi' + 'nağd məxaric' → Nağd çəkim komissiyası."""
+    assert _match_category(
+        "", "Huq.Sexs Negd mexaric emeliyyatlari uzre sadelesh mis vergi", 0, "30", profile="abb"
+    ) == "Nağd çəkim komissiyası"
+
+
+def test_abb_vergi_newline():
+    """'Dovlat Vergi Xid\\nmati' (newline daxili) → VERGİ MƏXARİC."""
+    assert _match_category(
+        "34501839440000105127", "Yeni IB vasitasila Dovlat Vergi Xid mati odanishi", 0, "970", profile="abb"
+    ) == "VERGİ MƏXARİC"
+
+
+def test_abb_edv_newline():
+    """'EDV ODEN IS' (newline daxili) → ƏDV ÖDƏNİŞİ."""
+    assert _match_category(
+        "AZ48CTRE00000000000000014", "MUQAVILE VE QAIMEYE ESASEN EDV ODEN IS", 0, "2.75", profile="abb"
+    ) == "ƏDV ÖDƏNİŞİ"
+
+
+def test_abb_komisiya():
+    """'haqq və komissiya' → KOMİSİYA."""
+    assert _match_category(
+        "66404", "Köçürmə əməliyyatı üz.haqq və komissiya", 0, "2.12", profile="abb"
+    ) == "KOMİSİYA"
+
+
+def test_abb_qr_payment_catchall():
+    """'QR PAYMENT' → DAXİL OLMALAR (kredit, sender şəxs)."""
+    assert _match_category(
+        "33881029443903434265 BAHA", "QR PAYMENT  QR PAYMENT", "0.01", 0, profile="abb"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_abb_rules_isolated_from_other_profiles():
+    """ABB SPO/sadeleshmis qaydaları digər profillərdə aktiv deyil."""
+    assert _match_category(
+        "X", "Standing payment order~20260102", "100", 0, profile="standard"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"  # standard-da sender dolu → DAXİL (eyni nəticə)
+    assert _match_category(
+        "", "Huq.Sexs Negd mexaric emeliyyatlari uzre sadelesh mis vergi", 0, "30", profile="standard"
+    ) is None  # standard-da sadeleshmis qaydası yoxdur
+
+
+def test_abb_end_to_end_counts():
+    """Real ABB strukturuna uyğun end-to-end — proqnoz 120/10/50/9/153/50 = 392, uncl 11."""
+    rows = []
+    for _ in range(120):
+        rows.append(_abb_row("02.01.2026", "66404", "haqq və komissiya", debet=1))
+    for _ in range(10):
+        rows.append(_abb_row("02.01.2026", "", "Negd mexaric emeliyyatlari uzre sadelesh mis vergi", debet=10))
+    for _ in range(50):
+        rows.append(_abb_row("02.01.2026", "34501839440000105127", "Dovlat Vergi Xid mati odanishi", debet=10))
+    for _ in range(9):
+        rows.append(_abb_row("02.01.2026", "AZ48CTRE00000000000000014", "EDV ODEN IS", debet=1))
+    for _ in range(143):
+        rows.append(_abb_row("02.01.2026", None, "Standing payment order~20260102~AZN~2116.69", kredit=100))
+    for _ in range(2):
+        rows.append(_abb_row("02.01.2026", "BAHA", "QR PAYMENT  QR PAYMENT", kredit=0.01))
+    for _ in range(8):
+        rows.append(_abb_row("02.01.2026", "SAMADOV TOGRUL", "QAIMEYE ESASEN ODENIS", kredit=100))
+    for _ in range(10):
+        rows.append(_abb_row("02.01.2026", "", "MAL ALISI UCUN M4", debet=100))
+    for _ in range(50):
+        rows.append(_abb_row("02.01.2026", "SAMADOV TOGRUL", "ODENIS EMELIYYATI", debet=10))
+    rows.append(_abb_row("02.01.2026", "AZ48CTRE00000000000000014", "MUQAVILE VE QAIMEYE ESASEN EDV ODEN IS", debet=0))
+    raw = _abb_xlsx(rows)
+    out, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 120.0, "say": 120}
+    assert summary["Nağd çəkim komissiyası"] == {"cem": 100.0, "say": 10}
+    assert summary["VERGİ MƏXARİC"] == {"cem": 500.0, "say": 50}
+    assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 9.0, "say": 9}
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": pytest.approx(15100.02), "say": 153}
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 500.0, "say": 50}
+    assert len(unclassified) == 11
+
+    wb = _reload(out)
+    main = wb[wb.sheetnames[0]]
+    assert main.cell(row=42, column=2).value == "Əməliyyatın tarixi / Operation date"
+    assert main.cell(row=42, column=9).value == "Kateqoriya"
+    assert main.cell(row=42, column=10).value == "İcmal"
+    assert wb.active.title == "Xülasə"
+
+
+def test_abb_finalize():
+    """ABB profili finalize ilə uyğun işləyir."""
+    raw = _abb_xlsx(
+        [_abb_row("02.01.2026", None, "Standing payment order~20260102~AZN~2116.69", kredit=2116.69)]
+    )
+    _, _, unclassified = categorize_statement_verbose(raw)
+    assert len(unclassified) == 0
+    out, summary = finalize_statement(raw, {})
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 2116.69, "say": 1}
+
+
+def test_all_fourteen_profiles_sequential_no_mix():
+    """standard + abb + turan + kapital + yelo + access + vtb + ziraat + atb + unibank + rabite + bankofbaku + pasha + bankrespublika — qarışmır."""
+    std = _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
+    _, s1, _ = categorize_statement_verbose(std)
+    assert s1["KOMİSİYA"] == {"cem": 5.5, "say": 1}
+
+    abb = _abb_xlsx([_abb_row("02.01.2026", None, "Standing payment order~20260102", kredit=100)])
+    _, s2, _ = categorize_statement_verbose(abb)
+    assert s2["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    tur = _turan_xlsx([_turan_row(0, "09-06-2026", -1000, "Kreditlər üzrə kassa komisyonu - 1%")])
+    _, s3, _ = categorize_statement_verbose(tur)
+    assert s3["KOMİSİYA"] == {"cem": 1000.0, "say": 1}
+
+    kap = _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]])
+    _, s4, _ = categorize_statement_verbose(kap)
+    assert s4["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    yelo = _yelo_xlsx([_yelo_row("YELO BANK ASC", "FAIZ ÖDƏMƏ", 0, 5)])
+    _, s5, _ = categorize_statement_verbose(yelo)
+    assert s5["BANK FAİZ XƏRCİ"] == {"cem": 5.0, "say": 1}
+
+    access = _access_xlsx([_access_row("Muqavileye esasen Mart ayi xidmet haqqi odenilir", 700, "", "HASANLI-H MMC")])
+    _, s6, _ = categorize_statement_verbose(access)
+    assert s6["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 700.0, "say": 1}
+
+    vtb = _vtb_xlsx([_vtb_row("Комиссия за срочность", debet=5.0, adi="BANK VTB (AZƏRBAYCAN) ASC", voen="1400117231")])
+    _, s7, _ = categorize_statement_verbose(vtb)
+    assert s7["KOMİSİYA"] == {"cem": 5.0, "say": 1}
+
+    zir = _ziraat_xlsx([_ziraat_row("11.10.2021", "04", "AZ48CTRE00000000000000014001", "BAKU STEEL COMPANY MMC", 100, 0, "AVANS ODENIWI UZRE EDV")])
+    _, s8, _ = categorize_statement_verbose(zir)
+    assert s8["ƏDV ÖDƏNİŞİ"] == {"cem": 100.0, "say": 1}
+
+    atb = _atb_xlsx([_atb_row("07.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq və komissiya gəlirləri", "Xidmet Haqqi", debet=1)])
+    _, s9, _ = categorize_statement_verbose(atb)
+    assert s9["KOMİSİYA"] == {"cem": 1.0, "say": 1}
+
+    uni = _unibank_xlsx([_unibank_row("05.01.2026", None, 100, "konvertasiya")])
+    _, s10, _ = categorize_statement_verbose(uni)
+    assert s10["Konvertasiya"] == {"cem": 100.0, "say": 1}
+
+    rab = _rabite_xlsx([_rabite_row("01.07.2025", "Haqq və komissiya gəlirləri", 127.12, 0, "Hesab-faktura")])
+    _, s11, _ = categorize_statement_verbose(rab)
+    assert s11["KOMİSİYA"] == {"cem": 127.12, "say": 1}
+
+    bob = _bob_xlsx([_bob_row("01.05.2026", "VASIF DADASOV", "Elektron qaima-faktura", profit=100)])
+    _, s12, _ = categorize_statement_verbose(bob)
+    assert s12["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
+
+    pasha = _pasha_xlsx([_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10)])
+    _, s13, _ = categorize_statement_verbose(pasha)
+    assert s13["KOMİSİYA"] == {"cem": 10.0, "say": 1}
+
+    br = _br_xlsx([_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1)])
+    _, s14, _ = categorize_statement_verbose(br)
+    assert s14["KOMİSİYA"] == {"cem": 1.0, "say": 1}

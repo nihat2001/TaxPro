@@ -297,6 +297,7 @@
     bindBankCard("bankofbaku", "taxpro_bankofbaku_bank_cizarsisi.xlsx");
     bindBankCard("pasha", "taxpro_pasha_bank_cizarsisi.xlsx");
     bindBankCard("bankrespublika", "taxpro_bankrespublika_cizarsisi.xlsx");
+    bindBankCard("abb", "taxpro_abb_bank_cizarsisi.xlsx");
   }
 
   document.addEventListener("DOMContentLoaded", init);
