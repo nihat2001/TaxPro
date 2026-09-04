@@ -496,9 +496,9 @@ def test_categorize_csv_to_xlsx():
 
     wb = _reload(out)
     assert wb.sheetnames == ["Çıxarış", "Xülasə", "Mədaxil və Məxaric"]
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
     ws = wb.active
-    assert ws.title == "Xülasə"
+    assert ws.title == "Çıxarış"
     main = wb["Çıxarış"]
     assert main.cell(row=1, column=1).value == "Qurum Adi"
     assert main.cell(row=3, column=4).value == "Əməliyyat Detalları"
@@ -531,7 +531,7 @@ def test_output_formatting():
     wb = _reload(out)
 
     # Default aktiv sheet Xülasə-dir
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
     main = wb["Sheet"]
     # Header sətri bold + açıq boz fon
@@ -642,7 +642,7 @@ def test_finalize_empty_selections():
     out, summary = finalize_statement(raw, {})
     assert summary["KOMİSİYA"] == {"cem": 5.5, "say": 1}
     wb = _reload(out)
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 # ===== Kapital Bank format dəstəyi =====
@@ -1335,7 +1335,7 @@ def test_vtb_end_to_end_counts():
     # ilk kiril sətir → row 12+42+1 = 55 KOMİSİYA
     assert main.cell(row=55, column=9).value == "KOMİSİYA"
     # Xülasə sheet aktiv
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_vtb_finalize():
@@ -1547,7 +1547,7 @@ def test_turan_end_to_end_counts():
     assert main.cell(row=23, column=10).value == "Nağd çəkim komissiyası"
     assert main.cell(row=28, column=10).value is None  # skip sətir
     # Xülasə sheet aktiv
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_turan_finalize():
@@ -1757,7 +1757,7 @@ def test_ziraat_end_to_end_counts():
     # yekun sətirlər (CƏMİ 817, Çıxış qalıq 818) kateqoriyasız
     assert main.cell(row=817, column=10).value is None
     assert main.cell(row=818, column=10).value is None
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_ziraat_finalize():
@@ -1966,7 +1966,7 @@ def test_atb_end_to_end_counts():
     assert main.cell(row=13, column=11).value == 1.0
     assert main.cell(row=434, column=10).value is None  # Müddət üzrə dövriyyə
     assert main.cell(row=435, column=10).value is None  # Müddətin sonunda qalıq
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_atb_finalize():
@@ -2172,7 +2172,7 @@ def test_unibank_end_to_end_counts():
     assert main.cell(row=165, column=10).value is None  # Yekun (Summary)
     assert main.cell(row=166, column=10).value is None  # boş
     assert main.cell(row=167, column=10).value is None  # boş
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_unibank_finalize():
@@ -2380,7 +2380,7 @@ def test_rabite_end_to_end_counts():
     assert main.cell(row=11, column=10).value == "KOMİSİYA"
     assert main.cell(row=11, column=11).value == 1.0
     assert main.cell(row=289, column=10).value is None  # yekun sətri
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_rabite_finalize():
@@ -2606,7 +2606,7 @@ def test_bankofbaku_end_to_end_counts():
     assert main.cell(row=13, column=10).value == 10.0
     assert main.cell(row=105, column=9).value is None  # whitespace təyinat
     assert main.cell(row=106, column=9).value is None  # meta
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_bankofbaku_finalize():
@@ -2901,7 +2901,7 @@ def test_pasha_end_to_end_counts():
     assert main.cell(row=13, column=1).value == "  "
     assert main.cell(row=13, column=10).value == "Kateqoriya"
     assert main.cell(row=13, column=11).value == "İcmal"
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_pasha_finalize():
@@ -3131,7 +3131,7 @@ def test_bankrespublika_end_to_end_counts():
     assert main.cell(row=13, column=2).value == "Tarix"
     assert main.cell(row=13, column=11).value == "Kateqoriya"
     assert main.cell(row=13, column=12).value == "İcmal"
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_bankrespublika_finalize():
@@ -3364,7 +3364,7 @@ def test_abb_end_to_end_counts():
     assert main.cell(row=42, column=2).value == "Əməliyyatın tarixi / Operation date"
     assert main.cell(row=42, column=9).value == "Kateqoriya"
     assert main.cell(row=42, column=10).value == "İcmal"
-    assert wb.active.title == "Xülasə"
+    assert wb.active.title == wb.sheetnames[0]
 
 
 def test_abb_finalize():
@@ -3536,3 +3536,40 @@ def test_madaxil_maxaric_finalize_rebuild():
     debit = [r[3].value for r in ws.iter_rows(min_row=5) if r[3].value]
     assert "KOMİSİYA" in debit  # override-dan sonra kateqoriya blokda görünür
     assert ws["E2"].value == pytest.approx(100.0)  # MƏXARİC dəyişməz
+
+
+# ===== XML ardıcıllıq (sqref=A1, activeTab=0, tabSelected yalnız 1-ci sheet) =====
+
+
+def _xml_assert(out, main_title):
+    import zipfile
+
+    z = zipfile.ZipFile(io.BytesIO(out))
+    wbx = z.read("xl/workbook.xml").decode("utf-8")
+    i = wbx.find("activeTab=")
+    assert wbx[i : i + 13] == 'activeTab="0"', wbx[i : i + 13]
+    for idx, sheet_name in enumerate(("sheet1", "sheet2", "sheet3")):
+        xml = z.read(f"xl/worksheets/{sheet_name}.xml").decode("utf-8")
+        j = xml.find("<sheetView")
+        seg = xml[j : j + 180]
+        assert 'sqref="A1"' in seg, seg  # tam diapazon (XFD1048576) YOX
+        assert "XFD1048576" not in seg
+        if idx == 0:
+            assert 'tabSelected="1"' in seg, seg  # yalnız əsas sheet seçili
+        else:
+            assert 'tabSelected="1"' not in seg, seg
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1", sender="X MMC")]),
+        _kapital_xlsx([[1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"]]),
+        _abb_xlsx([_abb_row("02.01.2026", None, "Standing payment order~20260102", kredit=100)]),
+        _vtb_xlsx([_vtb_row("hesablar arasi kocurme edilir", debet=5, adi="BANK VTB (AZƏRBAYCAN) ASC")]),
+    ],
+)
+def test_xml_consistency(raw):
+    """Yaradılan çıxışda hər 3 sheet: sqref=A1, activeTab=0, tabSelected yalnız 1-ci sheet."""
+    out, _, _ = categorize_statement_verbose(raw)
+    _xml_assert(out, None)

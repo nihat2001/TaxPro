@@ -77,6 +77,7 @@ from typing import Any
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.views import Selection
 
 from app.services.deterministic.excel_parser import detect_format, normalize_text
 
@@ -973,9 +974,29 @@ def _add_summary_sheet(wb: Workbook, summary: dict) -> None:
         cell.font = _HEADER_FONT
         cell.border = _TOP_BORDER
     _auto_fit_columns(ws)
+    _reset_sheet_view(ws)
 
-    # Fayl açılanda Xülasə görünsün — defolt aktiv sheet.
-    wb.active = wb.sheetnames.index(_SUMMARY_SHEET_NAME)
+
+def _reset_sheet_view(ws) -> None:
+    """Sheet-in seçim sahəsini açıq şəkildə A1-ə sıfırlayır.
+
+    Mənbə bank fayllarında sqref tam vərəqi (A1:XFD1048576) əhatə edə bilər;
+    çıxışda normal (A1) olmalıdır.
+    """
+    ws.sheet_view.selection = [Selection(activeCell="A1", sqref="A1")]
+
+
+def _finalize_workbook_view(wb: Workbook, main_ws) -> None:
+    """Workbook baxışını ardıcıl edir: əsas sheet aktiv + seçim A1.
+
+    activeTab → 0 (əsas sheet), yalnız əsas sheet-də tabSelected="1",
+    bütün sheet-lərin selection-u A1.
+    """
+    for sh in wb.worksheets:
+        _reset_sheet_view(sh)
+    for i, sh in enumerate(wb.worksheets):
+        sh.sheet_view.tabSelected = i == 0
+    wb.active = 0
 
 
 def _build_madaxil_maxaric_sheet(
@@ -1051,9 +1072,7 @@ def _build_madaxil_maxaric_sheet(
     _style_amount_column(ws, 2, 2, max(ws.max_row, 2))
     _style_amount_column(ws, 5, 2, max(ws.max_row, 2))
     _auto_fit_columns(ws)
-    # Xülasə aktiv qalsın (create_sheet yeni sheet-i aktiv edir).
-    if _SUMMARY_SHEET_NAME in wb.sheetnames:
-        wb.active = wb.sheetnames.index(_SUMMARY_SHEET_NAME)
+    _reset_sheet_view(ws)
     return ws
 
 
@@ -1397,6 +1416,7 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     _build_madaxil_maxaric_sheet(
         wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
     )
+    _finalize_workbook_view(wb, ws)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1771,6 +1791,7 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     _build_madaxil_maxaric_sheet(
         wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
     )
+    _finalize_workbook_view(wb, ws)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1908,6 +1929,7 @@ def finalize_statement(raw_bytes: bytes, selections: dict[int, str]) -> tuple[by
     _build_madaxil_maxaric_sheet(
         wb, categorized_rows, first_balance, last_balance, total_madaxil, total_mexaric
     )
+    _finalize_workbook_view(wb, ws)
 
     buf = io.BytesIO()
     wb.save(buf)
