@@ -41,9 +41,11 @@ Qlobal: 'KOMİTƏ' ('KOMITESI') 'KOM' substring-i ilə KOMİSİYA-ya düşmür;
                'xidmet haqqi' debit-də KOMİSİYA; 'faiz VƏ kredit'/'cərimə VƏ kredit' → BANK FAİZ;
                detail 'tesisciden' → TƏSİSÇİDƏN BORC (sender tələbi yox);
                'əsas borc' (faiz/cəriməsiz) → Kredit ödənişi; MASGULLUQ AGENTLIYI → VERGİ
-  - abb:       Header 42-ci sətirdə, Debit/Kredit ayrı, sender = Əks hesab üzrə məlumatlar;
-              'Standing payment order' (kredit, sender boş) → DAXİL OLMALAR;
-              'sadeleshmis' + 'negdmexaric' → Nağd çəkim komissiyası
+- abb:       Header 42-ci sətirdə, Debit/Kredit ayrı, sender = Əks hesab üzrə məlumatlar;
+               'Standing payment order' (kredit, sender boş) → DAXİL OLMALAR;
+               'sadeleshmis' + 'negdmexaric' → Nağd çəkim komissiyası;
+               'ADV' açar sözü → ƏDV ÖDƏNİŞİ; 'Mal alışı' (sender boş olsa da) →
+               ÖDƏNİŞLƏRİ; 'Digər Bank Hesabına Mədaxil' → Hesab Möhkəmlənməsi
 Çıxış: kateqoriyalaşdırılmış .xlsx (orijinal hücrələr dəyişməz; Kateqoriya
 sütunu doldurulur və onun dərhal sağında sətir-üzrə məbləğ (debit və ya
 kredit, abs) ilə "İcmal" sütunu əlavə olunur) + ayrıca "Xülasə" sheet-i +
@@ -442,6 +444,18 @@ _ABB_NAGD_CEKIM_TOKENS = ("sadeleshmis", "negdmexaric")
 # kredit olduqda birbaşa DİGƏR ŞİRKƏT DAXİL OLMALAR (sender tələbi yoxdur).
 _ABB_SPO_TOKEN = "standingpaymentorder"
 
+# ABB: 'Digər Bank Hesabına Mədaxil' → Hesab Möhkəmlənməsi.
+_ABB_DIGER_BANK_HESAB_TOKEN = "digerbankhesab"
+_ABB_MEDAXIL_TOKEN = "medaxil"
+
+# ABB: 'ADV' açar sözü → ƏDV ÖDƏNİŞİ. \b sərhədi — 'advance' kimi sözlərdəki
+# substring 'adv' yalan-pozitiv yaratmasın.
+_ABB_ADV_RE = re.compile(r"\badv\b")
+
+# ABB: 'Mal alışı üçün' → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ (sender boş olsa da).
+# Həm 'MAL ALISI UCUN' (malalisi), həm 'MAL ALISHI UCHUN' (malalishi) variantı.
+_ABB_MAL_ALISI_TOKENS = ("malalisi", "malalishi")
+
 # Bank of Baku: 'əmək haqqı' mətnli məbləğ ≤ bu hədd → komissiya (MAAŞ yox, KOMİSİYA).
 _BOB_MAAS_COMMISSION_MAX = 45.0
 
@@ -700,7 +714,13 @@ def _match_category(
     debit_filled = _has_amount(debit)
     kredit_filled = _has_amount(kredit)
 
-    if debit_filled and any(p in norm_detail for p in VAT_PATTERNS):
+    if debit_filled and (
+        any(p in norm_detail for p in VAT_PATTERNS)
+        or (
+            # ABB: 'ADV' açar sözü (word) → ƏDV ÖDƏNİŞİ ('adv odani[ş]i').
+            profile == "abb" and _ABB_ADV_RE.search(text.lower())
+        )
+    ):
         return "ƏDV ÖDƏNİŞİ"
 
     if debit_filled and any(p in norm_detail for p in DUTY_PATTERNS):
@@ -734,7 +754,12 @@ def _match_category(
         return "TƏSİSÇİDƏN BORC"
 
     # Yeni qlobal kateqoriyalar — spesifik qaydalardan sonra, catch-all-dan əvvəl.
-    if any(t in norm_detail for t in _HESAB_MOHKEMLENME_TOKENS):
+    if any(t in norm_detail for t in _HESAB_MOHKEMLENME_TOKENS) or (
+        # ABB: 'Digər Bank Hesabına Mədaxil' → Hesab Möhkəmlənməsi.
+        profile == "abb"
+        and _ABB_DIGER_BANK_HESAB_TOKEN in norm_detail
+        and _ABB_MEDAXIL_TOKEN in norm_detail
+    ):
         return "Hesab Möhkəmlənməsi"
     if _NAGD_LASDIRMA_TRIGGER in norm_detail:
         return "Nağdlaşdırma"
@@ -764,6 +789,15 @@ def _match_category(
         and "cerime" not in norm_detail
     ):
         return "Kredit ödənişi"
+
+    # ABB: 'Mal alışı üçün' → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ — sender boş olsa da
+    # (catch-all-ın sender şərtini keçərsiz edir).
+    if (
+        profile == "abb"
+        and debit_filled
+        and any(t in norm_detail for t in _ABB_MAL_ALISI_TOKENS)
+    ):
+        return "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
 
     # ABB: 'Standing payment order' (mütəmadi daxilolan ödəniş, sender boş) →
     # kredit olduqda birbaşa DAXİL OLMALAR (catch-all-ın sender şərtini keçərsiz edir).

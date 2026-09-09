@@ -3429,7 +3429,7 @@ def test_abb_rules_isolated_from_other_profiles():
 
 
 def test_abb_end_to_end_counts():
-    """Real ABB strukturuna uyğun end-to-end — proqnoz 120/10/50/9/153/50 = 392, uncl 11."""
+    """Real ABB strukturuna uyğun end-to-end — proqnoz 120/10/50/9/153/60 = 402, uncl 1."""
     rows = []
     for _ in range(120):
         rows.append(_abb_row("02.01.2026", "66404", "haqq və komissiya", debet=1))
@@ -3457,8 +3457,8 @@ def test_abb_end_to_end_counts():
     assert summary["VERGİ MƏXARİC"] == {"cem": 500.0, "say": 50}
     assert summary["ƏDV ÖDƏNİŞİ"] == {"cem": 9.0, "say": 9}
     assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": pytest.approx(15100.02), "say": 153}
-    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 500.0, "say": 50}
-    assert len(unclassified) == 11
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1500.0, "say": 60}
+    assert len(unclassified) == 1
 
     wb = _reload(out)
     main = wb[wb.sheetnames[0]]
@@ -3468,7 +3468,55 @@ def test_abb_end_to_end_counts():
     assert wb.active.title == wb.sheetnames[0]
 
 
-def test_abb_finalize():
+def test_abb_diger_bank_hesab_medaxil_hesab_mohkemlenme():
+    """ABB: 'Digər Bank Hesabına Mədaxil' → Hesab Möhkəmlənməsi (əvvəl DAXİL idi)."""
+    assert _match_category(
+        "3444831733490", "Diger Bank Hesabina Medaxil", "5000", 0, profile="abb"
+    ) == "Hesab Möhkəmlənməsi"
+
+
+def test_abb_adv_edv_odenisi():
+    """ABB: 'ADV' açar sözü (debit) → ƏDV ÖDƏNİŞİ ('adv odani[ş]i' = ƏDV ödənişi)."""
+    assert _match_category(
+        "M", "112 sayli alqi-satqi muqavilasina EQF-ya asasan adv odanishi", 0, "2.75", profile="abb"
+    ) == "ƏDV ÖDƏNİŞİ"
+
+
+def test_abb_adv_not_substring_false_positive():
+    """ABB: 'advance' kimi sözlərdəki substring 'adv' ƏDV yaratmır; kredit-ADV də yox."""
+    assert _match_category(
+        "M", "Advance payment for goods", 0, "50", profile="abb"
+    ) != "ƏDV ÖDƏNİŞİ"
+    assert _match_category(
+        "M", "adv odanishi", "100", 0, profile="abb"
+    ) != "ƏDV ÖDƏNİŞİ"
+
+
+def test_abb_mal_alisi_odenisleri():
+    """ABB: 'Mal alışı üçün' (sender boş olsa da) → DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ."""
+    assert _match_category(
+        "", "MAL ALISI UCUN M4", 0, "100", profile="abb"
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    assert _match_category(
+        "", "MAL ALISHI UCHUN M4", 0, "100", profile="abb"
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_abb_mal_alisi_credit_not_odenisleri():
+    """ABB: 'Mal alışı' kredit sətirində ÖDƏNİŞLƏRİ deyil."""
+    assert _match_category(
+        "", "MAL ALISI UCUN M4", "100", 0, profile="abb"
+    ) != "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_abb_new_rules_isolated_from_other_profiles():
+    """ABB ADV/Mal alışı/Diger Bank qaydaları digər profillərdə aktiv deyil."""
+    assert _match_category(
+        "", "MAL ALISI UCUN M4", 0, "100", profile="standard"
+    ) is None
+    assert _match_category(
+        "3444831733490", "Diger Bank Hesabina Medaxil", "5000", 0, profile="standard"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
     """ABB profili finalize ilə uyğun işləyir."""
     raw = _abb_xlsx(
         [_abb_row("02.01.2026", None, "Standing payment order~20260102~AZN~2116.69", kredit=2116.69)]
