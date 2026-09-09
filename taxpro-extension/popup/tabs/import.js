@@ -119,7 +119,7 @@
     "Konvertasiya",
     "Bank xərci",
     "Divident ödəniş",
-    "Pos terminal mədaxil",
+    "Pos terminal məxaric",
     "Kredit ödənişi",
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",

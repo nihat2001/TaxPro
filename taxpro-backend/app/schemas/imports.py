@@ -49,7 +49,7 @@ class BankStatementSummary(BaseModel):
         default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT DAXİL OLMALAR"
     )
     pos_terminal_medaxil: BankStatementCategorySummary = Field(
-        default_factory=BankStatementCategorySummary, alias="Pos terminal mədaxil"
+        default_factory=BankStatementCategorySummary, alias="Pos terminal məxaric"
     )
     kredit_odenisi: BankStatementCategorySummary = Field(
         default_factory=BankStatementCategorySummary, alias="Kredit ödənişi"

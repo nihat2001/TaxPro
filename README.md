@@ -99,7 +99,7 @@ avtomatik tanınır (hər bank üçün unikal required header token-ləri; profi
 
 **18 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
 RÜSUM · VERGİ MƏXARİC · MAAŞ MƏXARİC · TƏSİSÇİDƏN BORC · Hesab Möhkəmlənməsi · Nağdlaşdırma ·
-Konvertasiya · Bank xərci · Divident ödəniş · Pos terminal mədaxil (pasha) · Kredit ödənişi (pasha) ·
+Konvertasiya · Bank xərci · Divident ödəniş · Pos terminal məxaric (pasha) · Kredit ödənişi (pasha) ·
 DİGƏR ŞİRKƏT DAXİL OLMALAR · DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
 
 **Dəstəklənən format profilləri (14):**
@@ -117,7 +117,7 @@ DİGƏR ŞİRKƏT DAXİL OLMALAR · DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Termin
 | `unibank` | Unibank | Tərəfdaş sender; "konvertasiya" debit-də KOMİSİYA; sender-siz catch-all |
 | `rabite` | Rabitə Bank | Qarşı tərəfin adı sender; "Haqq və komissiya gəlirləri" → KOMİSİYA |
 | `bankofbaku` | Bank of Baku | Profit/Expenditure; Debet Account sender |
-| `pasha` | Pasha Bank | Mədaxil/Məxaric ayrı, Ödəyən/Benefisiar sender; "xidmət haqqı"/"Charge" debit-də KOMİSİYA; "Interest Payment" → BANK FAİZ; "Salary"+debit → MAAŞ; "Pos"+kredit → Pos terminal mədaxil; "Loan Payment" → Kredit ödənişi |
+| `pasha` | Pasha Bank | Mədaxil/Məxaric ayrı, Ödəyən/Benefisiar sender; "xidmət haqqı"/"Charge" debit-də KOMİSİYA; "Interest Payment" → BANK FAİZ; "Salary"+debit → MAAŞ; "Pos"+kredit → Pos terminal məxaric; "Loan Payment" → Kredit ödənişi |
 | `bankrespublika` | Bank Respublika | Kredit/Debet ayrı; "xidmət haqqı" debit-də KOMİSİYA; "faiz/cərimə ∧ kredit" → BANK FAİZ; "tesisciden" → TƏSİSÇİDƏN BORC; "əsas borc" → kateqoriyasız |
 | `abb` | ABB | Header 42-ci sətirdə; "Standing payment order" (kredit) → DAXİL; "sadeleshmis"+negdmexaric → Nağd çəkim; balans sütunu yoxdur |
 
