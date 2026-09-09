@@ -2992,16 +2992,22 @@ def test_pasha_pos_terminal_medaxil():
     ) == "Pos terminal mədaxil"
 
 
-def test_pasha_pos_debit_not_pos_category():
-    """Pasha: 'Pos' açar sözü + debit → POS kateqoriyası deyil (cərimə → catch-all)."""
+def test_pasha_pos_debit_also_pos_category():
+    """Pasha: 'Pos' açar sözü istiqamətdən asılı deyil — debit (cərimə) də
+    'Pos terminal mədaxil'-ə düşür (əvvəl debit-də catch-all-a qalırdı)."""
     assert _match_category(
         "Pasha Bank",
         "Internal payment  PENALTY FOR LOW POS TERMINAL - AP926256 TURNOVER FOR",
         None, "50", profile="pasha",
-    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+    ) == "Pos terminal mədaxil"
 
 
-def test_pasha_pos_no_substring_false_positive():
+def test_pasha_pos_charge_priority_komisiya():
+    """Pasha: 'Charge' KOMİSİYA-ya KOMİSİYA qaydasından əvvəl yoxlanır —
+    'Charge for POS...' KOMİSİYA qalır (POS-a düşmür)."""
+    assert _match_category(
+        "Pasha Bank", "Charge for POS terminal services", None, "10", profile="pasha"
+    ) == "KOMİSİYA"
     """Pasha: 'deposit' sözündəki 'pos' substring-i POS kateqoriyası yaratmır."""
     assert _match_category(
         "Pasha Bank", "Cash deposit transaction", "100", None, profile="pasha"

@@ -31,8 +31,9 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
                ('_x000D_' artefaktı ilə — 2-ci seqment); 'xidmet haqqi' debit-də
                KOMİSİYA, maaş-guard olmadan ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI');
                'Charge' debit-də KOMİSİYA; 'Interest Payment' → BANK FAİZ XƏRCİ;
-               'Salary' + debit → MAAŞ MƏXARİC; 'Pos' açar sözü + kredit →
-               Pos terminal mədaxil; 'Loan Payment' → Kredit ödənişi;
+               'Salary' + debit → MAAŞ MƏXARİC; 'Pos' açar sözü →
+               Pos terminal mədaxil (istiqamətdən asılı deyil); 'Loan Payment' →
+               Kredit ödənişi;
                balans/POS yığım sətirləri atlanır
 Qlobal: 'KOMİTƏ' ('KOMITESI') 'KOM' substring-i ilə KOMİSİYA-ya düşmür;
               'GOMRUK'/'GÖMRÜK' → RÜSUM (DUTY_PATTERNS)
@@ -62,7 +63,7 @@ Kateqoriyalar (prioritet sırası ilə, yoxsa boş qalır):
   11. "Konvertasiya"           (alış əməliyyatı / valyuta / əskinaz / konvertasiya)
   12. "Bank xərci"             (ay ödənişi / aylıq ödəniş)
   13. "Divident ödəniş"        (divident / dividend)
-  14. "Pos terminal mədaxil"    (pasha: 'Pos' açar sözü + kredit)
+  14. "Pos terminal mədaxil"    (pasha: 'Pos' açar sözü, istiqamətdən asılı deyil)
   15. "Kredit ödənişi"          (pasha: 'Loan Payment')
   16. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
   17. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
@@ -425,7 +426,7 @@ _PASHA_KOMISIYA_TOKEN = "xidmethaqqi"
 # Pasha: əlavə açar sözlər (yalnız pasha profili).
 # 'Charge' → KOMİSİYA (debit); 'Interest Payment' → BANK FAİZ XƏRCİ;
 # 'Salary' + debit → MAAŞ MƏXARİC; 'Loan Payment' → Kredit ödənişi;
-# 'Pos' (açar söz, substring deyil!) + kredit → Pos terminal mədaxil.
+# 'Pos' (açar söz, substring deyil!) → Pos terminal mədaxil.
 # 'Pos' üçün \b sərhədi lazımdır — normalize_text boşluqları sildiyindən
 # substring 'pos' 'deposit/purpose/response' kimi sözlərə də düşərdi.
 _PASHA_CHARGE_TOKEN = "charge"
@@ -744,10 +745,11 @@ def _match_category(
     if any(t in norm_detail for t in _DIVIDENT_TOKENS):
         return "Divident ödəniş"
 
-    # Pasha: 'Pos' açar sözü + kredit (mədaxil) → Pos terminal mədaxil;
+    # Pasha: 'Pos' açar sözü → Pos terminal mədaxil (istiqamətdən asılı
+    # olmayaraq — debit 'PENALTY FOR LOW POS TERMINAL' sətirləri daxil);
     # 'Loan Payment' → Kredit ödənişi. Catch-all-dan əvvəl (spesifik qayda).
     if profile == "pasha":
-        if kredit_filled and _PASHA_POS_RE.search(text.lower()):
+        if _PASHA_POS_RE.search(text.lower()):
             return "Pos terminal mədaxil"
         if _PASHA_LOAN_PAYMENT_TOKEN in norm_detail:
             return "Kredit ödənişi"
