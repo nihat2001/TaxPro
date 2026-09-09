@@ -37,10 +37,10 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
                balans/POS yığım sətirləri atlanır
 Qlobal: 'KOMİTƏ' ('KOMITESI') 'KOM' substring-i ilə KOMİSİYA-ya düşmür;
               'GOMRUK'/'GÖMRÜK' → RÜSUM (DUTY_PATTERNS)
-  - bankrespublika: Header 13-cü sətirdə, Kredit/Debet ayrı, sender = Göndərənin adı/Alanın adı;
-              'xidmet haqqi' debit-də KOMİSİYA; 'faiz VƏ kredit'/'cərimə VƏ kredit' → BANK FAİZ;
-              detail 'tesisciden' → TƏSİSÇİDƏN BORC (sender tələbi yox);
-              'əsas borc' (faiz/cəriməsiz) → kateqoriyasız; MASGULLUQ AGENTLIYI → VERGİ
+- bankrespublika: Header 13-cü sətirdə, Kredit/Debet ayrı, sender = Göndərənin adı/Alanın adı;
+               'xidmet haqqi' debit-də KOMİSİYA; 'faiz VƏ kredit'/'cərimə VƏ kredit' → BANK FAİZ;
+               detail 'tesisciden' → TƏSİSÇİDƏN BORC (sender tələbi yox);
+               'əsas borc' (faiz/cəriməsiz) → Kredit ödənişi; MASGULLUQ AGENTLIYI → VERGİ
   - abb:       Header 42-ci sətirdə, Debit/Kredit ayrı, sender = Əks hesab üzrə məlumatlar;
               'Standing payment order' (kredit, sender boş) → DAXİL OLMALAR;
               'sadeleshmis' + 'negdmexaric' → Nağd çəkim komissiyası
@@ -754,16 +754,16 @@ def _match_category(
         if _PASHA_LOAN_PAYMENT_TOKEN in norm_detail:
             return "Kredit ödənişi"
 
-    # Bank Respublika: 'əsas borc' (faiz/cərimə sözü olmadan) → kateqoriyasız
-    # (kredit əsas məbləğinin ödənişi, catch-all-a düşməməlidir; Yelo 'Əsas ödəmə'
-    # presedenti). Faiz/cərimə ehtiva edən əsas borc yuxarıda BANK FAİZ-ə düşür.
+    # Bank Respublika: 'əsas borc' (faiz/cərimə sözü olmadan) → Kredit ödənişi
+    # (kredit əsas məbləğinin ödənişi, catch-all-a düşməməlidir). Faiz/cərimə
+    # ehtiva edən əsas borc yuxarıda BANK FAİZ-ə düşür.
     if (
         profile == "bankrespublika"
         and "esasborc" in norm_detail
         and "faiz" not in norm_detail
         and "cerime" not in norm_detail
     ):
-        return None
+        return "Kredit ödənişi"
 
     # ABB: 'Standing payment order' (mütəmadi daxilolan ödəniş, sender boş) →
     # kredit olduqda birbaşa DAXİL OLMALAR (catch-all-ın sender şərtini keçərsiz edir).

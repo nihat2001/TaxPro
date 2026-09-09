@@ -3124,7 +3124,8 @@ def test_bankrespublika_profile_detected_header_on_row_13():
         [_br_row("06.01.2025", "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ", debet=3627.93)]
     )
     _, summary, unclassified = categorize_statement_verbose(raw)
-    assert len(unclassified) == 1  # əsas borc → kateqoriyasız
+    assert len(unclassified) == 0  # əsas borc → Kredit ödənişi
+    assert summary["Kredit ödənişi"] == {"cem": 3627.93, "say": 1}
 
 
 def test_bankrespublika_komisiya_xidmet_haqqi():
@@ -3155,16 +3156,16 @@ def test_bankrespublika_cerime_kredit_bank_faiz():
     ) == "BANK FAİZ XƏRCİ"
 
 
-def test_bankrespublika_esas_borc_uncategorized():
-    """KRİTİK: 'əsas borc' (faiz/cəriməsiz) → kateqoriyasız, catch-all deyil."""
+def test_bankrespublika_esas_borc_kredit_odenisi():
+    """KRİTİK: 'əsas borc' (faiz/cəriməsiz) → Kredit ödənişi, catch-all deyil."""
     assert _match_category(
         "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ ƏSAS BORCUN ÖDƏNİŞİ",
         None, "3627.93", profile="bankrespublika",
-    ) is None
+    ) == "Kredit ödənişi"
     assert _match_category(
         "AZERBAIJAN GRAND MACHINERY MMC", "40130224 SAYLI KREDİTƏ GÖRƏ GECİKDİRİLMİŞ ƏSAS BORCUN ÖDƏNİŞ",
         None, "1119.22", profile="bankrespublika",
-    ) is None
+    ) == "Kredit ödənişi"
 
 
 def test_bankrespublika_tesisciden_without_sender_token():
@@ -3198,7 +3199,7 @@ def test_bankrespublika_esas_borc_isolated_from_other_profiles():
 
 
 def test_bankrespublika_end_to_end_counts():
-    """Real Bank Respublika strukturuna uyğun end-to-end — proqnoz 5/13/1/1/7/2/11 = 40, uncl 13."""
+    """Real Bank Respublika strukturuna uyğun end-to-end — proqnoz 5/13/1/1/7/2/11/13 = 53, uncl 0."""
     rows = []
     for _ in range(5):
         rows.append(_br_row("06.01.2025", "Bank Respublika ASC", "saylı əməliyyat üzrə xidmət haqqı", debet=1))
@@ -3223,7 +3224,8 @@ def test_bankrespublika_end_to_end_counts():
     assert summary["Hesab Möhkəmlənməsi"] == {"cem": 700.0, "say": 7}
     assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 2000.0, "say": 2}
     assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 1100.0, "say": 11}
-    assert len(unclassified) == 13
+    assert summary["Kredit ödənişi"] == {"cem": 1300.0, "say": 13}
+    assert len(unclassified) == 0
 
     wb = _reload(out)
     main = wb[wb.sheetnames[0]]
