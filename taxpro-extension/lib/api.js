@@ -57,10 +57,25 @@
     return err;
   }
 
+  function connectionError(base, err) {
+    const wrapped = new Error(
+      `Backend ünvanına çatmaq mümkün olmadı: ${base} (server işləyir?)`
+    );
+    wrapped.cause = err;
+    return wrapped;
+  }
+
+  async function fetchWithBase(base, path, options) {
+    try {
+      return await fetch(base + path, options);
+    } catch (err) {
+      throw connectionError(base, err);
+    }
+  }
+
   async function api(path, options) {
     options = options || {};
     const base = await getBaseUrl();
-    const url = base + path;
     const headers = { ...(options.headers || {}) };
     let body = options.body;
 
@@ -69,20 +84,11 @@
       body = JSON.stringify(body);
     }
 
-    let res;
-    try {
-      res = await fetch(url, {
-        method: options.method || "GET",
-        headers,
-        body,
-      });
-    } catch (err) {
-      const wrapped = new Error(
-        `Backend ünvanına çatmaq mümkün olmadı: ${base} (server işləyir?)`
-      );
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    const res = await fetchWithBase(base, path, {
+      method: options.method || "GET",
+      headers,
+      body,
+    });
 
     const text = await res.text();
     let data = null;
@@ -131,7 +137,7 @@
       api("/api/v1/import/excel", { method: "POST", body: fileForm(file) }),
     downloadExcelTemplate: async () => {
       const base = await getBaseUrl();
-      const res = await fetch(base + "/api/v1/import/excel-template");
+      const res = await fetchWithBase(base, "/api/v1/import/excel-template");
       if (!res.ok) throw apiError(res, await res.text().catch(() => null));
       return res.blob();
     },
@@ -139,8 +145,9 @@
     /* ===== Bank çıxarışı kateqoriyalaşdırması (JSON-based axın) ===== */
     categorizeBankStatement: async (file) => {
       const base = await getBaseUrl();
-      const res = await fetch(
-        base + "/api/v1/import/bank-statement/categorize",
+      const res = await fetchWithBase(
+        base,
+        "/api/v1/import/bank-statement/categorize",
         { method: "POST", body: fileForm(file) }
       );
       if (!res.ok) {
@@ -173,8 +180,9 @@
       const fd = new FormData();
       fd.append("file", file);
       fd.append("selections", JSON.stringify(selections || {}));
-      const res = await fetch(
-        base + "/api/v1/import/bank-statement/finalize",
+      const res = await fetchWithBase(
+        base,
+        "/api/v1/import/bank-statement/finalize",
         { method: "POST", body: fd }
       );
       if (!res.ok) {
