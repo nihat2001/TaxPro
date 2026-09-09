@@ -27,10 +27,13 @@ Dəstəklənən formatlar (avtomatik tanınır, _FORMAT_PROFILES):
   - bankofbaku: Header 12-ci sətirdə, Profit/Expenditure, sender = Debet Account;
               xüsusi pattern yoxdur — ümumi zəncir kifayətdir; boş təyinat/son meta
               sətirləri atlanır
-  - pasha:    Header 13-cü sətirdə, Mədaxil/Məxaric ayrı, sender = Ödəyən/Benefisiar
-              ('_x000D_' artefaktı ilə — 2-ci seqment); 'xidmet haqqi' debit-də
-              KOMİSİYA, maaş-guard olmadan ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI');
-              balans/POS yığım sətirləri atlanır
+- pasha:    Header 13-cü sətirdə, Mədaxil/Məxaric ayrı, sender = Ödəyən/Benefisiar
+               ('_x000D_' artefaktı ilə — 2-ci seqment); 'xidmet haqqi' debit-də
+               KOMİSİYA, maaş-guard olmadan ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI');
+               'Charge' debit-də KOMİSİYA; 'Interest Payment' → BANK FAİZ XƏRCİ;
+               'Salary' + debit → MAAŞ MƏXARİC; 'Pos' açar sözü + kredit →
+               Pos terminal mədaxil; 'Loan Payment' → Kredit ödənişi;
+               balans/POS yığım sətirləri atlanır
 Qlobal: 'KOMİTƏ' ('KOMITESI') 'KOM' substring-i ilə KOMİSİYA-ya düşmür;
               'GOMRUK'/'GÖMRÜK' → RÜSUM (DUTY_PATTERNS)
   - bankrespublika: Header 13-cü sətirdə, Kredit/Debet ayrı, sender = Göndərənin adı/Alanın adı;
@@ -59,9 +62,11 @@ Kateqoriyalar (prioritet sırası ilə, yoxsa boş qalır):
   11. "Konvertasiya"           (alış əməliyyatı / valyuta / əskinaz / konvertasiya)
   12. "Bank xərci"             (ay ödənişi / aylıq ödəniş)
   13. "Divident ödəniş"        (divident / dividend)
-  14. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
-  15. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
-  16. "Terminal-Komissiya"       (kapital: Pos-Terminal ∧ Xidmət haqqı; İcmal = fee)
+  14. "Pos terminal mədaxil"    (pasha: 'Pos' açar sözü + kredit)
+  15. "Kredit ödənişi"          (pasha: 'Loan Payment')
+  16. "DİGƏR ŞİRKƏT DAXİL OLMALAR" (catch-all: sender boş deyil + kredit)
+  17. "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"   (catch-all: sender boş deyil + debit)
+  18. "Terminal-Komissiya"       (kapital: Pos-Terminal ∧ Xidmət haqqı; İcmal = fee)
 1-3 detail pattern-ləri CATEGORY_RULES ilə; 4-10 üçün VAT_PATTERNS,
 DUTY_PATTERNS, TAX_AUTHORITY_KEYWORDS, SALARY_PATTERNS, _FOUNDER_*
 sabitləri istifadə olunur. Sıra önəmlidir — daha spesifik olanlar əvvəl
@@ -417,6 +422,18 @@ _KOMITE_TOKENS = ("komite",)
 # bankın 'əmək haqqı sifarişi' xidmətinə görə tutduğu komissiyadır.
 _PASHA_KOMISIYA_TOKEN = "xidmethaqqi"
 
+# Pasha: əlavə açar sözlər (yalnız pasha profili).
+# 'Charge' → KOMİSİYA (debit); 'Interest Payment' → BANK FAİZ XƏRCİ;
+# 'Salary' + debit → MAAŞ MƏXARİC; 'Loan Payment' → Kredit ödənişi;
+# 'Pos' (açar söz, substring deyil!) + kredit → Pos terminal mədaxil.
+# 'Pos' üçün \b sərhədi lazımdır — normalize_text boşluqları sildiyindən
+# substring 'pos' 'deposit/purpose/response' kimi sözlərə də düşərdi.
+_PASHA_CHARGE_TOKEN = "charge"
+_PASHA_INTEREST_PAYMENT_TOKEN = "interestpayment"
+_PASHA_SALARY_TOKEN = "salary"
+_PASHA_LOAN_PAYMENT_TOKEN = "loanpayment"
+_PASHA_POS_RE = re.compile(r"\bpos\b")
+
 # ABB: Nağd çəkim komissiyası — 'sadələşmiş vergi' (sadeleshmis) + 'nağd məxaric'.
 _ABB_NAGD_CEKIM_TOKENS = ("sadeleshmis", "negdmexaric")
 
@@ -534,6 +551,8 @@ _CATEGORY_ORDER: list[str] = [name for name, _ in CATEGORY_RULES] + [
     "MAAŞ MƏXARİC",
     "TƏSİSÇİDƏN BORC",
     *_NEW_GLOBAL_CATEGORIES,
+    "Pos terminal mədaxil",
+    "Kredit ödənişi",
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
     "Terminal-Komissiya",
@@ -624,8 +643,12 @@ def _match_category(
             extra = _match_komisiya_extra(profile, norm_detail)
             # Pasha: 'xidmət haqqı' → KOMİSİYA, maaş-guard olmadan
             # ('EMEK HAQQI SIFARISI UZRE XIDMET HAQQI' maaş ödənişi deyil).
+            # Pasha: 'Charge' → KOMİSİYA (debit) — 'Charge for Salary...' kimi
+            # sətirlər bankın xidmət haqqıdır, maaş ödənişi deyil.
             if profile == "pasha":
-                extra = extra or _match_pasha_komisiya(norm_detail)
+                extra = extra or _match_pasha_komisiya(norm_detail) or (
+                    _PASHA_CHARGE_TOKEN in norm_detail
+                )
             if profile in _KOMISIYA_EXTRA_DEBIT_ONLY:
                 extra = extra and _has_amount(debit)  # yalnız debit → KOMİSİYA
             # Rabitə: sender-də 'Haqq və komissiya gəlirləri' + debit → KOMİSİYA.
@@ -659,6 +682,10 @@ def _match_category(
                 profile == "bankrespublika"
                 and ("faiz" in norm_detail or "cerime" in norm_detail)
                 and "kredit" in norm_detail
+            ) or (
+                # Pasha: 'Interest Payment' → BANK FAİZ XƏRCİ.
+                profile == "pasha"
+                and _PASHA_INTEREST_PAYMENT_TOKEN in norm_detail
             )
         else:
             matched = any(p in norm_detail for p in patterns)
@@ -681,7 +708,13 @@ def _match_category(
     if debit_filled and _has_tax_keyword(sender, norm_detail):
         return "VERGİ MƏXARİC"
 
-    if debit_filled and any(p in norm_detail for p in SALARY_PATTERNS):
+    if debit_filled and (
+        any(p in norm_detail for p in SALARY_PATTERNS)
+        or (
+            # Pasha: 'Salary' (İngilis) açar sözü + debit → MAAŞ MƏXARİC.
+            profile == "pasha" and _PASHA_SALARY_TOKEN in norm_detail
+        )
+    ):
         # Bank of Baku: 'əmək haqqı' mətnli kiçik məbləğ (≤ 45 AZN) əsl maaş deyil,
         # maaş köçürməsinin bank komissiyasıdır → KOMİSİYA (yalnız bankofbaku).
         if profile == "bankofbaku" and amount is not None and amount <= _BOB_MAAS_COMMISSION_MAX:
@@ -710,6 +743,14 @@ def _match_category(
         return "Bank xərci"
     if any(t in norm_detail for t in _DIVIDENT_TOKENS):
         return "Divident ödəniş"
+
+    # Pasha: 'Pos' açar sözü + kredit (mədaxil) → Pos terminal mədaxil;
+    # 'Loan Payment' → Kredit ödənişi. Catch-all-dan əvvəl (spesifik qayda).
+    if profile == "pasha":
+        if kredit_filled and _PASHA_POS_RE.search(text.lower()):
+            return "Pos terminal mədaxil"
+        if _PASHA_LOAN_PAYMENT_TOKEN in norm_detail:
+            return "Kredit ödənişi"
 
     # Bank Respublika: 'əsas borc' (faiz/cərimə sözü olmadan) → kateqoriyasız
     # (kredit əsas məbləğinin ödənişi, catch-all-a düşməməlidir; Yelo 'Əsas ödəmə'

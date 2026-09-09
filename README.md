@@ -97,12 +97,12 @@ sequenceDiagram
 Deterministik emal — AI/ML yoxdur, yalnız sabit pattern-matching. Format profilləri `_FORMAT_PROFILES`-də
 avtomatik tanınır (hər bank üçün unikal required header token-ləri; profillər bir-birinə qarışmır).
 
-**16 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
+**18 kateqoriya (prioritet sırası):** Nağd çəkim komissiyası · KOMİSİYA · BANK FAİZ XƏRCİ · ƏDV ÖDƏNİŞİ ·
 RÜSUM · VERGİ MƏXARİC · MAAŞ MƏXARİC · TƏSİSÇİDƏN BORC · Hesab Möhkəmlənməsi · Nağdlaşdırma ·
-Konvertasiya · Bank xərci · Divident ödəniş · DİGƏR ŞİRKƏT DAXİL OLMALAR ·
-DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
+Konvertasiya · Bank xərci · Divident ödəniş · Pos terminal mədaxil (pasha) · Kredit ödənişi (pasha) ·
+DİGƏR ŞİRKƏT DAXİL OLMALAR · DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
 
-**Dəstəklənən format profilləri (11):**
+**Dəstəklənən format profilləri (14):**
 
 | Profil | Bank | Header qeydləri |
 |---|---|---|
@@ -117,6 +117,9 @@ DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ · Terminal-Komissiya (kapital).
 | `unibank` | Unibank | Tərəfdaş sender; "konvertasiya" debit-də KOMİSİYA; sender-siz catch-all |
 | `rabite` | Rabitə Bank | Qarşı tərəfin adı sender; "Haqq və komissiya gəlirləri" → KOMİSİYA |
 | `bankofbaku` | Bank of Baku | Profit/Expenditure; Debet Account sender |
+| `pasha` | Pasha Bank | Mədaxil/Məxaric ayrı, Ödəyən/Benefisiar sender; "xidmət haqqı"/"Charge" debit-də KOMİSİYA; "Interest Payment" → BANK FAİZ; "Salary"+debit → MAAŞ; "Pos"+kredit → Pos terminal mədaxil; "Loan Payment" → Kredit ödənişi |
+| `bankrespublika` | Bank Respublika | Kredit/Debet ayrı; "xidmət haqqı" debit-də KOMİSİYA; "faiz/cərimə ∧ kredit" → BANK FAİZ; "tesisciden" → TƏSİSÇİDƏN BORC; "əsas borc" → kateqoriyasız |
+| `abb` | ABB | Header 42-ci sətirdə; "Standing payment order" (kredit) → DAXİL; "sadeleshmis"+negdmexaric → Nağd çəkim; balans sütunu yoxdur |
 
 **2-mərhələli axın:**
 1. `POST /import/bank-statement/categorize` → `{summary, unclassified[], file_base64}` — hər kateqoriya üzrə

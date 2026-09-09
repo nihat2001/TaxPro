@@ -14,7 +14,7 @@ class BankStatementCategorySummary(BaseModel):
 
 
 class BankStatementSummary(BaseModel):
-    """16 kateqoriya üzrə xülasə (bank çıxarışı kateqoriyalaşdırması).
+    """18 kateqoriya üzrə xülasə (bank çıxarışı kateqoriyalaşdırması).
 
     Alias-lar kateqoriya adlarının orijinal (Azərbaycan) yazılışıdır.
     """
@@ -47,6 +47,12 @@ class BankStatementSummary(BaseModel):
     )
     diger_sirket_daxil_olmalar: BankStatementCategorySummary = Field(
         default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT DAXİL OLMALAR"
+    )
+    pos_terminal_medaxil: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="Pos terminal mədaxil"
+    )
+    kredit_odenisi: BankStatementCategorySummary = Field(
+        default_factory=BankStatementCategorySummary, alias="Kredit ödənişi"
     )
     diger_sirket_odenisleri: BankStatementCategorySummary = Field(
         default_factory=BankStatementCategorySummary, alias="DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"

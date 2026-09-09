@@ -119,6 +119,8 @@
     "Konvertasiya",
     "Bank xərci",
     "Divident ödəniş",
+    "Pos terminal mədaxil",
+    "Kredit ödənişi",
     "DİGƏR ŞİRKƏT DAXİL OLMALAR",
     "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
     "Terminal-Komissiya",

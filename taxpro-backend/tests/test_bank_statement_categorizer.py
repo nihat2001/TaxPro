@@ -285,7 +285,7 @@ def test_priority_vergi_over_company_payment():
     )
 
 
-def test_summary_has_sixteen_categories():
+def test_summary_has_eighteen_categories():
     out, summary = categorize_statement(
         _xlsx_bytes(META, STD_HEADER, [_row("Com. bank komissiyası", "-5.50", "1")])
     )
@@ -303,6 +303,8 @@ def test_summary_has_sixteen_categories():
         "Konvertasiya",
         "Bank xərci",
         "Divident ödəniş",
+        "Pos terminal mədaxil",
+        "Kredit ödənişi",
         "DİGƏR ŞİRKƏT DAXİL OLMALAR",
         "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ",
         "Terminal-Komissiya",
@@ -2667,7 +2669,7 @@ def test_all_eleven_profiles_sequential_no_mix():
     assert s11["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 100.0, "say": 1}
 
 
-# ===== Yeni qlobal kateqoriyalar (16 kateqoriya) =====
+# ===== Yeni qlobal kateqoriyalar (18 kateqoriya) =====
 
 
 def test_hesab_mohkemlenmesi():
@@ -2870,7 +2872,7 @@ def test_pasha_skip_summary_rows():
 
 
 def test_pasha_end_to_end_counts():
-    """Real Pasha strukturuna uyğun end-to-end — proqnoz 9/2/14/13/183/800 = 1021, uncl 7, skip 50."""
+    """Real Pasha strukturuna uyğun end-to-end — KOMİSİYA 9/RÜSUM 2/VERGİ 14/HesabMöhk 13/DAXİL 183/Kredit ödənişi 800/MAAŞ 7 = 1021, uncl 0."""
     rows = []
     for _ in range(9):
         rows.append(_pasha_row("02.07.2025", "Pasha Bank", "XIDMET HAQQI", mexaric=10))
@@ -2893,8 +2895,10 @@ def test_pasha_end_to_end_counts():
     assert summary["VERGİ MƏXARİC"] == {"cem": 140.0, "say": 14}
     assert summary["Hesab Möhkəmlənməsi"] == {"cem": 1300.0, "say": 13}
     assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"] == {"cem": 18300.0, "say": 183}
-    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 8000.0, "say": 800}
-    assert len(unclassified) == 7
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"] == {"cem": 0.0, "say": 0}
+    assert summary["Kredit ödənişi"] == {"cem": 8000.0, "say": 800}
+    assert summary["MAAŞ MƏXARİC"] == {"cem": 700.0, "say": 7}
+    assert len(unclassified) == 0
 
     wb = _reload(out)
     main = wb[wb.sheetnames[0]]
@@ -2913,6 +2917,95 @@ def test_pasha_finalize():
     assert len(unclassified) == 0
     out, summary = finalize_statement(raw, {})
     assert summary["KOMİSİYA"] == {"cem": 869.58, "say": 1}
+
+
+def test_pasha_charge_komisiya():
+    """Pasha: 'Charge' açar sözü + debit → KOMİSİYA."""
+    assert _match_category(
+        "Pasha Bank", "Charge for Outgoing XOHKS Payment", None, "10.00", profile="pasha"
+    ) == "KOMİSİYA"
+    assert _match_category(
+        "Pasha Bank", "CHARGE FOR IPS PAYMENT", None, "5.00", profile="pasha"
+    ) == "KOMİSİYA"
+
+
+def test_pasha_charge_komisiya_debit_only():
+    """Pasha: 'Charge' yalnız debit-də KOMİSİYA (kredit → KOMİSİYA deyil)."""
+    assert _match_category(
+        "Pasha Bank", "Charge for Outgoing XOHKS Payment", "10.00", None, profile="pasha"
+    ) != "KOMİSİYA"
+
+
+def test_pasha_charge_isolated_from_other_profiles():
+    """Pasha 'Charge' qaydası digər profillərə təsir etmir (standard → catch-all)."""
+    assert _match_category(
+        "Pasha Bank", "Charge for Outgoing XOHKS Payment", None, "10.00", profile="standard"
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_pasha_interest_payment_bank_faiz():
+    """Pasha: 'Interest Payment' → BANK FAİZ XƏRCİ."""
+    assert _match_category(
+        "Pasha Bank", "Interest Payment of the Loan DC00282767-09 15.00%", None, "100", profile="pasha"
+    ) == "BANK FAİZ XƏRCİ"
+
+
+def test_pasha_salary_maas():
+    """Pasha: 'Salary' açar sözü + debit → MAAŞ MƏXARİC (İngilis 'Salary')."""
+    assert _match_category(
+        "PARROTIAS LLC", "Salary and other Payments: SALARY AMOUNT TRANSFER", None, "7399.82", profile="pasha"
+    ) == "MAAŞ MƏXARİC"
+
+
+def test_pasha_salary_credit_not_maas():
+    """Pasha: 'Salary' + kredit → MAAŞ deyil (catch-all DAXİL)."""
+    assert _match_category(
+        "PARROTIAS LLC", "Salary and other Payments: SALARY AMOUNT TRANSFER", "7399.82", None, profile="pasha"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_pasha_charge_over_salary_komisiya():
+    """Pasha: 'Charge for Salary...' → KOMİSİYA (bankın xidmət haqqı, MAAŞ deyil)."""
+    assert _match_category(
+        "Pasha Bank", "Charge for Salary and other Payments: SALARY AMOUNT TRANSFER", None, "51.8", profile="pasha"
+    ) == "KOMİSİYA"
+
+
+def test_pasha_loan_payment_kredit_odenisi():
+    """Pasha: 'Loan Payment' → Kredit ödənişi (yeni kateqoriya)."""
+    assert _match_category(
+        "Pasha Bank", "Loan Payment DC00282767-09", None, "10", profile="pasha"
+    ) == "Kredit ödənişi"
+
+
+def test_pasha_loan_disbursement_not_kredit_odenisi():
+    """Pasha: 'Loan Disbursement' (mədaxil) 'Loan Payment' deyil → DAXİL."""
+    assert _match_category(
+        "Pasha Bank", "Loan Disbursement DC00282767-11", "173915", None, profile="pasha"
+    ) == "DİGƏR ŞİRKƏT DAXİL OLMALAR"
+
+
+def test_pasha_pos_terminal_medaxil():
+    """Pasha: 'Pos' açar sözü + kredit → Pos terminal mədaxil (yeni kateqoriya)."""
+    assert _match_category(
+        "MERCANTILE MMC", "POS TERMINAL MADAXIL", "120.00", None, profile="pasha"
+    ) == "Pos terminal mədaxil"
+
+
+def test_pasha_pos_debit_not_pos_category():
+    """Pasha: 'Pos' açar sözü + debit → POS kateqoriyası deyil (cərimə → catch-all)."""
+    assert _match_category(
+        "Pasha Bank",
+        "Internal payment  PENALTY FOR LOW POS TERMINAL - AP926256 TURNOVER FOR",
+        None, "50", profile="pasha",
+    ) == "DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"
+
+
+def test_pasha_pos_no_substring_false_positive():
+    """Pasha: 'deposit' sözündəki 'pos' substring-i POS kateqoriyası yaratmır."""
+    assert _match_category(
+        "Pasha Bank", "Cash deposit transaction", "100", None, profile="pasha"
+    ) != "Pos terminal mədaxil"
 
 
 def test_all_twelve_profiles_sequential_no_mix():
