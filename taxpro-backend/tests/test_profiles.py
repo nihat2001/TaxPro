@@ -1,6 +1,5 @@
 import pytest
 
-from app.core.security import decrypt_value, encrypt_value
 from app.schemas.profile import ProfileCreate, ProfileUpdate
 from app.services.deterministic.profile_service import (
     create_profile,
@@ -22,23 +21,19 @@ async def session():
 def _data(**overrides) -> ProfileCreate:
     base = dict(
         ad_soyad="Test Profil",
-        voen="1234567890",
         nomre="+994501234567",
         asan_id="TT001",
-        pin1="1111",
-        pin2="2222",
-        puk="3333",
     )
     base.update(overrides)
     return ProfileCreate(**base)
 
 
-async def test_create_profile_encrypts_secrets(session):
+async def test_create_profile(session):
     profile = await create_profile(session, _data())
     assert profile.id is not None
-    assert profile.pin1.startswith("enc:")
-    assert decrypt_value(profile.pin1) == "1111"
-    assert decrypt_value(profile.puk) == "3333"
+    assert profile.ad_soyad == "Test Profil"
+    assert profile.nomre == "+994501234567"
+    assert profile.asan_id == "TT001"
 
 
 async def test_list_and_get_profile(session):
@@ -50,14 +45,15 @@ async def test_list_and_get_profile(session):
     assert found.ad_soyad == "Test Profil"
 
 
-async def test_update_profile_reencrypts_pin(session):
+async def test_update_profile(session):
     profile = await create_profile(session, _data())
     updated = await update_profile(
-        session, profile.id, ProfileUpdate(pin1="9999", asan_id="TT999")
+        session, profile.id, ProfileUpdate(asan_id="TT999", nomre="0551234567")
     )
     assert updated is not None
     assert updated.asan_id == "TT999"
-    assert decrypt_value(updated.pin1) == "9999"
+    assert updated.nomre == "0551234567"
+    assert updated.ad_soyad == "Test Profil"
 
 
 async def test_update_profile_missing_returns_none(session):
@@ -70,13 +66,3 @@ async def test_delete_profile(session):
     profile = await create_profile(session, _data())
     assert await delete_profile(session, profile.id) is True
     assert await get_profile(session, profile.id) is None
-
-
-def test_encrypt_roundtrip():
-    token = encrypt_value("secret-pin")
-    assert token.startswith("enc:")
-    assert decrypt_value(token) == "secret-pin"
-
-
-def test_decrypt_plain_value_passthrough():
-    assert decrypt_value("not-encrypted") == "not-encrypted"

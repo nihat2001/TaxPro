@@ -9,12 +9,8 @@ from app.models.portal import Portal
 async def _seed_profile(client, **overrides) -> dict:
     data = {
         "ad_soyad": "API Test Profili",
-        "voen": "1234567890",
         "nomre": "+994501234567",
         "asan_id": "AP01",
-        "pin1": "1111",
-        "pin2": "2222",
-        "puk": "3333",
     }
     data.update(overrides)
     resp = await client.post("/api/v1/profiles", json=data)
@@ -28,10 +24,8 @@ async def _seed_portal(client) -> dict:
         url="https://bank.api.test",
         category="bank",
         selector_mapping={
-            "ad_soyad": "input#fullname",
-            "voen": "input#voen",
             "asan_id": "input#asan",
-            "pin1": "input#pin1",
+            "nomre": "input#phone",
         },
     )
     async with async_session_maker() as session:
@@ -54,10 +48,10 @@ def _excel_bytes(headers: list[str], rows: list[list]) -> bytes:
 
 def _profile_excel() -> bytes:
     return _excel_bytes(
-        ["Ad Soyad", "VÖEN", "Nömrə", "Asan ID", "PIN1", "PIN2", "PUK"],
+        ["Ad Soyad", "Nömrə", "Asan ID"],
         [
-            ["Ehmed Eliyev", 1234567890, "0501234567", "AA123", "1234", "5678", "9999"],
-            ["Aysel Quliyeva", 9876543210, "0551234567", "BB456", "4321", "8765", "1111"],
+            ["Ehmed Eliyev", "0501234567", "AA123"],
+            ["Aysel Quliyeva", "0551234567", "BB456"],
         ],
     )
 
@@ -65,10 +59,10 @@ def _profile_excel() -> bytes:
 def _profile_csv() -> bytes:
     df = pd.DataFrame(
         [
-            ["Ehmed Eliyev", 1234567890, "0501234567", "AA123", "1234", "5678", "9999"],
-            ["Aysel Quliyeva", 9876543210, "0551234567", "BB456", "4321", "8765", "1111"],
+            ["Ehmed Eliyev", "0501234567", "AA123"],
+            ["Aysel Quliyeva", "0551234567", "BB456"],
         ],
-        columns=["Ad Soyad", "VÖEN", "Nömrə", "Asan ID", "PIN1", "PIN2", "PUK"],
+        columns=["Ad Soyad", "Nömrə", "Asan ID"],
     )
     buf = io.BytesIO()
     df.to_csv(buf, index=False)
@@ -89,8 +83,8 @@ async def test_health(client):
 async def test_profiles_crud(client):
     created = await _seed_profile(client)
     pid = created["id"]
-    assert created["pin1"] == "****"
-    assert created["pin2"] == "****"
+    assert created["ad_soyad"] == "API Test Profili"
+    assert created["asan_id"] == "AP01"
 
     listed = await client.get("/api/v1/profiles")
     assert listed.status_code == 200
@@ -111,13 +105,14 @@ async def test_profiles_crud(client):
     assert missing.status_code == 404
 
 
-async def test_profile_autofill_decrypts(client):
+async def test_profile_autofill(client):
     created = await _seed_profile(client)
     resp = await client.get(f"/api/v1/profiles/{created['id']}/autofill")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["pin1"] == "1111"
-    assert body["puk"] == "3333"
+    assert body["ad_soyad"] == "API Test Profili"
+    assert body["nomre"] == "501234567"
+    assert body["asan_id"] == "AP01"
 
 
 async def test_portals_autofill(client):
@@ -130,8 +125,9 @@ async def test_portals_autofill(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["portal_name"] == "API Test Bank"
-    assert body["fields"]["input#fullname"] == "API Test Profili"
-    assert body["fields"]["input#pin1"] == "1111"
+    # Yalnız nomre + asan_id doldurulur.
+    assert body["fields"]["input#asan"] == "AP01"
+    assert body["fields"]["input#phone"] == "501234567"
 
 
 async def test_portal_selector_mapping_update(client):

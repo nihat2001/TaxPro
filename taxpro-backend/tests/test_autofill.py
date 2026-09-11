@@ -22,12 +22,8 @@ async def _profile(session):
         session,
         ProfileCreate(
             ad_soyad="Ehmed Eliyev",
-            voen="1234567890",
             nomre="+994501234567",
             asan_id="AA123",
-            pin1="1111",
-            pin2="2222",
-            puk="3333",
         ),
     )
 
@@ -41,6 +37,7 @@ async def _portal(session) -> Portal:
             "ad_soyad": "input[name=fullname]",
             "voen": "input[name=voen]",
             "asan_id": "input[name=asan]",
+            "nomre": "input[name=phone]",
             "pin1": "input[name=pin1]",
         },
     )
@@ -50,13 +47,13 @@ async def _portal(session) -> Portal:
     return portal
 
 
-async def test_get_autofill_profile_decrypts(session):
+async def test_get_autofill_profile(session):
     profile = await _profile(session)
     payload = await get_autofill_profile(session, profile.id)
     assert payload is not None
-    assert payload.pin1 == "1111"
-    assert payload.pin2 == "2222"
-    assert payload.puk == "3333"
+    assert payload.ad_soyad == "Ehmed Eliyev"
+    assert payload.nomre == "501234567"
+    assert payload.asan_id == "AA123"
 
 
 async def test_get_autofill_profile_missing(session):
@@ -65,16 +62,32 @@ async def test_get_autofill_profile_missing(session):
     assert await get_autofill_profile(session, uuid.uuid4()) is None
 
 
-async def test_build_autofill_payload_maps_selectors(session):
+async def test_build_autofill_payload_only_nomre_asan_id(session):
     profile = await _profile(session)
     portal = await _portal(session)
 
     payload = await build_autofill_payload(session, profile.id, portal.id)
     assert payload.portal_name == "Test Bank"
-    assert payload.fields["input[name=fullname]"] == "Ehmed Eliyev"
-    assert payload.fields["input[name=voen]"] == "1234567890"
+    # Yalnız nomre + asan_id doldurulur; ad_soyad/voen/pin1 saytda yazılmır.
+    assert payload.fields["input[name=phone]"] == "501234567"
     assert payload.fields["input[name=asan]"] == "AA123"
-    assert payload.fields["input[name=pin1]"] == "1111"
+    assert "input[name=fullname]" not in payload.fields
+    assert "input[name=voen]" not in payload.fields
+    assert "input[name=pin1]" not in payload.fields
+
+
+async def test_build_autofill_payload_phone_prefix_selector(session):
+    profile = await _profile(session)
+    portal = await _portal(session)
+    portal.selector_mapping = {
+        **portal.selector_mapping,
+        "_phone_prefix_selector": "select[name=prefix]",
+    }
+    await session.commit()
+    await session.refresh(portal)
+
+    payload = await build_autofill_payload(session, profile.id, portal.id)
+    assert payload.phone_prefix_selector == "select[name=prefix]"
 
 
 async def test_build_autofill_payload_missing_profile(session):

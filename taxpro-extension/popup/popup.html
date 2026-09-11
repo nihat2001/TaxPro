@@ -69,12 +69,6 @@
                 <select id="recordField">
                   <option value="asan_id">Asan ID</option>
                   <option value="nomre">Telefon</option>
-                  <option value="voen">VÖEN</option>
-                  <option value="ad_soyad">Ad Soyad</option>
-                  <option value="pin1">PIN1</option>
-                  <option value="pin2">PIN2</option>
-                  <option value="puk">PUK</option>
-                  <option value="qeyd">Qeyd</option>
                 </select>
               </div>
               <button id="recordAddBtn" class="btn primary" type="button">Əlavə et</button>
@@ -355,57 +349,13 @@
               <input type="text" id="pfAdSoyad" required maxlength="255" />
             </div>
             <div class="form-group">
-              <label for="pfVoen">VÖEN *</label>
-              <input type="text" id="pfVoen" required maxlength="50" />
-            </div>
-            <div class="form-group">
               <label for="pfNomre">Telefon *</label>
-              <input type="text" id="pfNomre" required maxlength="50" />
+              <input type="text" id="pfNomre" required maxlength="50" placeholder="501234567" />
             </div>
             <div class="form-group">
               <label for="pfAsanId">Asan ID *</label>
               <input type="text" id="pfAsanId" required maxlength="50" />
             </div>
-            <div class="form-group">
-              <label for="pfPin1">PIN1</label>
-              <input type="password" id="pfPin1" maxlength="100" autocomplete="new-password" />
-              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
-            </div>
-            <div class="form-group">
-              <label for="pfPin2">PIN2</label>
-              <input type="password" id="pfPin2" maxlength="100" autocomplete="new-password" />
-              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
-            </div>
-            <div class="form-group">
-              <label for="pfPuk">PUK</label>
-              <input type="password" id="pfPuk" maxlength="100" autocomplete="new-password" />
-              <small class="hint">Redaktədə boş buraxsanız dəyişməz.</small>
-            </div>
-            <div class="form-group">
-              <label for="pfBitmeTarixi">Bitmə tarixi</label>
-              <input type="date" id="pfBitmeTarixi" />
-            </div>
-            <div class="form-group">
-              <label for="pfReng">Rəng</label>
-              <input type="color" id="pfReng" value="#3b82f6" />
-            </div>
-            <div class="form-group">
-              <label for="pfIkon">İkon</label>
-              <select id="pfIkon">
-                <option value="user">İstifadəçi</option>
-                <option value="briefcase">Portfel</option>
-                <option value="building">Bina</option>
-                <option value="bank">Bank</option>
-                <option value="star">Ulduz</option>
-                <option value="shield">Qalxan</option>
-                <option value="certificate">Sertifikat</option>
-                <option value="home">Ev</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-group">
-            <label for="pfQeyd">Qeyd</label>
-            <textarea id="pfQeyd" rows="2" maxlength="500"></textarea>
           </div>
           <div class="modal-actions">
             <button type="button" id="profileCancelBtn" class="btn">Ləğv</button>

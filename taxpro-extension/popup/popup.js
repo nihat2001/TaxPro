@@ -166,8 +166,8 @@
       if (!filter) return true;
       return (
         p.ad_soyad.toLowerCase().includes(filter) ||
-        String(p.voen || "").includes(filter) ||
-        String(p.asan_id || "").toLowerCase().includes(filter)
+        String(p.asan_id || "").toLowerCase().includes(filter) ||
+        String(p.nomre || "").includes(filter)
       );
     });
 
@@ -178,13 +178,12 @@
 
     let html = "";
     for (const p of shown) {
-      const color = p.reng || "#3b82f6";
       html +=
         `<div class="profile-card" data-id="${p.id}">` +
-        `<span class="profile-avatar" style="background:${escapeHtml(color)}">${escapeHtml(initials(p.ad_soyad))}</span>` +
+        `<span class="profile-avatar" style="background:#3b82f6">${escapeHtml(initials(p.ad_soyad))}</span>` +
         `<div class="profile-meta">` +
         `<div class="profile-name">${escapeHtml(p.ad_soyad)}</div>` +
-        `<div class="profile-sub">VÖEN: ${escapeHtml(p.voen)} · Asan ID: ${escapeHtml(p.asan_id)}</div>` +
+        `<div class="profile-sub">Asan ID: ${escapeHtml(p.asan_id)} · Tel: ${escapeHtml(p.nomre)}</div>` +
         `</div>` +
         `<div class="profile-actions">` +
         `<button type="button" class="icon-btn" data-act="edit" title="Redaktə">&#9998;</button>` +
@@ -228,21 +227,8 @@
 
     $("pfId").value = profile ? profile.id : "";
     $("pfAdSoyad").value = profile ? profile.ad_soyad : "";
-    $("pfVoen").value = profile ? profile.voen : "";
     $("pfNomre").value = profile ? profile.nomre : "";
     $("pfAsanId").value = profile ? profile.asan_id : "";
-    $("pfPin1").value = "";
-    $("pfPin2").value = "";
-    $("pfPuk").value = "";
-    $("pfBitmeTarixi").value = profile && profile.bitme_tarixi ? profile.bitme_tarixi : "";
-    $("pfQeyd").value = profile && profile.qeyd ? profile.qeyd : "";
-    $("pfReng").value = profile && profile.reng ? profile.reng : "#3b82f6";
-    $("pfIkon").value = profile && profile.ikon ? profile.ikon : "user";
-
-    const pinHints = document.querySelectorAll("#profileForm .hint");
-    pinHints.forEach((h) => {
-      h.style.display = profile ? "" : "none";
-    });
 
     currentView = "profileForm";
     $("profileModal").hidden = false;
@@ -257,26 +243,11 @@
 
   function collectForm() {
     const v = (id) => $(id).value;
-    const data = {
+    return {
       ad_soyad: v("pfAdSoyad").trim(),
-      voen: v("pfVoen").trim(),
       nomre: v("pfNomre").trim(),
       asan_id: v("pfAsanId").trim(),
-      reng: v("pfReng") || "#3b82f6",
-      ikon: v("pfIkon") || "user",
     };
-
-    const pin1 = v("pfPin1");
-    const pin2 = v("pfPin2");
-    const puk = v("pfPuk");
-    if (pin1) data.pin1 = pin1;
-    if (pin2) data.pin2 = pin2;
-    if (puk) data.puk = puk;
-
-    if (v("pfBitmeTarixi")) data.bitme_tarixi = v("pfBitmeTarixi");
-    if (v("pfQeyd").trim()) data.qeyd = v("pfQeyd").trim();
-
-    return data;
   }
 
   function initProfileModal() {
@@ -293,11 +264,6 @@
     $("profileForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = collectForm();
-
-      if (!editingProfileId && (!data.pin1 || !data.pin2 || !data.puk)) {
-        showToast("PIN1, PIN2 və PUK tələb olunur.", "err");
-        return;
-      }
 
       try {
         if (editingProfileId) {
@@ -509,6 +475,7 @@
         const outcome = await chrome.runtime.sendMessage({
           type: "AUTOFILL",
           fields,
+          phone_prefix_selector: payload.phone_prefix_selector || null,
         });
 
         if (!outcome.ok) {
@@ -543,12 +510,6 @@
   const RECORD_FIELD_LABELS = {
     asan_id: "Asan ID",
     nomre: "Telefon",
-    voen: "VÖEN",
-    ad_soyad: "Ad Soyad",
-    pin1: "PIN1",
-    pin2: "PIN2",
-    puk: "PUK",
-    qeyd: "Qeyd",
   };
 
   function renderRecordList() {

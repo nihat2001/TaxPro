@@ -41,12 +41,13 @@ async function sendToContent(tabId, msg) {
   }
 }
 
-async function runAutofill(tab, fields) {
+async function runAutofill(tab, fields, phonePrefixSelector) {
   let result = null;
   try {
     result = await chrome.tabs.sendMessage(tab.id, {
       type: "AUTOFILL",
       fields,
+      phone_prefix_selector: phonePrefixSelector,
     });
   } catch (err) {
     result = null;
@@ -58,6 +59,7 @@ async function runAutofill(tab, fields) {
       result = await chrome.tabs.sendMessage(tab.id, {
         type: "AUTOFILL",
         fields,
+        phone_prefix_selector: phonePrefixSelector,
       });
     } catch (err) {
       return {
@@ -89,7 +91,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: "Aktiv tab tapılmadı." });
         return;
       }
-      const outcome = await runAutofill(tab, msg.fields || {});
+      const outcome = await runAutofill(
+        tab,
+        msg.fields || {},
+        msg.phone_prefix_selector || null
+      );
       sendResponse({ ...outcome, tab: { id: tab.id, url: tab.url } });
     }
 

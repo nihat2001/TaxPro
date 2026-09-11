@@ -58,16 +58,8 @@ async def import_standard_excel(
         try:
             data = ProfileCreate(
                 ad_soyad=row["ad_soyad"],
-                voen=row["voen"],
-                nomre=row.get("nomre", ""),
-                asan_id=row.get("asan_id", ""),
-                bitme_tarixi=row.get("bitme_tarixi"),
-                qeyd=row.get("qeyd"),
-                pin1=row.get("pin1", ""),
-                pin2=row.get("pin2", ""),
-                puk=row.get("puk", ""),
-                reng=row.get("reng", "#3b82f6"),
-                ikon=row.get("ikon", "user"),
+                nomre=row["nomre"],
+                asan_id=row["asan_id"],
             )
         except Exception as exc:
             errors.append(_row_error(idx, exc))
@@ -142,14 +134,8 @@ async def excel_template():
         [
             {
                 "Ad Soyad": "Ehmed Eliyev",
-                "VÖEN": 1234567890,
                 "Nömrə": "501234567",
                 "Asan ID": "AA123",
-                "PIN1": "1234",
-                "PIN2": "5678",
-                "PUK": "9999",
-                "Bitmə tarixi": "01.01.2026",
-                "Qeyd": "Nümunə sətir",
             }
         ]
     )

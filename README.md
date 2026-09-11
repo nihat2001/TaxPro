@@ -1,14 +1,14 @@
 # TaxPro
 
-Azərbaycanın dövlət və bank portalları üçün Chrome uzantısı. Seçilmiş profil məlumatlarını
-(Asan ID, VÖEN, telefon, PIN/PUK və s.) portal giriş formalarını avtomatik doldurur, profilləri
-idarə edir və Excel/CSV faylından toplu profil idxalını təmin edir.
+Azərbaycanın dövlət və bank portalları üçün Chrome uzantısı. Seçilmiş profilin **Telefon** və **Asan ID**
+məlumatlarını portal giriş formalarını avtomatik doldurur, profilləri idarə edir və Excel/CSV
+faylından toplu profil idxalını təmin edir. Profil 3 sahədən ibarətdir: **Ad Soyad, Telefon, Asan ID**.
 
 ## Xüsusiyyətlər
 
-- **Portal Auto-fill** — "Doldur" tab-ı: aktiv səhifədəki portal üçün seçilmiş profilin sahələrini formalara yazır.
+- **Portal Auto-fill** — "Doldur" tab-ı: aktiv səhifədəki portal üçün seçilmiş profilin Telefon + Asan ID sahələrini formalara yazır (telefon prefiksi ayrıca select/dropdown olan formalarda avtomatik uyğunlaşdırılır).
 - **Qeydiyyat rejimi** — istifadəçi portal formasında sahə seçir, selector eşləmələri DB-yə yazılır (dəfələrlə istifadə üçün).
-- **Profil idarəetməsi** — CRUD, rəng/ikon seçimi; PIN/PUK Fernet ilə şifrələnir, siyahılarda maskalanır.
+- **Profil idarəetməsi** — CRUD: Ad Soyad, Telefon, Asan ID.
 - **Excel idxalı** — tək formatlı deterministik emal (.xlsx/.xls/.csv); telefon normallaşdırması, tarix dəstəyi, əskik-sütun xətası dəqiq göstərilir; nümunə şablon endirmə.
 - **Bank çıxarışı kateqoriyalaşdırması** — 11 bank format profili avtomatik tanınır (YapıKredi, Turan, Kapital, Yelo, Access, VTB, Ziraat, ATB, Unibank, Rabitə, Bank of Baku); 2-mərhələli axın: `categorize` (xülasə + unclassified + fayl) → `finalize` (manual təsnifat override → yekun .xlsx). AI/ML yoxdur — tam deterministik pattern-matching.
 - **30 portal** üçün domen əsaslı favicon + statik logo override-ları (hərf-avatar fallback ilə).
@@ -34,7 +34,7 @@ flowchart LR
 taxpro-backend/
 ├── app/
 │   ├── api/v1/endpoints/    # REST: profiles, portals, import/excel, import/bank-statement (categorize+finalize)
-│   ├── core/                # config (pydantic-settings), database, security (Fernet), logging
+│   ├── core/                # config (pydantic-settings), database, logging
 │   ├── models/              # SQLAlchemy: Profile, Portal
 │   ├── schemas/             # Pydantic v2 sxemləri (BankStatementSummary — 11 kateqoriya)
 │   ├── services/deterministic/  # excel_parser, bank_statement_categorizer, autofill_service, portal_service, profile_service
@@ -59,7 +59,7 @@ taxpro-extension/
 |---|---|
 | API | FastAPI, Pydantic v2, SQLAlchemy v2 (async) |
 | DB | PostgreSQL, Alembic |
-| Emal | pandas + openpyxl (Excel/CSV idxalı + bank çıxarışı kateqoriyalaşdırması), cryptography (Fernet) |
+| Emal | pandas + openpyxl (Excel/CSV idxalı + bank çıxarışı kateqoriyalaşdırması) |
 | Infra | Docker (backend) |
 | Extension | Manifest V3, vanilla JS, Chrome Side Panel API |
 
@@ -132,9 +132,8 @@ Extension-ın "Bank Çıxarışı" tab-ında hər bank üçün müstəqil kart +
 
 ## Təhlükəsizlik qeydləri
 
-- **Şifrələmə:** PIN/PUK kimi gizli sahələr Fernet (`ENCRYPTION_KEY`) ilə şifrələnir (`enc:` prefiks).
-- **Maskalama:** siyahı/oxu cavablarında gizli sahələr `****` kimi qayıdır; şifrə yalnız autofill zamanı açılır.
-- **Autofill yalnız seçimlə:** doldurma məhz istifadəçinin seçdiyi profil + aktiv portal cütü üçün baş verir.
+- **Profil yalnız 3 sahə:** Ad Soyad, Telefon, Asan ID. VÖEN/PIN/PUK/bitmə tarixi/rəng/ikon/qeyd modeldən və DB-dən çıxarılıb (0013 miqrasiyası).
+- **Autofill yalnız seçimlə:** doldurma məhz istifadəçinin seçdiyi profil + aktiv portal cütü üçün baş verir; sayta yalnız Telefon və Asan ID yazılır.
 
 ## Dəstəklənən Portallar (30)
 

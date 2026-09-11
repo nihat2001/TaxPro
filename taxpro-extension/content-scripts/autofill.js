@@ -12,14 +12,8 @@
   "use strict";
 
   const FIELD_KEYWORDS = {
-    ad_soyad: ["ad soyad", "adsoyad", "fullname", "full name", "name", "tam ad"],
-    voen: ["voen", "vatin", "vat", "tin", "tax"],
     nomre: ["nomre", "nömrə", "phone", "mobile", "mobil", "tel", "telefon", "telephone"],
     asan_id: ["asan", "asanid", "userid", "user id", "username", "istifadeci", "istifadəçi", "login"],
-    pin1: ["pin", "parol", "shifre", "şifrə", "password"],
-    pin2: ["pin2", "tekrar", "confirm"],
-    puk: ["puk"],
-    qeyd: ["qeyd", "note", "comment", "mulahize", "mülahizə"],
   };
 
   function normalize(s) {
@@ -74,6 +68,94 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
+  }
+
+  /* ===== Telefon prefiks məntiqi =====
+   * Nömrə kanonik 9 rəqəmdir (məs. "501234567"): operator kodu ilk 2 rəqəm
+   * ("50"), yerli hissə son 7 rəqəm ("1234567").
+   * Login formalarında prefiks ayrıca select/dropdown ola bilər ("050", "+994 50",
+   * "50", "(050)") — hamısı normalize edilib müqayisə olunur.
+   */
+  function phoneParts(value) {
+    let digits = String(value == null ? "" : value).replace(/\D/g, "");
+    if (digits.length === 12 && digits.startsWith("994")) digits = digits.slice(3);
+    else if (digits.length === 10 && digits.startsWith("0")) digits = digits.slice(1);
+    if (digits.length !== 9) {
+      return { prefix: null, local: null, full: digits || null };
+    }
+    return { prefix: digits.slice(0, 2), local: digits.slice(2), full: digits };
+  }
+
+  function normalizePrefixToken(raw) {
+    let digits = String(raw == null ? "" : raw).replace(/\D/g, "");
+    if (digits.startsWith("994")) digits = digits.slice(3);
+    if (digits.startsWith("0")) digits = digits.slice(1);
+    return digits;
+  }
+
+  function looksLikePrefixSelect(sel) {
+    const options = Array.from(sel.options || []);
+    if (options.length === 0 || options.length > 40) return false;
+    let matches = 0;
+    for (const o of options) {
+      const tok = normalizePrefixToken(o.textContent);
+      const val = normalizePrefixToken(o.value);
+      if (
+        (tok && tok.length >= 2 && tok.length <= 3) ||
+        (val && val.length >= 2 && val.length <= 3)
+      ) {
+        matches += 1;
+      }
+    }
+    return matches >= Math.max(1, Math.ceil(options.length / 2));
+  }
+
+  function findPrefixSelect(phoneInput, overrideSelector) {
+    if (overrideSelector) {
+      try {
+        const el = document.querySelector(overrideSelector);
+        if (el && el.tagName && el.tagName.toLowerCase() === "select") return el;
+      } catch (err) {
+        // keçərsiz selector — heuristic-ə keç
+      }
+    }
+    let node = phoneInput;
+    for (let i = 0; i < 4 && node; i++) {
+      const scope = node.parentElement;
+      if (!scope) break;
+      for (const sel of scope.querySelectorAll("select")) {
+        if (sel !== phoneInput && looksLikePrefixSelect(sel)) return sel;
+      }
+      node = scope;
+    }
+    return null;
+  }
+
+  function selectPrefix(sel, prefix) {
+    for (const o of Array.from(sel.options || [])) {
+      if (
+        normalizePrefixToken(o.textContent) === prefix ||
+        normalizePrefixToken(o.value) === prefix
+      ) {
+        sel.value = o.value;
+        sel.dispatchEvent(new Event("input", { bubbles: true }));
+        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function fillPhone(phoneInput, phoneValue, overrideSelector) {
+    const parts = phoneParts(phoneValue);
+    if (!parts.full) return false;
+    if (parts.prefix) {
+      const sel = findPrefixSelect(phoneInput, overrideSelector);
+      if (sel && selectPrefix(sel, parts.prefix)) {
+        return setElementValue(phoneInput, parts.local);
+      }
+    }
+    return setElementValue(phoneInput, parts.full);
   }
 
   function escAttr(k) {
@@ -143,7 +225,7 @@
     return null;
   }
 
-  function fillFields(fields) {
+  function fillFields(fields, phonePrefixSelector) {
     const entries = Array.isArray(fields)
       ? fields
       : Object.entries(fields || {}).map(([selector, value]) => ({
@@ -167,7 +249,12 @@
         continue;
       }
 
-      if (setElementValue(found.el, value)) {
+      const ok =
+        field === "nomre"
+          ? fillPhone(found.el, value, phonePrefixSelector)
+          : setElementValue(found.el, value);
+
+      if (ok) {
         filled += 1;
         matchedBy[field] = found.how;
       } else {
@@ -180,7 +267,7 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "AUTOFILL") {
-      const result = fillFields(msg.fields);
+      const result = fillFields(msg.fields, msg.phone_prefix_selector || null);
       sendResponse(result);
     }
 

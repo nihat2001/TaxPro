@@ -4,7 +4,6 @@ import uuid
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import encrypt_value
 from app.models.profile import Profile
 from app.schemas.profile import ProfileCreate, ProfileUpdate
 
@@ -14,16 +13,8 @@ logger = logging.getLogger(__name__)
 async def create_profile(session: AsyncSession, data: ProfileCreate) -> Profile:
     profile = Profile(
         ad_soyad=data.ad_soyad,
-        voen=data.voen,
         nomre=data.nomre,
         asan_id=data.asan_id,
-        bitme_tarixi=data.bitme_tarixi,
-        qeyd=data.qeyd,
-        pin1=encrypt_value(data.pin1),
-        pin2=encrypt_value(data.pin2),
-        puk=encrypt_value(data.puk),
-        reng=data.reng,
-        ikon=data.ikon,
     )
     session.add(profile)
     await session.commit()
@@ -49,12 +40,6 @@ async def update_profile(
         return None
 
     fields = data.model_dump(exclude_unset=True)
-    if "pin1" in fields:
-        profile.pin1 = encrypt_value(fields.pop("pin1"))
-    if "pin2" in fields:
-        profile.pin2 = encrypt_value(fields.pop("pin2"))
-    if "puk" in fields:
-        profile.puk = encrypt_value(fields.pop("puk"))
     for field, value in fields.items():
         setattr(profile, field, value)
 

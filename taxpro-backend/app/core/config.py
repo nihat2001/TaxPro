@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     )
 
     db_url: str = "postgresql+asyncpg://taxpro:taxpro@localhost:5432/taxpro"
-    encryption_key: str = ""
 
     cors_origins: str = "http://localhost:8000"
 

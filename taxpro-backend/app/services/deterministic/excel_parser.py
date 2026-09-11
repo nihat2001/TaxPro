@@ -10,15 +10,11 @@ from app.services.deterministic.phone import normalize_phone
 
 REQUIRED_FIELDS = {
     "ad_soyad",
-    "voen",
     "nomre",
     "asan_id",
-    "pin1",
-    "pin2",
-    "puk",
 }
 
-_REQUIRED_ORDER = ["ad_soyad", "voen", "nomre", "asan_id", "pin1", "pin2", "puk"]
+_REQUIRED_ORDER = ["ad_soyad", "nomre", "asan_id"]
 
 _XLSX_MAGIC = b"\x50\x4b"  # PK (zip/xlsx)
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"  # OLE2 (xls)
@@ -31,11 +27,6 @@ _HEADER_ALIASES = {
     "tamadi": "ad_soyad",
     "istifadeci": "ad_soyad",
     "istifadeciadsoyad": "ad_soyad",
-    "voen": "voen",
-    "voenkodu": "voen",
-    "vergi nomresi": "voen",
-    "verginomresi": "voen",
-    "vergino": "voen",
     "nomre": "nomre",
     "telefon": "nomre",
     "telefonnomresi": "nomre",
@@ -45,20 +36,6 @@ _HEADER_ALIASES = {
     "asandid": "asan_id",
     "asan id": "asan_id",
     "asan": "asan_id",
-    "pin1": "pin1",
-    "pin": "pin1",
-    "pin2": "pin2",
-    "puk": "puk",
-    "bitme tarixi": "bitme_tarixi",
-    "bitmetarixi": "bitme_tarixi",
-    "bitirilme tarixi": "bitme_tarixi",
-    "etibarliliq tarixi": "bitme_tarixi",
-    "qeyd": "qeyd",
-    "qeydler": "qeyd",
-    "qeydiyyat": "qeyd",
-    "reng": "reng",
-    "ikon": "ikon",
-    "icon": "ikon",
 }
 
 _DIACRITIC_MAP = {
@@ -152,13 +129,11 @@ def _clean_row(row: dict[str, Any], field_map: dict[str, str]) -> dict[str, Any]
             continue
         if isinstance(value, float) and pd.isna(value):
             continue
-        if field in {"pin1", "pin2", "puk", "voen", "asan_id"}:
+        if field in {"asan_id"}:
             value = _to_scalar(value)
             value = str(value).strip()
         if field == "nomre":
             value = _normalize_phone(str(_to_scalar(value)).strip())
-        if field == "bitme_tarixi":
-            value = _normalize_date(value)
         cleaned[field] = value
     return cleaned
 

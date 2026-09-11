@@ -4,10 +4,6 @@ from pathlib import Path
 
 os.environ.setdefault("DB_URL", "postgresql+asyncpg://taxpro:taxpro@localhost:5432/taxpro_test")
 os.environ.setdefault("APP_ENV", "development")
-os.environ.setdefault(
-    "ENCRYPTION_KEY",
-    "zQYo10eooLLAaz2FRLKmdVzoXydus7K_tL2ngIL1PbM=",
-)
 
 import pytest
 import pytest_asyncio

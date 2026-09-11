@@ -29,3 +29,4 @@ class AutoFillPayload(BaseModel):
     portal_name: str
     fields: dict[str, str]
     field_map: dict[str, str] = {}
+    phone_prefix_selector: str | None = None
