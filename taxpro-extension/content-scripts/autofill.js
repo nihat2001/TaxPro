@@ -237,6 +237,7 @@
     const total = entries.length;
     const missing = [];
     const matchedBy = {};
+    const results = [];
     let filled = 0;
 
     for (const entry of entries) {
@@ -246,6 +247,7 @@
 
       if (!found) {
         missing.push(entry.selector || field);
+        results.push({ field, selector: entry.selector || "", ok: false, how: null });
         continue;
       }
 
@@ -257,12 +259,15 @@
       if (ok) {
         filled += 1;
         matchedBy[field] = found.how;
+        results.push({ field, selector: entry.selector || "", ok: true, how: found.how });
       } else {
         missing.push(entry.selector || field);
+        results.push({ field, selector: entry.selector || "", ok: false, how: found.how });
       }
     }
 
-    return { filled, total, missing, matchedBy };
+    // `how`: "exact" = DB-dəki selector ilə; "attr"/"label"/"placeholder" = heuristik.
+    return { filled, total, missing, matchedBy, results };
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

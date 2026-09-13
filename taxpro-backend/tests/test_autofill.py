@@ -120,3 +120,40 @@ async def test_build_autofill_payload_normalizes_phone(session):
 
     payload = await build_autofill_payload(session, profile.id, portal.id)
     assert payload.fields["input[name=phone]"] == "501234567"
+
+
+async def test_build_autofill_payload_partial_mapping_uses_fallback(session):
+    profile = await _profile(session)
+    portal = Portal(
+        name="Partial Bank",
+        url="https://partial.test",
+        category="bank",
+        selector_mapping={"nomre": "input[name=phone]"},
+    )
+    session.add(portal)
+    await session.commit()
+    await session.refresh(portal)
+
+    payload = await build_autofill_payload(session, profile.id, portal.id)
+    # Selectoru olan sahə normal gedir, olmayan sahə fallback-ə düşür.
+    assert payload.fields == {"input[name=phone]": "501234567"}
+    assert payload.fallback_fields == {"asan_id": "AA123"}
+    assert payload.missing_selectors == ["asan_id"]
+
+
+async def test_build_autofill_payload_empty_mapping_uses_fallback(session):
+    profile = await _profile(session)
+    portal = Portal(
+        name="Empty Bank",
+        url="https://empty.test",
+        category="bank",
+        selector_mapping={},
+    )
+    session.add(portal)
+    await session.commit()
+    await session.refresh(portal)
+
+    payload = await build_autofill_payload(session, profile.id, portal.id)
+    assert payload.fields == {}
+    assert payload.fallback_fields == {"nomre": "501234567", "asan_id": "AA123"}
+    assert set(payload.missing_selectors) == {"nomre", "asan_id"}

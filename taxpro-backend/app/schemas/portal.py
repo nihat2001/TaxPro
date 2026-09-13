@@ -27,6 +27,13 @@ class AutoFillPayload(BaseModel):
     profile_id: UUID
     portal_id: UUID
     portal_name: str
+    # Selector-u qeyd olunmuş sahələr: {selector: value}
     fields: dict[str, str]
+    # Selector -> məntiqi sahə adı (fields-in tərsi)
     field_map: dict[str, str] = {}
+    # Selector-u olmayan, lakin content-script heuristikası ilə tapılmalı sahələr:
+    # {məntiqi_sahə: value}
+    fallback_fields: dict[str, str] = {}
+    # Selector-u olmayan məntiqi sahələrin siyahısı (UI-də xəbərdarlıq üçün)
+    missing_selectors: list[str] = []
     phone_prefix_selector: str | None = None

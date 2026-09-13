@@ -128,6 +128,32 @@ async def test_portals_autofill(client):
     # Yalnız nomre + asan_id doldurulur.
     assert body["fields"]["input#asan"] == "AP01"
     assert body["fields"]["input#phone"] == "501234567"
+    assert body["fallback_fields"] == {}
+    assert body["missing_selectors"] == []
+
+
+async def test_portals_autofill_partial_mapping_fallback(client):
+    profile = await _seed_profile(client)
+    portal = Portal(
+        name="Partial API Bank",
+        url="https://partial.api.test",
+        category="bank",
+        selector_mapping={"asan_id": "input#asan"},
+    )
+    async with async_session_maker() as session:
+        session.add(portal)
+        await session.commit()
+        await session.refresh(portal)
+        portal_id = portal.id
+
+    resp = await client.get(
+        f"/api/v1/portals/{portal_id}/autofill/{profile['id']}"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["fields"]["input#asan"] == "AP01"
+    assert body["fallback_fields"]["nomre"] == "501234567"
+    assert body["missing_selectors"] == ["nomre"]
 
 
 async def test_portal_selector_mapping_update(client):

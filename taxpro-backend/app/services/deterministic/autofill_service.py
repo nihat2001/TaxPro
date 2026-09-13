@@ -54,12 +54,21 @@ async def build_autofill_payload(
 
     fields: dict[str, str] = {}
     field_map: dict[str, str] = {}
+    # Selector-u qeyd olunmayan sahələr yenə də payload-a düşür ki, content
+    # script-in heuristik fallback zənciri (attr → label → placeholder) işə
+    # düşə bilsin. Belə sahələr ayrıca siyahıda qaytarılır ki, UI istifadəçini
+    # Qeydiyyat rejimi ilə selector əlavə etməyə yönləndirsin.
+    fallback_fields: dict[str, str] = {}
+    missing_selectors: list[str] = []
+
     for field in _AUTOFILL_FIELDS:
-        selector = selector_mapping.get(field)
-        if selector is None:
-            continue
         value = values.get(field)
         if value is None:
+            continue
+        selector = selector_mapping.get(field)
+        if selector is None:
+            fallback_fields[field] = value
+            missing_selectors.append(field)
             continue
         if not isinstance(selector, str):
             selector = str(selector)
@@ -72,7 +81,11 @@ async def build_autofill_payload(
 
     logger.info(
         "Auto-fill payload hazırlandı",
-        extra={"profile_id": profile_id, "portal_id": portal_id},
+        extra={
+            "profile_id": profile_id,
+            "portal_id": portal_id,
+            "missing_selectors": missing_selectors,
+        },
     )
     return AutoFillPayload(
         profile_id=profile_id,
@@ -80,5 +93,7 @@ async def build_autofill_payload(
         portal_name=portal.name,
         fields=fields,
         field_map=field_map,
+        fallback_fields=fallback_fields,
+        missing_selectors=missing_selectors,
         phone_prefix_selector=phone_prefix_selector,
     )

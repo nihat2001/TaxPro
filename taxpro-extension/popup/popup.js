@@ -19,6 +19,14 @@
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
 
+  // Doldurulan iki məntiqi sahə və selector tapılma üsullarının adları.
+  const FIELD_LABELS = { nomre: "Telefon", asan_id: "Asan ID" };
+  const HOW_LABELS = {
+    attr: "atribut",
+    label: "label",
+    placeholder: "placeholder",
+  };
+
   /* ===== Köməkçilər ===== */
   function initials(name) {
     return String(name || "?")
@@ -381,16 +389,135 @@
     return best ? best.portal : null;
   }
 
+  // Aktiv portalın selector vəziyyətini bir baxışda göstərir: hansı sahələr
+  // üçün selector var, hansılar üçün Qeydiyyat rejimi lazımdır.
+  function renderMappingStatus() {
+    const box = $("portalMappingStatus");
+    if (!activePortal) {
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    const mapping = activePortal.selector_mapping || {};
+    const ready = ["nomre", "asan_id"].filter((f) => !!mapping[f]).length;
+    const badges = ["nomre", "asan_id"]
+      .map((field) => {
+        const has = !!mapping[field];
+        return (
+          `<span class="map-badge ${has ? "ok" : "need"}">` +
+          `<span class="map-mark">${has ? "✓" : "⚠"}</span>` +
+          `<span class="map-field">${escapeHtml(FIELD_LABELS[field])}</span>` +
+          `<small>${has ? "selector var" : "Qeydiyyat rejimi lazımdır"}</small>` +
+          `</span>`
+        );
+      })
+      .join("");
+    let html =
+      `<div class="card-label">Selector vəziyyəti (${ready}/2)</div>` +
+      `<div class="map-badges">${badges}</div>`;
+    if (activePortal.auth_type === "none") {
+      html +=
+        `<div class="map-note">Bu portalda login formu qeyd olunmayıb ` +
+        `(auth_type: none) — Doldur yenə cəhd edəcək.</div>`;
+    }
+    box.innerHTML = html;
+    box.hidden = false;
+  }
+
   function updateAutofillBtn() {
     const profileOk = !!$("autofillProfile").value;
-    const nonePortal = activePortal && activePortal.auth_type === "none";
-    $("autofillBtn").disabled = !profileOk || !!nonePortal;
-    if (nonePortal) {
-      const resultBox = $("autofillResult");
-      resultBox.className = "result-box err";
-      resultBox.textContent = "Bu sayt üçün auto-fill tələb olunmur/dəstəklənmir.";
-      resultBox.classList.remove("hidden");
+    // auth_type sərt qapı deyil: real nəticə content script-dən gəlir.
+    $("autofillBtn").disabled = !profileOk;
+    renderMappingStatus();
+  }
+
+  // Backend payload-ını content script-in gözlədiyi entry siyahısına çevirir.
+  // Selector-u olmayan sahələr selector:"" ilə göndərilir ki, heuristik
+  // fallback (attr → label → placeholder) işə düşsün.
+  function buildAutofillEntries(payload) {
+    const entries = [];
+    const fieldMap = payload.field_map || {};
+    for (const [selector, value] of Object.entries(payload.fields || {})) {
+      entries.push({ selector, field: fieldMap[selector] || selector, value });
     }
+    for (const [field, value] of Object.entries(payload.fallback_fields || {})) {
+      entries.push({ selector: "", field, value });
+    }
+    return entries;
+  }
+
+  // Nəticəni sahə-sahə göstərir: dəqiq selector (✓ yaşıl) ilə heuristik
+  // fallback (△ sarı) və tapılmayan (✕ qırmızı) sahələri fərqləndirir.
+  function renderAutofillOutcome(resultBox, r, entries, payload) {
+    const results = Array.isArray(r.results) ? r.results : [];
+    const byField = {};
+    for (const item of results) byField[item.field] = item;
+
+    let hasApprox = false;
+    let hasMissing = false;
+
+    const rows = ["nomre", "asan_id"]
+      .filter((field) => entries.some((e) => e.field === field))
+      .map((field) => {
+        const item = byField[field] || { field, ok: false, how: null };
+        const label = escapeHtml(FIELD_LABELS[field] || field);
+        if (!item.ok) {
+          hasMissing = true;
+          return (
+            `<div class="af-row missing">` +
+            `<span class="af-mark">✕</span>` +
+            `<span class="af-field">${label}</span>` +
+            `<span class="af-note">tapılmadı — Qeydiyyat rejimi ilə selector əlavə edin</span>` +
+            `</div>`
+          );
+        }
+        const exact = item.how === "exact";
+        if (!exact) hasApprox = true;
+        const howText = exact
+          ? "selector ilə tapıldı"
+          : `təxmini tapıldı (${escapeHtml(HOW_LABELS[item.how] || item.how || "heuristik")})`;
+        return (
+          `<div class="af-row ${exact ? "exact" : "approx"}">` +
+          `<span class="af-mark">${exact ? "✓" : "△"}</span>` +
+          `<span class="af-field">${label}</span>` +
+          `<span class="af-note">${howText}</span>` +
+          `</div>`
+        );
+      })
+      .join("");
+
+    const filled = r.filled || 0;
+    const total = r.total || entries.length;
+    let headline;
+    if (hasMissing) {
+      headline = `${filled}/${total} sahə dolduruldu — bəzi sahələr tapılmadı.`;
+    } else if (hasApprox) {
+      headline = `${filled}/${total} sahə dolduruldu (təxmini).`;
+    } else {
+      headline = `${filled}/${total} sahə dolduruldu.`;
+    }
+
+    let note = "";
+    if (hasApprox) {
+      note +=
+        `<div class="af-note-line">△ ilə işarələnmiş sahələr heuristik tapıldı — ` +
+        `daha etibarlı olması üçün Qeydiyyat rejimi ilə selector təyin edin.</div>`;
+    }
+    const missingSelectors = payload.missing_selectors || [];
+    if (missingSelectors.length > 0) {
+      const names = missingSelectors
+        .map((f) => escapeHtml(FIELD_LABELS[f] || f))
+        .join(", ");
+      note +=
+        `<div class="af-note-line">Selector-u qeyd olunmayan sahələr: ${names}.</div>`;
+    }
+
+    const cls = hasMissing ? "err" : hasApprox ? "warn" : "ok";
+    resultBox.className = "result-box " + cls;
+    resultBox.innerHTML =
+      `<div class="af-headline">${headline}</div>` +
+      `<div class="af-rows">${rows}</div>` +
+      note;
   }
 
   async function loadActiveTab() {
@@ -429,15 +556,9 @@
       const profileId = $("autofillProfile").value;
       const resultBox = $("autofillResult");
       resultBox.className = "result-box hidden";
+      resultBox.innerHTML = "";
 
       if (!profileId) return;
-
-      if (activePortal && activePortal.auth_type === "none") {
-        resultBox.className = "result-box err";
-        resultBox.textContent = "Bu sayt üçün auto-fill tələb olunmur/dəstəklənmir.";
-        resultBox.classList.remove("hidden");
-        return;
-      }
 
       let activeTab = null;
       try {
@@ -458,14 +579,9 @@
 
       try {
         const payload = await api.getPortalAutoFill(portal.id, profileId);
-        const fields = Object.entries(payload.fields || {}).map(
-          ([selector, value]) => ({
-            field: (payload.field_map && payload.field_map[selector]) || selector,
-            selector,
-            value,
-          })
-        );
-        if (fields.length === 0) {
+        const entries = buildAutofillEntries(payload);
+
+        if (entries.length === 0) {
           resultBox.className = "result-box err";
           resultBox.textContent = "Bu portal üçün doldurulacaq sahə yoxdur.";
           resultBox.classList.remove("hidden");
@@ -474,7 +590,7 @@
 
         const outcome = await chrome.runtime.sendMessage({
           type: "AUTOFILL",
-          fields,
+          fields: entries,
           phone_prefix_selector: payload.phone_prefix_selector || null,
         });
 
@@ -485,14 +601,7 @@
           return;
         }
 
-        const r = outcome.result;
-        const missingCount = r.missing ? r.missing.length : 0;
-        let text = `${r.filled}/${r.total} sahə dolduruldu.`;
-        if (missingCount > 0) {
-          text += ` ${missingCount} sahə tapılmadı (sayt DOM-u fərqli ola bilər).`;
-        }
-        resultBox.className = "result-box " + (missingCount === 0 ? "ok" : "err");
-        resultBox.textContent = text;
+        renderAutofillOutcome(resultBox, outcome.result, entries, payload);
         resultBox.classList.remove("hidden");
       } catch (err) {
         resultBox.className = "result-box err";
@@ -507,10 +616,7 @@
   }
 
   /* ===== Qeydiyyat rejimi (Record Mode) ===== */
-  const RECORD_FIELD_LABELS = {
-    asan_id: "Asan ID",
-    nomre: "Telefon",
-  };
+  const RECORD_FIELD_LABELS = FIELD_LABELS;
 
   function renderRecordList() {
     const list = $("recordList");
