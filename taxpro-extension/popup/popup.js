@@ -19,8 +19,12 @@
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
 
-  // Doldurulan iki məntiqi sahə (Record Mode etiketləri üçün).
-  const FIELD_LABELS = { nomre: "Telefon", asan_id: "Asan ID" };
+  // Doldurulan məntiqi sahələr (Record Mode etiketləri üçün).
+  const FIELD_LABELS = {
+    nomre: "Telefon",
+    asan_id: "Asan ID",
+    _phone_prefix_selector: "Prefiks",
+  };
 
   /* ===== Köməkçilər ===== */
   function initials(name) {

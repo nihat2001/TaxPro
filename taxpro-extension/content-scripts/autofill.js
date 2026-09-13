@@ -141,11 +141,21 @@
     return matches >= Math.max(1, Math.ceil(options.length / 2));
   }
 
-  function findPrefixSelect(phoneInput, overrideSelector) {
+  function isPrefixCapableInput(el) {
+    if (!el || el.tagName !== "INPUT") return false;
+    const type = (el.type || "text").toLowerCase();
+    return type === "text" || type === "tel" || type === "number";
+  }
+
+  function findPrefixControl(phoneInput, overrideSelector) {
     if (overrideSelector) {
       try {
         const el = document.querySelector(overrideSelector);
-        if (el && el.tagName && el.tagName.toLowerCase() === "select") return el;
+        if (el && el.tagName) {
+          const tag = el.tagName.toLowerCase();
+          if (tag === "select") return el;
+          if (tag === "input" && isPrefixCapableInput(el)) return el;
+        }
       } catch (err) {
         // keçərsiz selector — heuristic-ə keç
       }
@@ -162,26 +172,50 @@
     return null;
   }
 
-  function selectPrefix(sel, prefix) {
-    for (const o of Array.from(sel.options || [])) {
-      if (
-        normalizePrefixToken(o.textContent) === prefix ||
-        normalizePrefixToken(o.value) === prefix
-      ) {
-        setNativeValue(sel, o.value);
-        dispatchValueEvents(sel);
-        return true;
+  // Prefiks nəzarətinin növünə görə operator kodunu yazır.
+  // select → uyğun option; input → sahənin gözlədiyi format (050 / 50 / 99450).
+  function applyPrefix(control, prefix) {
+    if (!control) return false;
+    const tag = control.tagName ? control.tagName.toLowerCase() : "";
+
+    if (tag === "select") {
+      for (const o of Array.from(control.options || [])) {
+        if (
+          normalizePrefixToken(o.textContent) === prefix ||
+          normalizePrefixToken(o.value) === prefix
+        ) {
+          setNativeValue(control, o.value);
+          dispatchValueEvents(control);
+          return true;
+        }
       }
+      return false;
     }
-    return false;
+
+    const maxlength = parseInt(control.getAttribute("maxlength") || "", 10);
+    const placeholder = String(control.getAttribute("placeholder") || "").replace(
+      /\D/g,
+      ""
+    );
+    let value = prefix;
+    if (placeholder.startsWith("994")) value = "994" + prefix;
+    else if (
+      placeholder.startsWith("0") ||
+      (Number.isFinite(maxlength) && maxlength >= 3)
+    ) {
+      value = "0" + prefix;
+    }
+
+    setElementValue(control, value);
+    return true;
   }
 
   function fillPhone(phoneInput, phoneValue, overrideSelector) {
     const parts = phoneParts(phoneValue);
     if (!parts.full) return false;
     if (parts.prefix) {
-      const sel = findPrefixSelect(phoneInput, overrideSelector);
-      if (sel && selectPrefix(sel, parts.prefix)) {
+      const control = findPrefixControl(phoneInput, overrideSelector);
+      if (control && applyPrefix(control, parts.prefix)) {
         return setElementValue(phoneInput, parts.local);
       }
     }
@@ -367,36 +401,96 @@
     }
   }
 
+  // Framework-lərin (Mantine/React/Radix və s.) generasiya etdiyi ID-lər hər
+  // yükləmədə dəyişə bilər — onları selector kimi saxlamaq etibarsızdır və
+  // sonradan tamam başqa elementə düşə bilər.
+  function isUnstableId(id) {
+    const v = String(id || "");
+    if (!v) return true;
+    if (/^mantine-/i.test(v)) return true;
+    if (/^:r[0-9a-z]+:/i.test(v)) return true; // React useId: :r0:, :r3:
+    if (/^(radix|headlessui|downshift|mui|chakra)-/i.test(v)) return true;
+    if (/^[0-9a-f]{8,}$/i.test(v)) return true; // hash-a bənzər ID
+    return false;
+  }
+
+  function escapeAttrValue(v) {
+    return String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function uniqueSelector(selector) {
+    if (!selector) return null;
+    try {
+      return document.querySelectorAll(selector).length === 1 ? selector : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
   function computeUniqueSelector(el) {
     const cssEscape = (v) => (typeof CSS !== "undefined" && CSS.escape
       ? CSS.escape(String(v))
       : String(v));
+    const tag = el.tagName ? el.tagName.toLowerCase() : "input";
+    const getAttr = (name) =>
+      el.getAttribute ? el.getAttribute(name) : null;
 
-    if (el.id) {
-      const s = "#" + cssEscape(el.id);
-      try {
-        if (document.querySelectorAll(s).length === 1) return s;
-      } catch (err) {
-        // davam et
+    // 1) Test atributları — ən sabit seçim.
+    for (const attr of ["data-testid", "data-test", "data-cy", "data-qa"]) {
+      const val = getAttr(attr);
+      if (val) {
+        const found = uniqueSelector(`[${attr}="${escapeAttrValue(val)}"]`);
+        if (found) return found;
       }
     }
 
+    // 2) name.
     if (el.name) {
-      const safe = String(el.name).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      const s = el.tagName.toLowerCase() + '[name="' + safe + '"]';
-      try {
-        if (document.querySelectorAll(s).length === 1) return s;
-      } catch (err) {
-        // davam et
-      }
+      const found = uniqueSelector(
+        `${tag}[name="${escapeAttrValue(el.name)}"]`
+      );
+      if (found) return found;
     }
 
+    // 3) aria-label.
+    const aria = getAttr("aria-label");
+    if (aria) {
+      const found = uniqueSelector(
+        `${tag}[aria-label="${escapeAttrValue(aria)}"]`
+      );
+      if (found) return found;
+    }
+
+    // 4) autocomplete.
+    const ac = getAttr("autocomplete");
+    if (ac && ac !== "off") {
+      const found = uniqueSelector(
+        `${tag}[autocomplete="${escapeAttrValue(ac)}"]`
+      );
+      if (found) return found;
+    }
+
+    // 5) Stabil id (framework generasiyası istisna).
+    if (el.id && !isUnstableId(el.id)) {
+      const found = uniqueSelector("#" + cssEscape(el.id));
+      if (found) return found;
+    }
+
+    // 6) placeholder.
+    if (el.placeholder) {
+      const found = uniqueSelector(
+        `${tag}[placeholder="${escapeAttrValue(el.placeholder)}"]`
+      );
+      if (found) return found;
+    }
+
+    // 7) Struktur yol (son çarə).
     const parts = [];
     let node = el;
     while (node && node.nodeType === 1 && node.tagName) {
-      const tag = node.tagName.toLowerCase();
-      if (tag === "body" || tag === "html") break;
-      let sel = tag;
+      const nodeTag = node.tagName.toLowerCase();
+      if (nodeTag === "body" || nodeTag === "html") break;
+      let sel = nodeTag;
       const parent = node.parentNode;
       if (parent && parent.children) {
         const same = Array.from(parent.children).filter(
