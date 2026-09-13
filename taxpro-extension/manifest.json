@@ -6,7 +6,8 @@
   "permissions": ["storage", "activeTab", "tabs", "scripting", "sidePanel"],
   "host_permissions": [
     "http://localhost:8000/*",
-    "https://www.google.com/*"
+    "https://www.google.com/*",
+    "https://business.atb.az/*"
   ],
   "background": {
     "service_worker": "background.js"
