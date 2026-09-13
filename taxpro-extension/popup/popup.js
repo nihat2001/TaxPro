@@ -516,7 +516,8 @@
 
   function renderRecordList() {
     const list = $("recordList");
-    const fields = Object.keys(recordMap);
+    // null dəyərlər "silinmiş" sayılır və göstərilmir (backend-də də silinir).
+    const fields = Object.keys(recordMap).filter((f) => recordMap[f] != null);
     if (fields.length === 0) {
       list.innerHTML = '<div class="empty-state">Hələ sahə tutulmayıb.</div>';
       return;
@@ -556,7 +557,8 @@
 
     recordActive = true;
     recordPortalId = portal.id;
-    recordMap = {};
+    // Mövcud seçiciləri toxumla ki, UI-də görünsün və qismən PATCH onları silməsin.
+    recordMap = { ...(portal.selector_mapping || {}) };
     recordPendingSelector = null;
     const recName = $("recordPortalName");
     recName.textContent = "";
@@ -607,7 +609,8 @@
     $("recordList").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-remove]");
       if (!btn) return;
-      delete recordMap[btn.dataset.remove];
+      // Açıq silmə: null göndərilir, backend həmin açarı mapping-dən çıxarır.
+      recordMap[btn.dataset.remove] = null;
       renderRecordList();
     });
 
@@ -620,11 +623,11 @@
         auth_type: $("recordAuthType").value,
       };
       try {
-        await api.updateSelectorMapping(recordPortalId, body);
+        const updated = await api.updateSelectorMapping(recordPortalId, body);
         const p = portals.find((x) => x.id === recordPortalId);
-        if (p) {
-          p.selector_mapping = recordMap;
-          p.auth_type = body.auth_type;
+        if (p && updated) {
+          p.selector_mapping = updated.selector_mapping;
+          p.auth_type = updated.auth_type;
         }
         showToast("Yadda saxlandı.", "ok");
         await stopRecordMode();

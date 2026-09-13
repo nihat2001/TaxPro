@@ -101,27 +101,179 @@
     return actual.trim().toLowerCase() === expected.trim().toLowerCase();
   }
 
-  // Mask-lı/controlled komponentlər (məs. Cleave.js) birbaşa value təyinatını
-  // qəbul etmir, çünki onlar prefiksi/ayırıcıları özləri idarə edir. Bu halda
-  // dəyəri simvol-simvol (real istifadəçi yazısı kimi) yazırıq.
-  async function typeValue(el, value) {
-    const target = String(value == null ? "" : value);
+  function keyEventInit(ch) {
+    const isChar = typeof ch === "string" && ch.length === 1;
+    const codePoint = isChar ? ch.charCodeAt(0) : 0;
+    return {
+      bubbles: true,
+      cancelable: true,
+      key: ch,
+      code: /[0-9]/.test(ch) ? "Digit" + ch : ch,
+      keyCode: codePoint,
+      which: codePoint,
+      charCode: codePoint,
+    };
+  }
+
+  // `document.execCommand("insertText")` KÖHNƏLMİŞ (deprecated) API-dir, lakin
+  // mask/controlled widget-ləri (DevExtreme, Cleave, imask, React) "real yazı"
+  // kimi emal etmək üçün hazırda ən etibarlı yoldur: brauzer özü
+  // `beforeinput(inputType:"insertText")` + `input` hadisələrini yaradır və
+  // caret/selection-u düzgün idarə edir. Gələcəkdə silinsə, aşağıdakı fallback
+  // (sintetik beforeinput + native setter) işə düşür.
+  //
+  // Əlavə: bəzi wrapper komponentlər (məs. ATB-nin `sb-text-box`-i) maskalı
+  // dəyəri yalnız `keyup` hadisəsində oxuyub form state-inə ötürür; yalnız
+  // `input` kifayət etmir. Ona görə real yazıdakı kimi keydown/keypress/keyup
+  // da dispatch edilir.
+  function insertChar(el, ch) {
+    try {
+      el.dispatchEvent(new KeyboardEvent("keydown", keyEventInit(ch)));
+    } catch (err) {
+      // KeyboardEvent dəstəklənmirsə, keç
+    }
+
+    let inserted = false;
+    if (typeof document.execCommand === "function") {
+      try {
+        inserted = document.execCommand("insertText", false, ch);
+      } catch (err) {
+        inserted = false;
+      }
+    }
+
+    if (!inserted) {
+      try {
+        el.dispatchEvent(
+          new InputEvent("beforeinput", {
+            bubbles: true,
+            cancelable: true,
+            inputType: "insertText",
+            data: ch,
+          })
+        );
+      } catch (err) {
+        // InputEvent dəstəklənmirsə, keç
+      }
+      setNativeValue(el, el.value + ch);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    try {
+      el.dispatchEvent(new KeyboardEvent("keypress", keyEventInit(ch)));
+    } catch (err) {
+      // keç
+    }
+    try {
+      el.dispatchEvent(new KeyboardEvent("keyup", keyEventInit(ch)));
+    } catch (err) {
+      // keç
+    }
+    return true;
+  }
+
+  function clearElement(el) {
     try {
       el.focus();
     } catch (err) {
-      // focus mümkün olmadı — davam et
+      // keç
     }
 
+    if (typeof document.execCommand === "function") {
+      try {
+        document.execCommand("selectAll", false, null);
+        document.execCommand("delete", false, null);
+        return;
+      } catch (err) {
+        // fallback
+      }
+    }
+
+    try {
+      el.setSelectionRange(0, String(el.value || "").length);
+    } catch (err) {
+      // setSelectionRange yoxdursa keç
+    }
     setNativeValue(el, "");
     dispatchValueEvents(el);
+  }
+
+  // Mask-lı/controlled komponentlər birbaşa value təyinatını qəbul etmir,
+  // çünki prefiksi/ayrıcıları/state-i özləri idarə edir. Bu halda dəyəri real
+  // istifadəçi yazısı kimi simvol-simvol daxil edirik.
+  // Bəzi mask widget-ləri (məs. DevExtreme) real dəyəri gizli elementdə/öz
+  // state-ində saxlayır, görünən input isə yalnız maskalı mətn göstərir.
+  // Belə halda birbaşa value təyinatı "uğurlu" görünsə də, widget sonradan
+  // dəyəri geri qaytarır. Bu əlamətlərlə aşkar edib həmişə real yazı simulyasiya
+  // edirik (ümumi — konkret portala bağlı deyil).
+  function looksLikeMaskedWidget(el) {
+    try {
+      const cls = el.classList;
+      if (cls && typeof cls.contains === "function") {
+        if (cls.contains("dx-texteditor-input") || cls.contains("dx-texteditor")) {
+          return true;
+        }
+      }
+      if (el.closest && el.closest(".dx-texteditor")) return true;
+
+      const parent = el.parentElement;
+      if (parent && typeof parent.querySelector === "function") {
+        if (parent.querySelector('input[type="hidden"]')) return true;
+      }
+    } catch (err) {
+      // yoxlama alınmadı — mask widget sayılmır
+    }
+    return false;
+  }
+
+  async function typeValue(el, value) {
+    const target = String(value == null ? "" : value);
+
+    clearElement(el);
     await nextTick();
 
     for (const ch of target) {
-      setNativeValue(el, el.value + ch);
-      dispatchValueEvents(el);
+      insertChar(el, ch);
       await delay(0);
     }
 
+    // Widget-lər (məs. DevExtreme) dəyəri `change`/`blur` zamanı commit edir.
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    try {
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    } catch (err) {
+      // keç
+    }
+
+    return valueMatches(el, target);
+  }
+
+  // Bəzi mask komponentləri (məs. ATB-nin DevExtreme `sb-text-box`-i) `input`/
+  // `execCommand`/`keyup` hadisələrini qəbul etmir, yalnız sintetik `paste`
+  // hadisəsini (ClipboardEvent + DataTransfer) real yapışdırma kimi emal edir.
+  // Bu üsul debugger/icazə tələb etmir və real brauzer davranışını təqlid edir.
+  async function pasteValue(el, value) {
+    const target = String(value == null ? "" : value);
+
+    clearElement(el);
+    await nextTick();
+
+    try {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", target);
+      el.dispatchEvent(
+        new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt,
+        })
+      );
+    } catch (err) {
+      return false;
+    }
+
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
     return valueMatches(el, target);
   }
 
@@ -148,9 +300,13 @@
     dispatchValueEvents(el);
     await nextTick();
 
-    if (valueMatches(el, value)) return true;
+    // 1) Sürətli yol: React/vanilla (mask widget deyilsə).
+    if (valueMatches(el, value) && !looksLikeMaskedWidget(el)) return true;
 
-    // Birbaşa yazma "ilişmədi" (mask formatladı/kəsdİ) — simvol-simvol yaz.
+    // 2) Sintetik paste — paste-only mask-lar (məs. ATB / DevExtreme).
+    if (await pasteValue(el, value)) return true;
+
+    // 3) Son ehtiyat: simvol-simvol real yazı (məs. Access Bank / Cleave).
     return await typeValue(el, value);
   }
 
@@ -443,7 +599,6 @@
     const missing = [];
     const matchedBy = {};
     const results = [];
-    let filled = 0;
 
     for (const entry of entries) {
       const field = entry.field || entry.selector;
@@ -451,24 +606,54 @@
       const found = findElement(field, entry.selector);
 
       if (!found) {
-        missing.push(entry.selector || field);
-        results.push({ field, selector: entry.selector || "", ok: false, how: null });
+        results.push({ field, selector: entry.selector || "", value, ok: false, how: null });
         continue;
       }
 
-      const ok =
-        field === "nomre"
-          ? await fillPhone(found.el, value, phonePrefixSelector)
-          : await setElementValue(found.el, value);
-
-      if (ok) {
-        filled += 1;
-        matchedBy[field] = found.how;
-        results.push({ field, selector: entry.selector || "", ok: true, how: found.how });
-      } else {
-        missing.push(entry.selector || field);
-        results.push({ field, selector: entry.selector || "", ok: false, how: found.how });
+      let ok = false;
+      try {
+        ok =
+          field === "nomre"
+            ? await fillPhone(found.el, value, phonePrefixSelector)
+            : await setElementValue(found.el, value);
+      } catch (err) {
+        // Bir sahənin xətası digər sahələri/statusu pozmasın.
+        ok = false;
       }
+
+      if (ok) matchedBy[field] = found.how;
+      results.push({
+        field,
+        selector: entry.selector || "",
+        value,
+        ok,
+        how: found.how,
+      });
+    }
+
+    // İkinci yoxlama keçidi: yazı anında "uğursuz" görünsə də, DOM-da faktiki
+    // dəyəri düzgün olan sahələri (mask gecikməsi / format false-negative)
+    // uğurlu say. Element yenidən tapılır ki, köhnə referans istifadə olunmasın.
+    if (results.some((item) => !item.ok)) {
+      await delay(20); // widget/mask dəyəri gec commit edə bilər
+    }
+    for (const item of results) {
+      if (item.ok) continue;
+      try {
+        const found = findElement(item.field, item.selector);
+        if (found && valueMatches(found.el, item.value)) {
+          item.ok = true;
+          matchedBy[item.field] = found.how || item.how || "verified";
+        }
+      } catch (err) {
+        // yoxlama alınmadı — uğursuz qalır
+      }
+    }
+
+    let filled = 0;
+    for (const item of results) {
+      if (item.ok) filled += 1;
+      else missing.push(item.selector || item.field);
     }
 
     // `how`: "exact" = DB-dəki selector ilə; "attr"/"label"/"placeholder" = heuristik.
@@ -480,15 +665,18 @@
       // Prefiks combobox seçimi async olduğu üçün cavab gec verilir.
       fillFields(msg.fields, msg.phone_prefix_selector || null)
         .then(sendResponse)
-        .catch(() =>
+        .catch(() => {
+          const list = Array.isArray(msg.fields)
+            ? msg.fields
+            : Object.keys(msg.fields || {});
           sendResponse({
             filled: 0,
-            total: 0,
-            missing: [],
+            total: list.length,
+            missing: list.map((e) => (e && e.selector) || e || ""),
             matchedBy: {},
             results: [],
-          })
-        );
+          });
+        });
       return true; // async sendResponse kanalı
     }
 

@@ -179,6 +179,59 @@ async def test_portal_selector_mapping_update(client):
     assert resp.status_code == 422
 
 
+async def test_portal_selector_mapping_partial_merge(client):
+    """Qismən PATCH mövcud seçiciləri silməməlidir (merge)."""
+    portal = await _seed_portal(client)
+    pid = portal["id"]
+    assert portal["selector_mapping"]["nomre"] == "input#phone"
+    assert portal["selector_mapping"]["asan_id"] == "input#asan"
+
+    # 1-ci qismən PATCH: yalnız nomre dəyişir, asan_id qalmalıdır
+    resp = await client.patch(
+        f"/api/v1/portals/{pid}/selector-mapping",
+        json={"selector_mapping": {"nomre": "input#phone2"}, "auth_type": "asan_id_form"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["selector_mapping"]["nomre"] == "input#phone2"
+    assert body["selector_mapping"]["asan_id"] == "input#asan"
+
+    # 2-ci qismən PATCH: yalnız asan_id dəyişir, nomre qalmalıdır
+    resp = await client.patch(
+        f"/api/v1/portals/{pid}/selector-mapping",
+        json={"selector_mapping": {"asan_id": "input#asan2"}, "auth_type": "asan_id_form"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["selector_mapping"]["nomre"] == "input#phone2"
+    assert body["selector_mapping"]["asan_id"] == "input#asan2"
+
+    # Boş mapping mövcudları silmir
+    resp = await client.patch(
+        f"/api/v1/portals/{pid}/selector-mapping",
+        json={"selector_mapping": {}, "auth_type": "asan_id_form"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["selector_mapping"]["nomre"] == "input#phone2"
+    assert body["selector_mapping"]["asan_id"] == "input#asan2"
+
+
+async def test_portal_selector_mapping_null_deletes_key(client):
+    """null dəyər həmin seçicini silir, digərləri qalır."""
+    portal = await _seed_portal(client)
+    pid = portal["id"]
+
+    resp = await client.patch(
+        f"/api/v1/portals/{pid}/selector-mapping",
+        json={"selector_mapping": {"asan_id": None}, "auth_type": "unknown"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "asan_id" not in body["selector_mapping"]
+    assert body["selector_mapping"]["nomre"] == "input#phone"
+
+
 async def test_import_excel_standard(client):
     files = {"file": ("profiles.xlsx", _profile_excel(), XLSX_MIME)}
     resp = await client.post("/api/v1/import/excel", files=files)

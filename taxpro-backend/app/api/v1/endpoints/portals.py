@@ -43,7 +43,17 @@ async def update_selector_mapping(
     portal = await get_portal(db, portal_id)
     if portal is None:
         raise HTTPException(status_code=404, detail="Portal tapılmadı.")
-    portal.selector_mapping = body.selector_mapping
+
+    # MERGE: qismən PATCH mövcud seçiciləri silməməlidir. Açar üçün null/boş
+    # dəyər göndərilərsə, həmin seçici silinir (açıq silmə imkanı).
+    merged = dict(portal.selector_mapping or {})
+    for key, val in body.selector_mapping.items():
+        if val is None or val == "":
+            merged.pop(key, None)
+        else:
+            merged[key] = val
+
+    portal.selector_mapping = merged
     portal.auth_type = body.auth_type
     await db.commit()
     await db.refresh(portal)
