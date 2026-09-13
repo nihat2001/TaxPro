@@ -692,6 +692,22 @@
     return await setElementValue(control, value);
   }
 
+  // Bəzi masklar yalnız milli 9 rəqəmi, bəziləri isə ölkə kodu daxil tam
+  // 12 rəqəmi (994 + 9) gözləyir. Bu, element-səviyyəli siqnallarla aşkarlanır:
+  // boş vəziyyətdə default "994", placeholder-də "994", yaxud maxLength >= 12.
+  function needsCountryCode(el) {
+    const raw = String(el.value || "");
+    const digits = digitsOnly(raw);
+    // Maska placeholder-i varsa (məs. "+994 (__) ___-__-__"), prefiks sabit
+    // göstərilir və yalnız yerli 9 rəqəm gözlənilir -> ölkə kodu tələb olunmur.
+    const hasMaskPlaceholder = /_/.test(raw);
+    if (!hasMaskPlaceholder && /^994/.test(digits)) return true;
+    if (/994/.test(String(el.placeholder || ""))) return true;
+    const ml = parseInt(el.getAttribute("maxlength") || "", 10);
+    if (Number.isFinite(ml) && ml >= 12) return true;
+    return false;
+  }
+
   async function fillPhone(phoneInput, phoneValue, overrideSelector) {
     const parts = phoneParts(phoneValue);
     if (!parts.full) return false;
@@ -712,6 +728,14 @@
       ) {
         return false;
       }
+    }
+    // Ölkə kodunu öz daxilində gözləyən mask (məs. Yelo: default "994 ").
+    // 12 rəqəm göndərilir; CİDDİ yoxlama (===) sayəsində Access/Cleave kimi
+    // masklarda ikiqat 994 "uğurlu" sayılmır və aşağıdakı 9 rəqəm yoluna düşür.
+    if (needsCountryCode(phoneInput)) {
+      const cc = "994" + parts.full;
+      await setElementValue(phoneInput, cc);
+      if (digitsOnly(phoneInput.value) === cc) return true;
     }
     return await setElementValue(phoneInput, parts.full);
   }
@@ -1020,7 +1044,14 @@
       if (found) return found;
     }
 
-    // 4.5) Vue scoped atributu (data-v-*) — class/tag ilə birlikdə unikaldırsa.
+    // 5) Stabil id (framework generasiyası istisna) — data-v-*-dan ÜSTÜN,
+    // çünki sabit id build-lar arasında dəyişmir.
+    if (el.id && !isUnstableId(el.id)) {
+      const found = uniqueSelector("#" + cssEscape(el.id));
+      if (found) return found;
+    }
+
+    // 5.5) Vue scoped atributu (data-v-*) — yalnız stabil id seçilməyəndə.
     // (data-v-* təkbaşına komponent səviyyəsindədir, unikal olmaya bilər.)
     if (typeof el.getAttributeNames === "function") {
       const names = el.getAttributeNames() || [];
@@ -1039,12 +1070,6 @@
         const found2 = uniqueSelector(`${tag}[${attr}]`);
         if (found2) return found2;
       }
-    }
-
-    // 5) Stabil id (framework generasiyası istisna).
-    if (el.id && !isUnstableId(el.id)) {
-      const found = uniqueSelector("#" + cssEscape(el.id));
-      if (found) return found;
     }
 
     // 6) placeholder.
