@@ -365,6 +365,55 @@
     return popup === "listbox" || popup === "menu";
   }
 
+  // Vue Select (v-select) prefiks komponentidir: toggle `role="combobox"` olan
+  // `<div class="vs__dropdown-toggle">`, axtarış `input.vs__search`, option-lar
+  // `.vs__dropdown-option`. Native <select> deyil.
+  function isVueSelect(el) {
+    if (!el) return false;
+    try {
+      if (
+        el.closest &&
+        (el.closest(".v-select") || el.closest(".vs__dropdown-toggle"))
+      ) {
+        return true;
+      }
+      const cls = el.classList;
+      if (cls && typeof cls.contains === "function") {
+        if (
+          cls.contains("v-select") ||
+          cls.contains("vs__dropdown-toggle") ||
+          cls.contains("vs__search")
+        ) {
+          return true;
+        }
+      }
+    } catch (err) {
+      // yoxlama alınmadı
+    }
+    return false;
+  }
+
+  function isSimpleDropdown(el) {
+    if (!el) return false;
+    try {
+      if (el.classList && typeof el.classList.contains === "function") {
+        if (
+          el.classList.contains("dropdown") ||
+          el.classList.contains("selected-item")
+        ) {
+          return true;
+        }
+      }
+      if (el.closest && (el.closest(".dropdown") || el.closest(".selected-item"))) {
+        return true;
+      }
+      if (el.querySelector && el.querySelector(".selected-item")) return true;
+    } catch (err) {
+      // yoxlama alınmadı
+    }
+    return false;
+  }
+
   function findPrefixControl(phoneInput, overrideSelector) {
     if (overrideSelector) {
       try {
@@ -375,6 +424,8 @@
           if (tag === "input" && (isPrefixCapableInput(el) || looksLikeCombobox(el))) {
             return el;
           }
+          if (isVueSelect(el)) return el;
+          if (isSimpleDropdown(el)) return el;
         }
       } catch (err) {
         // keçərsiz selector — heuristic-ə keç
@@ -393,6 +444,26 @@
       );
       for (const c of combos) {
         if (c !== phoneInput) return c;
+      }
+      // Vue Select toggle (role=combobox olan div) və ya .vs__dropdown-toggle.
+      const vueToggle = scope.querySelector(
+        '.vs__dropdown-toggle, [role="combobox"]:not(input)'
+      );
+      if (vueToggle && vueToggle !== phoneInput) return vueToggle;
+      const vueWrap = scope.querySelector(".v-select");
+      if (vueWrap) {
+        const t = vueWrap.querySelector(".vs__dropdown-toggle") || vueWrap;
+        if (t !== phoneInput) return t;
+      }
+      // Sadə dropdown: <span class="selected-item"> + açılan .dropdown-menu.
+      const selItem = scope.querySelector(".selected-item");
+      if (selItem) {
+        const container =
+          (selItem.closest &&
+            selItem.closest(".dropdown, [role='button'], .select")) ||
+          selItem.parentElement ||
+          selItem;
+        if (container && container !== phoneInput) return container;
       }
       node = scope;
     }
@@ -428,9 +499,116 @@
   function findComboboxOptions() {
     return Array.from(
       document.querySelectorAll(
-        '[data-combobox-option], [role="listbox"] [role="option"], [role="option"]'
+        '[data-combobox-option], [role="listbox"] [role="option"], ' +
+          '[role="option"], .vs__dropdown-option'
       )
     );
+  }
+
+  // Vue Select prefiksini açıb uyğun operator kodunu seçir.
+  async function selectVueSelectOption(control, prefix) {
+    let toggle = control;
+    if (control && control.closest) {
+      toggle = control.closest(".vs__dropdown-toggle") || control;
+    }
+    const search =
+      (toggle.querySelector && toggle.querySelector(".vs__search")) || toggle;
+    const candidates = prefixCandidates(prefix);
+
+    let options = Array.from(document.querySelectorAll(".vs__dropdown-option"));
+    if (options.length === 0) {
+      try {
+        search.focus();
+      } catch (err) {
+        // focus alınmadı
+      }
+      toggle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      toggle.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      const deadline = Date.now() + 900;
+      while (Date.now() < deadline && options.length === 0) {
+        await delay(40);
+        options = Array.from(document.querySelectorAll(".vs__dropdown-option"));
+      }
+    }
+
+    for (const opt of options) {
+      const text = opt.textContent || "";
+      if (matchPrefixToken(text, candidates)) {
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        opt.click();
+        await nextTick();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Sadə dropdown prefiksi: bağlı `<span class="selected-item">` + açılanda
+  // `.dropdown-menu .dropdown-item` (məs. Rabitəbank). Menyu yalnız açıq
+  // olduqda DOM-da olur — ona görə option-ları gözləməklə axtarırıq.
+  async function selectSimpleDropdownOption(control, prefix) {
+    const candidates = prefixCandidates(prefix);
+
+    const selectedSpan =
+      (control.querySelector && control.querySelector(".selected-item")) ||
+      (control.classList &&
+      typeof control.classList.contains === "function" &&
+      control.classList.contains("selected-item")
+        ? control
+        : null);
+
+    const toggle =
+      (control.closest &&
+        (control.closest(".dropdown") ||
+          control.closest('[role="button"]') ||
+          control.closest(".select"))) ||
+      (selectedSpan && selectedSpan.parentElement) ||
+      control;
+
+    const menuOptions = () =>
+      Array.from(
+        document.querySelectorAll(
+          ".ps.dropdown-menu .dropdown-item, .dropdown-menu .dropdown-item"
+        )
+      );
+
+    let options = menuOptions();
+    if (options.length === 0) {
+      toggle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      toggle.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      const deadline = Date.now() + 1000;
+      while (Date.now() < deadline && options.length === 0) {
+        await delay(40);
+        options = menuOptions();
+      }
+    }
+
+    for (const opt of options) {
+      const text = opt.textContent || "";
+      if (matchPrefixToken(text, candidates)) {
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        opt.click();
+        await nextTick();
+        await delay(30);
+
+        // Seçimin tətbiq olunduğunu yoxla (span.selected-item mətni dəyişdi?).
+        const span =
+          (selectedSpan &&
+          typeof document.contains === "function" &&
+          document.contains(selectedSpan)
+            ? selectedSpan
+            : null) || document.querySelector(".selected-item");
+        if (!span) return true;
+        return matchPrefixToken(span.textContent || "", candidates);
+      }
+    }
+    return false;
   }
 
   // Mantine Select kimi combobox-ı açıb uyğun operator kodunu seçir.
@@ -485,6 +663,14 @@
       return false;
     }
 
+    if (isVueSelect(control)) {
+      return await selectVueSelectOption(control, prefix);
+    }
+
+    if (isSimpleDropdown(control)) {
+      return await selectSimpleDropdownOption(control, prefix);
+    }
+
     if (looksLikeCombobox(control)) {
       return await selectComboboxOption(control, prefix);
     }
@@ -514,6 +700,17 @@
       if (control && (await applyPrefix(control, parts.prefix))) {
         await nextTick();
         return await setElementValue(phoneInput, parts.local);
+      }
+      // Prefiks nəzarəti tapılmadı: sahə yerli hissə üçündürsə (maxLength tam
+      // nömrədən kiçikdir), tam 9 rəqəmi yazmaq kəsilmiş səhv dəyər yaradar —
+      // yazmırıq (düzgün "uğursuz" statusu).
+      const maxlength = parseInt(phoneInput.getAttribute("maxlength") || "", 10);
+      if (
+        Number.isFinite(maxlength) &&
+        maxlength > 0 &&
+        maxlength < parts.full.length
+      ) {
+        return false;
       }
     }
     return await setElementValue(phoneInput, parts.full);
@@ -754,7 +951,16 @@
     if (/^mantine-/i.test(v)) return true;
     if (/^:r[0-9a-z]+:/i.test(v)) return true; // React useId: :r0:, :r3:
     if (/^(radix|headlessui|downshift|mui|chakra)-/i.test(v)) return true;
-    if (/^[0-9a-f]{8,}$/i.test(v)) return true; // hash-a bənzər ID
+    if (/^[0-9a-f]{8,}$/i.test(v)) return true; // hash-a bənzər ID (tiresiz)
+    // UUID / GUID (tireli) — Vue və digər framework-lərin generasiya etdiyi
+    // hər yükləmədə dəyişən ID-lər (məs. Rabitəbank input-u).
+    if (
+      /^#?\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(
+        v
+      )
+    ) {
+      return true;
+    }
     return false;
   }
 
@@ -812,6 +1018,27 @@
         `${tag}[autocomplete="${escapeAttrValue(ac)}"]`
       );
       if (found) return found;
+    }
+
+    // 4.5) Vue scoped atributu (data-v-*) — class/tag ilə birlikdə unikaldırsa.
+    // (data-v-* təkbaşına komponent səviyyəsindədir, unikal olmaya bilər.)
+    if (typeof el.getAttributeNames === "function") {
+      const names = el.getAttributeNames() || [];
+      for (const attr of names) {
+        if (!/^data-v-/.test(attr)) continue;
+        const cls = String(el.className || "")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)[0];
+        if (cls) {
+          const found = uniqueSelector(
+            `${tag}.${cssEscape(cls)}[${attr}]`
+          );
+          if (found) return found;
+        }
+        const found2 = uniqueSelector(`${tag}[${attr}]`);
+        if (found2) return found2;
+      }
     }
 
     // 5) Stabil id (framework generasiyası istisna).
