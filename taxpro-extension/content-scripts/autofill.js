@@ -82,7 +82,50 @@
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function setElementValue(el, value) {
+  function digitsOnly(value) {
+    return String(value == null ? "" : value).replace(/\D/g, "");
+  }
+
+  // Dəyərin input-da həqiqətən əks olunduğunu yoxlayır. Mask prefiks əlavə
+  // edə bilər (məs. '+(994)'), ona görə rəqəm sufiksinə də baxırıq.
+  function valueMatches(el, value) {
+    const expected = String(value == null ? "" : value);
+    const actual = String(el.value == null ? "" : el.value);
+    if (expected === actual) return true;
+
+    const expDigits = digitsOnly(expected);
+    if (expDigits) {
+      const actDigits = digitsOnly(actual);
+      return actDigits === expDigits || actDigits.endsWith(expDigits);
+    }
+    return actual.trim().toLowerCase() === expected.trim().toLowerCase();
+  }
+
+  // Mask-lı/controlled komponentlər (məs. Cleave.js) birbaşa value təyinatını
+  // qəbul etmir, çünki onlar prefiksi/ayırıcıları özləri idarə edir. Bu halda
+  // dəyəri simvol-simvol (real istifadəçi yazısı kimi) yazırıq.
+  async function typeValue(el, value) {
+    const target = String(value == null ? "" : value);
+    try {
+      el.focus();
+    } catch (err) {
+      // focus mümkün olmadı — davam et
+    }
+
+    setNativeValue(el, "");
+    dispatchValueEvents(el);
+    await nextTick();
+
+    for (const ch of target) {
+      setNativeValue(el, el.value + ch);
+      dispatchValueEvents(el);
+      await delay(0);
+    }
+
+    return valueMatches(el, target);
+  }
+
+  async function setElementValue(el, value) {
     const tag = el.tagName.toLowerCase();
 
     if (tag === "select") {
@@ -91,14 +134,24 @@
       );
       if (!target) return false;
       setNativeValue(el, target.value);
-    } else if (el.isContentEditable) {
-      el.textContent = value;
-    } else {
-      setNativeValue(el, value);
+      dispatchValueEvents(el);
+      return true;
     }
 
+    if (el.isContentEditable) {
+      el.textContent = value;
+      dispatchValueEvents(el);
+      return true;
+    }
+
+    setNativeValue(el, value);
     dispatchValueEvents(el);
-    return true;
+    await nextTick();
+
+    if (valueMatches(el, value)) return true;
+
+    // Birbaşa yazma "ilişmədi" (mask formatladı/kəsdİ) — simvol-simvol yaz.
+    return await typeValue(el, value);
   }
 
   /* ===== Telefon prefiks məntiqi =====
@@ -294,8 +347,7 @@
       value = "0" + prefix;
     }
 
-    setElementValue(control, value);
-    return true;
+    return await setElementValue(control, value);
   }
 
   async function fillPhone(phoneInput, phoneValue, overrideSelector) {
@@ -305,10 +357,10 @@
       const control = findPrefixControl(phoneInput, overrideSelector);
       if (control && (await applyPrefix(control, parts.prefix))) {
         await nextTick();
-        return setElementValue(phoneInput, parts.local);
+        return await setElementValue(phoneInput, parts.local);
       }
     }
-    return setElementValue(phoneInput, parts.full);
+    return await setElementValue(phoneInput, parts.full);
   }
 
   function escAttr(k) {
@@ -407,7 +459,7 @@
       const ok =
         field === "nomre"
           ? await fillPhone(found.el, value, phonePrefixSelector)
-          : setElementValue(found.el, value);
+          : await setElementValue(found.el, value);
 
       if (ok) {
         filled += 1;
