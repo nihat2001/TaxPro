@@ -50,6 +50,38 @@
     );
   }
 
+  /* DOM-a dəyər yazma.
+   * React (və digər controlled framework-lər) element üzərində öz "value
+   * tracker" setter-ini qurur. `el.value = x` yazsaq tracker də x olur və
+   * dispatch etdiyimiz `input` hadisəsində React "dəyişiklik yoxdur" qənaətinə
+   * gəlib onChange-i işə salmır; növbəti render-də köhnə dəyər geri qaytarılır.
+   * Prototype descriptor-un `set`-i ilə yazmaq tracker-ı bypass edir və React
+   * state düzgün yenilənir. Vanilla input-larda da adi `el.value` ilə eynidir.
+   */
+  function setNativeValue(el, value) {
+    const tag = el.tagName ? el.tagName.toLowerCase() : "";
+    let proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+    if (tag === "textarea" && window.HTMLTextAreaElement) {
+      proto = window.HTMLTextAreaElement.prototype;
+    } else if (tag === "select" && window.HTMLSelectElement) {
+      proto = window.HTMLSelectElement.prototype;
+    }
+
+    let setter = null;
+    if (proto && Object.getOwnPropertyDescriptor) {
+      const desc = Object.getOwnPropertyDescriptor(proto, "value");
+      if (desc && desc.set) setter = desc.set;
+    }
+
+    if (setter) setter.call(el, value);
+    else el.value = value;
+  }
+
+  function dispatchValueEvents(el) {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
   function setElementValue(el, value) {
     const tag = el.tagName.toLowerCase();
 
@@ -58,15 +90,14 @@
         (o) => o.value === value || o.text === value
       );
       if (!target) return false;
-      el.value = target.value;
+      setNativeValue(el, target.value);
     } else if (el.isContentEditable) {
       el.textContent = value;
     } else {
-      el.value = value;
+      setNativeValue(el, value);
     }
 
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    dispatchValueEvents(el);
     return true;
   }
 
@@ -137,9 +168,8 @@
         normalizePrefixToken(o.textContent) === prefix ||
         normalizePrefixToken(o.value) === prefix
       ) {
-        sel.value = o.value;
-        sel.dispatchEvent(new Event("input", { bubbles: true }));
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
+        setNativeValue(sel, o.value);
+        dispatchValueEvents(sel);
         return true;
       }
     }

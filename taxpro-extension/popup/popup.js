@@ -19,13 +19,8 @@
   const els = {};
   const $ = (id) => (els[id] = els[id] || document.getElementById(id));
 
-  // Doldurulan iki məntiqi sahə və selector tapılma üsullarının adları.
+  // Doldurulan iki məntiqi sahə (Record Mode etiketləri üçün).
   const FIELD_LABELS = { nomre: "Telefon", asan_id: "Asan ID" };
-  const HOW_LABELS = {
-    attr: "atribut",
-    label: "label",
-    placeholder: "placeholder",
-  };
 
   /* ===== Köməkçilər ===== */
   function initials(name) {
@@ -389,46 +384,9 @@
     return best ? best.portal : null;
   }
 
-  // Aktiv portalın selector vəziyyətini bir baxışda göstərir: hansı sahələr
-  // üçün selector var, hansılar üçün Qeydiyyat rejimi lazımdır.
-  function renderMappingStatus() {
-    const box = $("portalMappingStatus");
-    if (!activePortal) {
-      box.hidden = true;
-      box.innerHTML = "";
-      return;
-    }
-    const mapping = activePortal.selector_mapping || {};
-    const ready = ["nomre", "asan_id"].filter((f) => !!mapping[f]).length;
-    const badges = ["nomre", "asan_id"]
-      .map((field) => {
-        const has = !!mapping[field];
-        return (
-          `<span class="map-badge ${has ? "ok" : "need"}">` +
-          `<span class="map-mark">${has ? "✓" : "⚠"}</span>` +
-          `<span class="map-field">${escapeHtml(FIELD_LABELS[field])}</span>` +
-          `<small>${has ? "selector var" : "Qeydiyyat rejimi lazımdır"}</small>` +
-          `</span>`
-        );
-      })
-      .join("");
-    let html =
-      `<div class="card-label">Selector vəziyyəti (${ready}/2)</div>` +
-      `<div class="map-badges">${badges}</div>`;
-    if (activePortal.auth_type === "none") {
-      html +=
-        `<div class="map-note">Bu portalda login formu qeyd olunmayıb ` +
-        `(auth_type: none) — Doldur yenə cəhd edəcək.</div>`;
-    }
-    box.innerHTML = html;
-    box.hidden = false;
-  }
-
   function updateAutofillBtn() {
     const profileOk = !!$("autofillProfile").value;
-    // auth_type sərt qapı deyil: real nəticə content script-dən gəlir.
     $("autofillBtn").disabled = !profileOk;
-    renderMappingStatus();
   }
 
   // Backend payload-ını content script-in gözlədiyi entry siyahısına çevirir.
@@ -446,78 +404,13 @@
     return entries;
   }
 
-  // Nəticəni sahə-sahə göstərir: dəqiq selector (✓ yaşıl) ilə heuristik
-  // fallback (△ sarı) və tapılmayan (✕ qırmızı) sahələri fərqləndirir.
-  function renderAutofillOutcome(resultBox, r, entries, payload) {
-    const results = Array.isArray(r.results) ? r.results : [];
-    const byField = {};
-    for (const item of results) byField[item.field] = item;
-
-    let hasApprox = false;
-    let hasMissing = false;
-
-    const rows = ["nomre", "asan_id"]
-      .filter((field) => entries.some((e) => e.field === field))
-      .map((field) => {
-        const item = byField[field] || { field, ok: false, how: null };
-        const label = escapeHtml(FIELD_LABELS[field] || field);
-        if (!item.ok) {
-          hasMissing = true;
-          return (
-            `<div class="af-row missing">` +
-            `<span class="af-mark">✕</span>` +
-            `<span class="af-field">${label}</span>` +
-            `<span class="af-note">tapılmadı — Qeydiyyat rejimi ilə selector əlavə edin</span>` +
-            `</div>`
-          );
-        }
-        const exact = item.how === "exact";
-        if (!exact) hasApprox = true;
-        const howText = exact
-          ? "selector ilə tapıldı"
-          : `təxmini tapıldı (${escapeHtml(HOW_LABELS[item.how] || item.how || "heuristik")})`;
-        return (
-          `<div class="af-row ${exact ? "exact" : "approx"}">` +
-          `<span class="af-mark">${exact ? "✓" : "△"}</span>` +
-          `<span class="af-field">${label}</span>` +
-          `<span class="af-note">${howText}</span>` +
-          `</div>`
-        );
-      })
-      .join("");
-
-    const filled = r.filled || 0;
-    const total = r.total || entries.length;
-    let headline;
-    if (hasMissing) {
-      headline = `${filled}/${total} sahə dolduruldu — bəzi sahələr tapılmadı.`;
-    } else if (hasApprox) {
-      headline = `${filled}/${total} sahə dolduruldu (təxmini).`;
-    } else {
-      headline = `${filled}/${total} sahə dolduruldu.`;
-    }
-
-    let note = "";
-    if (hasApprox) {
-      note +=
-        `<div class="af-note-line">△ ilə işarələnmiş sahələr heuristik tapıldı — ` +
-        `daha etibarlı olması üçün Qeydiyyat rejimi ilə selector təyin edin.</div>`;
-    }
-    const missingSelectors = payload.missing_selectors || [];
-    if (missingSelectors.length > 0) {
-      const names = missingSelectors
-        .map((f) => escapeHtml(FIELD_LABELS[f] || f))
-        .join(", ");
-      note +=
-        `<div class="af-note-line">Selector-u qeyd olunmayan sahələr: ${names}.</div>`;
-    }
-
-    const cls = hasMissing ? "err" : hasApprox ? "warn" : "ok";
-    resultBox.className = "result-box " + cls;
-    resultBox.innerHTML =
-      `<div class="af-headline">${headline}</div>` +
-      `<div class="af-rows">${rows}</div>` +
-      note;
+  // Nəticə neytral göstərilir: yalnız "Dolduruldu" və ya "Uğursuz oldu".
+  function showAutofillResult(resultBox, r) {
+    const total = (r && r.total) || 0;
+    const done = total > 0 && r.filled === total;
+    resultBox.className = "result-box";
+    resultBox.textContent = done ? "Dolduruldu" : "Uğursuz oldu";
+    resultBox.classList.remove("hidden");
   }
 
   async function loadActiveTab() {
@@ -570,7 +463,7 @@
 
       const portal = activeTab ? matchPortalByUrl(activeTab.url) : null;
       if (!portal) {
-        resultBox.className = "result-box err";
+        resultBox.className = "result-box";
         resultBox.textContent =
           "Zəhmət olmasa, əvvəlcə Saytlar tabından portalın daxilolma səhifəsinə keçin.";
         resultBox.classList.remove("hidden");
@@ -582,8 +475,8 @@
         const entries = buildAutofillEntries(payload);
 
         if (entries.length === 0) {
-          resultBox.className = "result-box err";
-          resultBox.textContent = "Bu portal üçün doldurulacaq sahə yoxdur.";
+          resultBox.className = "result-box";
+          resultBox.textContent = "Uğursuz oldu";
           resultBox.classList.remove("hidden");
           return;
         }
@@ -595,17 +488,16 @@
         });
 
         if (!outcome.ok) {
-          resultBox.className = "result-box err";
-          resultBox.textContent = outcome.error || "Doldurma uğursuz oldu.";
+          resultBox.className = "result-box";
+          resultBox.textContent = outcome.error || "Uğursuz oldu";
           resultBox.classList.remove("hidden");
           return;
         }
 
-        renderAutofillOutcome(resultBox, outcome.result, entries, payload);
-        resultBox.classList.remove("hidden");
+        showAutofillResult(resultBox, outcome.result);
       } catch (err) {
-        resultBox.className = "result-box err";
-        resultBox.textContent = err.message;
+        resultBox.className = "result-box";
+        resultBox.textContent = err.message || "Uğursuz oldu";
         resultBox.classList.remove("hidden");
       }
     });

@@ -407,74 +407,8 @@ main {
   font-size: 12px;
 }
 .result-box.ok { background: rgba(45, 212, 167, 0.12); color: var(--success); }
-.result-box.warn { background: rgba(245, 185, 66, 0.12); color: var(--warn); }
 .result-box.err { background: rgba(255, 92, 108, 0.12); color: var(--danger); }
 .hidden, [hidden] { display: none !important; }
-
-/* ===== Selector vəziyyəti (bir baxışda) ===== */
-.mapping-status { margin-top: 8px; }
-.map-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.map-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  font-size: 11px;
-}
-.map-badge .map-mark { font-weight: 700; }
-.map-badge .map-field { font-weight: 600; }
-.map-badge small { color: var(--text-muted); font-size: 10px; }
-.map-badge.ok {
-  border-color: rgba(45, 212, 167, 0.5);
-  background: rgba(45, 212, 167, 0.1);
-}
-.map-badge.ok .map-mark { color: var(--success); }
-.map-badge.need {
-  border-color: rgba(245, 185, 66, 0.5);
-  background: rgba(245, 185, 66, 0.1);
-}
-.map-badge.need .map-mark { color: var(--warn); }
-.map-note {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-/* ===== Autofill nəticəsi (sahə-sahə) ===== */
-.af-headline { font-weight: 600; margin-bottom: 8px; }
-.af-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.af-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-}
-.af-row .af-mark { font-weight: 700; flex: 0 0 14px; text-align: center; }
-.af-row .af-field { font-weight: 600; flex: 0 0 auto; }
-.af-row .af-note { font-size: 11px; color: var(--text-muted); }
-.af-row.exact { border-left: 3px solid var(--success); }
-.af-row.exact .af-mark { color: var(--success); }
-.af-row.approx { border-left: 3px solid var(--warn); }
-.af-row.approx .af-mark { color: var(--warn); }
-.af-row.missing { border-left: 3px solid var(--danger); }
-.af-row.missing .af-mark { color: var(--danger); }
-.af-note-line {
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
 
 /* ===== Modal ===== */
 .modal-overlay {
