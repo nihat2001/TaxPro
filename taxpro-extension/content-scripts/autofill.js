@@ -147,6 +147,15 @@
     return type === "text" || type === "tel" || type === "number";
   }
 
+  // Framework "Select/Combobox" trigger-i: portala açılan siyahıdan seçim
+  // tələb edir. Yalnız aydın əlamətlərlə tanınır (yanlış elementə klikləməmək üçün).
+  function looksLikeCombobox(el) {
+    if (!el || el.tagName !== "INPUT") return false;
+    if (el.getAttribute("role") === "combobox") return true;
+    const popup = el.getAttribute("aria-haspopup");
+    return popup === "listbox" || popup === "menu";
+  }
+
   function findPrefixControl(phoneInput, overrideSelector) {
     if (overrideSelector) {
       try {
@@ -154,7 +163,9 @@
         if (el && el.tagName) {
           const tag = el.tagName.toLowerCase();
           if (tag === "select") return el;
-          if (tag === "input" && isPrefixCapableInput(el)) return el;
+          if (tag === "input" && (isPrefixCapableInput(el) || looksLikeCombobox(el))) {
+            return el;
+          }
         }
       } catch (err) {
         // keçərsiz selector — heuristic-ə keç
@@ -167,14 +178,87 @@
       for (const sel of scope.querySelectorAll("select")) {
         if (sel !== phoneInput && looksLikePrefixSelect(sel)) return sel;
       }
+      // Yalnız role=combobox / aria-haspopup=listbox olan aydın trigger.
+      const combos = scope.querySelectorAll(
+        'input[role="combobox"], input[aria-haspopup="listbox"]'
+      );
+      for (const c of combos) {
+        if (c !== phoneInput) return c;
+      }
       node = scope;
     }
     return null;
   }
 
+  function prefixCandidates(prefix) {
+    const set = new Set([prefix]);
+    if (!prefix.startsWith("0")) set.add("0" + prefix);
+    set.add("994" + prefix);
+    return [...set];
+  }
+
+  function matchPrefixToken(text, candidates) {
+    const norm = normalizePrefixToken(text);
+    return candidates.some((c) => normalizePrefixToken(c) === norm);
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function nextTick() {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  }
+
+  function findComboboxOptions() {
+    return Array.from(
+      document.querySelectorAll(
+        '[data-combobox-option], [role="listbox"] [role="option"], [role="option"]'
+      )
+    );
+  }
+
+  // Mantine Select kimi combobox-ı açıb uyğun operator kodunu seçir.
+  // Açmaq və seçim real istifadəçi hərəkətləri ilə simulyasiya olunur.
+  async function selectComboboxOption(trigger, prefix) {
+    const candidates = prefixCandidates(prefix);
+    let options = findComboboxOptions();
+
+    if (options.length === 0) {
+      trigger.focus();
+      trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+      const deadline = Date.now() + 900;
+      while (Date.now() < deadline && options.length === 0) {
+        await delay(40);
+        options = findComboboxOptions();
+      }
+    }
+
+    for (const opt of options) {
+      const text = opt.textContent || opt.getAttribute("value") || "";
+      if (matchPrefixToken(text, candidates)) {
+        opt.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        opt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+        opt.click();
+        await nextTick(); // React state-in oturması
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Prefiks nəzarətinin növünə görə operator kodunu yazır.
-  // select → uyğun option; input → sahənin gözlədiyi format (050 / 50 / 99450).
-  function applyPrefix(control, prefix) {
+  // select → uyğun option; combobox → siyahıdan seçim; input → format.
+  async function applyPrefix(control, prefix) {
     if (!control) return false;
     const tag = control.tagName ? control.tagName.toLowerCase() : "";
 
@@ -190,6 +274,10 @@
         }
       }
       return false;
+    }
+
+    if (looksLikeCombobox(control)) {
+      return await selectComboboxOption(control, prefix);
     }
 
     const maxlength = parseInt(control.getAttribute("maxlength") || "", 10);
@@ -210,12 +298,13 @@
     return true;
   }
 
-  function fillPhone(phoneInput, phoneValue, overrideSelector) {
+  async function fillPhone(phoneInput, phoneValue, overrideSelector) {
     const parts = phoneParts(phoneValue);
     if (!parts.full) return false;
     if (parts.prefix) {
       const control = findPrefixControl(phoneInput, overrideSelector);
-      if (control && applyPrefix(control, parts.prefix)) {
+      if (control && (await applyPrefix(control, parts.prefix))) {
+        await nextTick();
         return setElementValue(phoneInput, parts.local);
       }
     }
@@ -289,7 +378,7 @@
     return null;
   }
 
-  function fillFields(fields, phonePrefixSelector) {
+  async function fillFields(fields, phonePrefixSelector) {
     const entries = Array.isArray(fields)
       ? fields
       : Object.entries(fields || {}).map(([selector, value]) => ({
@@ -317,7 +406,7 @@
 
       const ok =
         field === "nomre"
-          ? fillPhone(found.el, value, phonePrefixSelector)
+          ? await fillPhone(found.el, value, phonePrefixSelector)
           : setElementValue(found.el, value);
 
       if (ok) {
@@ -336,19 +425,34 @@
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg && msg.type === "AUTOFILL") {
-      const result = fillFields(msg.fields, msg.phone_prefix_selector || null);
-      sendResponse(result);
+      // Prefiks combobox seçimi async olduğu üçün cavab gec verilir.
+      fillFields(msg.fields, msg.phone_prefix_selector || null)
+        .then(sendResponse)
+        .catch(() =>
+          sendResponse({
+            filled: 0,
+            total: 0,
+            missing: [],
+            matchedBy: {},
+            results: [],
+          })
+        );
+      return true; // async sendResponse kanalı
     }
 
     if (msg && msg.type === "START_RECORD") {
       startRecordMode();
       sendResponse({ ok: true });
+      return false;
     }
 
     if (msg && msg.type === "STOP_RECORD") {
       stopRecordMode();
       sendResponse({ ok: true });
+      return false;
     }
+
+    return false;
   });
 
   /* ===== Qeydiyyat rejimi (Record Mode) ===== */

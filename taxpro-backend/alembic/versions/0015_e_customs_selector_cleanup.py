@@ -24,9 +24,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Yalnız QEYRİ-SABİT (framework generasiyalı) asan_id selectorunu sil.
+    # İstifadəçi sonradan düzgün stabil selector (məs. input[name="userId"])
+    # qeyd edibsə, ona toxunma.
     op.execute(
-        "UPDATE portals SET selector_mapping = selector_mapping - 'asan_id' "
-        "WHERE name = 'e-customs'"
+        sa.text(
+            "UPDATE portals SET selector_mapping = selector_mapping - 'asan_id' "
+            "WHERE name = 'e-customs' AND ("
+            "selector_mapping->>'asan_id' ILIKE :mantine "
+            "OR strpos(selector_mapping->>'asan_id', :react) > 0)"
+        ).bindparams(mantine="%mantine%", react=":r")
     )
 
 
