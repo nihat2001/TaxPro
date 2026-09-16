@@ -3,7 +3,14 @@
   "name": "TaxPro",
   "version": "0.1.0",
   "description": "Azərbaycan dövlət və bank portallarının giriş formalarını seçilmiş profil məlumatları ilə avtomatik doldurur.",
-  "permissions": ["storage", "activeTab", "tabs", "scripting", "sidePanel"],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "sidePanel",
+    "webNavigation"
+  ],
   "host_permissions": [
     "http://localhost:8000/*",
     "https://www.google.com/*",
@@ -38,7 +45,9 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content-scripts/autofill.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }

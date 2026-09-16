@@ -21,10 +21,24 @@ async function getActiveTab() {
   return tab || null;
 }
 
+async function getFrameIds(tabId) {
+  try {
+    if (chrome.webNavigation && chrome.webNavigation.getAllFrames) {
+      const frames = await chrome.webNavigation.getAllFrames({ tabId });
+      if (Array.isArray(frames) && frames.length) {
+        return frames.map((f) => f.frameId);
+      }
+    }
+  } catch (err) {
+    // webNavigation əlçatan deyil — yalnız top frame ilə davam et.
+  }
+  return [0];
+}
+
 async function ensureContentScript(tabId) {
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target: { tabId, allFrames: true },
       files: ["content-scripts/autofill.js"],
     });
   } catch (err) {
@@ -32,45 +46,67 @@ async function ensureContentScript(tabId) {
   }
 }
 
+// Bütün frame-lərə (o cümlədən iframe-lərə) mesaj göndərir.
 async function sendToContent(tabId, msg) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, msg);
-  } catch (err) {
-    await ensureContentScript(tabId);
-    return await chrome.tabs.sendMessage(tabId, msg);
+  const frameIds = await getFrameIds(tabId);
+  let any = false;
+  for (const frameId of frameIds) {
+    try {
+      await chrome.tabs.sendMessage(tabId, msg, { frameId });
+      any = true;
+    } catch (err) {
+      // bu frame-də content script yoxdur — keç
+    }
   }
+  if (!any) {
+    try {
+      await chrome.tabs.sendMessage(tabId, msg);
+      any = true;
+    } catch (err) {
+      // heç bir frame cavab vermir
+    }
+  }
+  return any;
+}
+
+async function sendAutofillToFrames(tabId, payload) {
+  const frameIds = await getFrameIds(tabId);
+  let best = null;
+  for (const frameId of frameIds) {
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, payload, { frameId });
+      if (res && typeof res.filled === "number") {
+        if (!best || res.filled > best.filled) best = res;
+      }
+    } catch (err) {
+      // frame-də content script yoxdur — keç
+    }
+  }
+  return best;
 }
 
 async function runAutofill(tab, fields, phonePrefixSelector) {
-  let result = null;
-  try {
-    result = await chrome.tabs.sendMessage(tab.id, {
-      type: "AUTOFILL",
-      fields,
-      phone_prefix_selector: phonePrefixSelector,
-    });
-  } catch (err) {
-    result = null;
-  }
+  const payload = {
+    type: "AUTOFILL",
+    fields,
+    phone_prefix_selector: phonePrefixSelector,
+  };
 
-  if (!result || typeof result.filled !== "number") {
+  let best = await sendAutofillToFrames(tab.id, payload);
+  if (!best) {
     await ensureContentScript(tab.id);
-    try {
-      result = await chrome.tabs.sendMessage(tab.id, {
-        type: "AUTOFILL",
-        fields,
-        phone_prefix_selector: phonePrefixSelector,
-      });
-    } catch (err) {
-      return {
-        ok: false,
-        error:
-          "Bu səhifəyə giriş mümkün olmadı (qorunan səhifə və ya hələ yüklənməyib).",
-      };
-    }
+    best = await sendAutofillToFrames(tab.id, payload);
   }
 
-  return { ok: true, result };
+  if (!best) {
+    return {
+      ok: false,
+      error:
+        "Bu səhifəyə giriş mümkün olmadı (qorunan səhifə və ya hələ yüklənməyib).",
+    };
+  }
+
+  return { ok: true, result: best };
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -106,8 +142,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       try {
-        await sendToContent(tab.id, { type: msg.type });
-        sendResponse({ ok: true });
+        const ok = await sendToContent(tab.id, { type: msg.type });
+        sendResponse(
+          ok ? { ok: true } : { ok: false, error: "Səhifəyə giriş mümkün olmadı." }
+        );
       } catch (err) {
         sendResponse({ ok: false, error: "Səhifəyə giriş mümkün olmadı." });
       }
