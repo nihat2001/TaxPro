@@ -392,6 +392,53 @@ def test_build_workbook_unmatched_sheet():
     assert ws["E2"].value == 55.0
 
 
+def test_build_workbook_main_row_hyperlinks():
+    out = build_workbook(_sample_match())
+    wb = load_workbook(io.BytesIO(out))
+    main = wb[MAIN_SHEET_NAME]
+    for col in ("B", "D", "E", "F", "G", "H", "I"):
+        cell = main[f"{col}3"]
+        assert cell.hyperlink is not None, col
+        assert cell.hyperlink.location == "'SUPPLIER A'!A1", col
+
+
+def test_build_workbook_supplier_back_hyperlinks():
+    out = build_workbook(_sample_match())
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER A"]
+    assert ws["A1"].hyperlink is not None
+    assert ws["A1"].hyperlink.location == MAIN_SHEET_NAME + "!A1"
+    assert ws["K2"].value == "← KREDİTORLAR"
+    assert ws["K2"].hyperlink.location == MAIN_SHEET_NAME + "!A1"
+
+
+def test_build_workbook_styling():
+    out = build_workbook(_sample_match())
+    wb = load_workbook(io.BytesIO(out))
+    main = wb[MAIN_SHEET_NAME]
+
+    h = main["D1"]
+    assert h.font.bold is True
+    assert h.alignment.horizontal == "center"
+    assert h.fill.fill_type == "solid"
+
+    m = main["D3"]
+    assert m.number_format == "#,##0.00"
+    assert m.alignment.horizontal == "right"
+
+    assert main["B3"].alignment.horizontal == "left"
+    assert main["B3"].border.left.style == "thin"
+
+    assert main.column_dimensions["B"].width is not None
+    assert main.column_dimensions["B"].width >= 8
+
+    ws = wb["SUPPLIER A"]
+    assert ws["A1"].hyperlink is not None
+    assert ws["I6"].alignment.horizontal == "right"
+    assert ws["A6"].alignment.horizontal == "left"
+    assert ws["A6"].border.bottom.style == "thin"
+
+
 # ===== Real nümunə fayllarla inteqrasiya =====
 
 

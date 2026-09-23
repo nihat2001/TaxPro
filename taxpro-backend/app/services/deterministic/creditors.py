@@ -19,7 +19,8 @@ from datetime import date, datetime
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
 
 from app.services.deterministic.excel_parser import normalize_text
@@ -35,10 +36,22 @@ _INVALID_SHEET_CHARS = set(':\\/?*[]\'"')
 _SHEET_NAME_MAX = 31
 
 # ===== Formatlaşdırma =====
-_HEADER_FILL = PatternFill(start_color="E8E8E8", end_color="E8E8E8", fill_type="solid")
+_HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 _HEADER_FONT = Font(bold=True)
 _MONEY_FORMAT = "#,##0.00"
-_MONEY_ALIGNMENT = Alignment(horizontal="right")
+_MONEY_ALIGNMENT = Alignment(horizontal="right", vertical="center")
+_CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center")
+_TEXT_ALIGNMENT = Alignment(horizontal="left", vertical="center")
+_THIN_BORDER = Border(
+    left=Side(style="thin", color="B0B7C3"),
+    right=Side(style="thin", color="B0B7C3"),
+    top=Side(style="thin", color="B0B7C3"),
+    bottom=Side(style="thin", color="B0B7C3"),
+)
+_AUTO_FIT_MIN = 8
+_AUTO_FIT_MAX = 50
+_AUTO_FIT_PADDING = 2
+_MONEY_FIT_WIDTH = 13
 
 # ===== Başlıq aşkarlanması (normalize edilmiş sütun adları) =====
 # GƏLƏN.xlsx: başlıq 11-ci sətirdə (VÖEN, Adı, Qaimə tarixi/seriyası/nömrəsi,
@@ -417,6 +430,7 @@ def _style_header_row(ws, row_idx: int, last_col: int) -> None:
         cell = ws.cell(row=row_idx, column=col)
         cell.font = _HEADER_FONT
         cell.fill = _HEADER_FILL
+        cell.alignment = _CENTER_ALIGNMENT
 
 
 def _style_money(ws, start_row: int, end_row: int, cols: list[int]) -> None:
@@ -427,10 +441,55 @@ def _style_money(ws, start_row: int, end_row: int, cols: list[int]) -> None:
             cell.alignment = _MONEY_ALIGNMENT
 
 
+def _set_link(cell, location: str, display: str | None = None) -> None:
+    cell.hyperlink = Hyperlink(
+        ref=cell.coordinate, location=location, display=display
+    )
+
+
+def _apply_borders(
+    ws, start_row: int, end_row: int, start_col: int, end_col: int
+) -> None:
+    for row in range(start_row, end_row + 1):
+        for col in range(start_col, end_col + 1):
+            ws.cell(row=row, column=col).border = _THIN_BORDER
+
+
+def _apply_text_alignment(ws, start_row: int, end_row: int, cols: list[int]) -> None:
+    for col in cols:
+        for row in range(start_row, end_row + 1):
+            ws.cell(row=row, column=col).alignment = _TEXT_ALIGNMENT
+
+
+def _auto_fit_columns(ws, money_cols: tuple[int, ...] = ()) -> None:
+    money_cols = set(money_cols)
+    multi_col_merged: set[tuple[int, int]] = set()
+    for rng in ws.merged_cells.ranges:
+        if rng.max_col > rng.min_col:
+            multi_col_merged.add((rng.min_row, rng.min_col))
+    for col in range(1, ws.max_column + 1):
+        max_len = _AUTO_FIT_MIN
+        for row in range(1, ws.max_row + 1):
+            if (row, col) in multi_col_merged:
+                continue
+            cell = ws.cell(row=row, column=col)
+            value = cell.value
+            if value is None:
+                continue
+            if isinstance(value, str) and value.startswith("="):
+                if col in money_cols:
+                    max_len = max(max_len, _MONEY_FIT_WIDTH)
+                continue
+            max_len = max(max_len, len(str(value)))
+        width = min(max_len + _AUTO_FIT_PADDING, _AUTO_FIT_MAX)
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
 def _build_supplier_sheet(wb: Workbook, s: dict[str, Any], sheet_name: str) -> int:
     ws = wb.create_sheet(sheet_name)
 
     ws["A1"] = s["ad"]
+    _set_link(ws["A1"], MAIN_SHEET_NAME + "!A1", display=s["ad"])
     ws.merge_cells("A1:J1")
     voen_val: Any = s["voen"]
     if voen_val.isdigit() and not voen_val.startswith("0"):
@@ -438,10 +497,8 @@ def _build_supplier_sheet(wb: Workbook, s: dict[str, Any], sheet_name: str) -> i
     ws["A2"] = voen_val
     ws.merge_cells("A2:J2")
     k2 = ws["K2"]
-    k2.value = MAIN_SHEET_NAME + "!A1"
-    k2.hyperlink = Hyperlink(
-        ref="K2", location=MAIN_SHEET_NAME + "!A1", display=MAIN_SHEET_NAME + "!A1"
-    )
+    k2.value = "← KREDİTORLAR"
+    _set_link(k2, MAIN_SHEET_NAME + "!A1", display="← KREDİTORLAR")
 
     ws["A4"] = "Date"
     ws["B4"] = "Elektron Qaimə"
@@ -502,7 +559,11 @@ def _build_supplier_sheet(wb: Workbook, s: dict[str, Any], sheet_name: str) -> i
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}6)"
 
     _style_header_row(ws, 4, 10)
+    _style_header_row(ws, 5, 10)
     _style_money(ws, 6, sum_row, [5, 6, 7, 8, 9, 10])
+    _apply_text_alignment(ws, 6, sum_row, [1, 2, 3, 4])
+    _apply_borders(ws, 4, sum_row, 1, 10)
+    _auto_fit_columns(ws, money_cols=(5, 6, 7, 8, 9, 10))
     return sum_row
 
 
@@ -513,6 +574,9 @@ def _build_unmatched_sheet(wb: Workbook, unmatched: list[dict[str, Any]]) -> Non
         ws.append([u["voen"], u["ad"], u["tarix"], u["menbe"], u["mebleg"]])
     _style_header_row(ws, 1, 5)
     _style_money(ws, 2, max(ws.max_row, 2), [5])
+    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 3, 4])
+    _apply_borders(ws, 1, max(ws.max_row, 2), 1, 5)
+    _auto_fit_columns(ws, money_cols=(5,))
 
 
 def build_workbook(match_result: dict[str, Any]) -> bytes:
@@ -543,16 +607,14 @@ def build_workbook(match_result: dict[str, Any]) -> bytes:
         sum_row = _build_supplier_sheet(wb, s, sheet_name)
 
         main.cell(row=row, column=1, value=i)
+        target = f"{_quote_sheet(sheet_name)}!A1"
         b_cell = main.cell(row=row, column=2, value=s["ad"])
-        b_cell.hyperlink = Hyperlink(
-            ref=b_cell.coordinate,
-            location=f"{_quote_sheet(sheet_name)}!A1",
-            display=s["ad"],
-        )
+        _set_link(b_cell, target, display=s["ad"])
         main.cell(row=row, column=3, value=_ACIQLAMA)
         q = _quote_sheet(sheet_name)
         for col, letter in zip((4, 5, 6, 7, 8, 9), "EFGHIJ"):
-            main.cell(row=row, column=col, value=f"={q}!{letter}{sum_row}")
+            cell = main.cell(row=row, column=col, value=f"={q}!{letter}{sum_row}")
+            _set_link(cell, target)
         main.cell(row=row, column=10, value=_qeyd_flag(s))
         row += 1
 
@@ -562,7 +624,13 @@ def build_workbook(match_result: dict[str, Any]) -> bytes:
         main[f"{col}{row}"] = f"=SUM({col}3:{col}{last_data})"
 
     _style_header_row(main, 1, 10)
+    _style_header_row(main, 2, 10)
     _style_money(main, 3, row, [4, 5, 6, 7, 8, 9])
+    _apply_text_alignment(main, 3, row, [2, 3, 10])
+    for r in range(3, row + 1):
+        main.cell(row=r, column=1).alignment = _MONEY_ALIGNMENT
+    _apply_borders(main, 1, row, 1, 10)
+    _auto_fit_columns(main, money_cols=(4, 5, 6, 7, 8, 9))
 
     _build_unmatched_sheet(wb, match_result["unmatched"])
 
