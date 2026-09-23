@@ -8,8 +8,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
   - "Uyğunsuz ödənişlər" sheet (GƏLƏN-də olmayan VÖEN-ə ödənişlər)
 
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
-BANK ÇIXARIŞI parseri V1-də YALNIZ Kapital Bank formatını dəstəkləyir;
-digər 13 format profili üçün gələcəkdə ayrıca iş açılmalıdır.
+BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital +
+PAŞA; digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -78,19 +78,34 @@ _DEPOZIT_FIELDS = {
 }
 _DEPOZIT_REQUIRED = ("voen", "mexaric")
 
-# BANK ÇIXARIŞI.xlsx (Kapital Bank): başlıq 13-cü sətirdə
-# (Tarix, Əks hesabın nömrəsi/adı/vöen-i, Məbləğ, AZN dəyəri, Təyinat).
-# Mənfi Məbləğ/AZN dəyəri = debit (tədarükçüyə Əsas ödəniş).
-_BANK_FIELDS = {
-    "tarix": "tarix",
-    "ekshesab": "eks_hesab",
-    "mebleg": "mebleg",
-    "azndeyeri": "azn_deyeri",
-    "teyinat": "teyinat",
-}
-_BANK_REQUIRED = ("mebleg", "azndeyeri", "teyinat")
+# BANK ÇIXARIŞI — çoxbanklı dinamik aşkarlanma (alias əsaslı).
+# Kapital: başlıq 13-cü sətirdə (Tarix, Əks hesabın nömrəsi/adı/vöen-i,
+#   Məbləğ, AZN dəyəri, Təyinat) — VÖEN qarışıq mətndə, debit = mənfi Məbləğ/AZN.
+# PAŞA: başlıq 13-cü sətirdə (Əməliyyat tarixi, İcra tarixi, Ödəyən/Benefisiar,
+#   Təyinat, İstinad No, VÖEN, Mədaxil, Məxaric, Balans) — VÖEN ayrıca sütunda,
+#   debit = müsbət Məxaric.
+_BANK_VOEN_ALIASES = (
+    "voen",
+    "terefinvoeni",
+    "eksterefvoen",
+    "ekshesab",
+    "hesablasmahesabivoeen",
+)
+_BANK_DEBIT_ALIASES = ("mexaric", "debet")
+_BANK_SIGNED_ALIASES = ("azndeyeri", "mebleg")
+_BANK_DATE_ALIASES = ("emeliyyattarixi", "tarix")
+_BANK_NAME_ALIASES = (
+    "odeyenbenefisiar",
+    "odeyen",
+    "benefisiar",
+    "qarsiterefinadi",
+    "adi",
+)
+_BANK_DESC_ALIASES = ("teyinat", "emeliyyatdetallari")
+_BANK_BALANCE_TOKENS = ("balans", "dovrun", "movcud")
 
 _VOEN_RE = re.compile(r"^\d{7,12}$")
+_IBAN_RE = re.compile(r"^[A-Za-z]{2}\d")
 
 
 def _cell_text(value: Any) -> str:
@@ -213,9 +228,88 @@ def _split_counter_account(text: str) -> tuple[str | None, str]:
     for part in parts:
         if _VOEN_RE.match(part) and voen is None:
             voen = part
-        elif not re.match(r"^[A-Za-z]{2}\d", part) and not ad:
+        elif not _IBAN_RE.match(part) and not ad:
             ad = part
     return voen, ad
+
+
+def _clean_counterparty_name(text: str) -> str:
+    """Ödəyən/Benefisiar mətnindən adı təmizləyir (PAŞA `_x000D_` artefaktı).
+
+    `/AZ03KABA..._x000D_CAUCASIAN SUPPLY..._x000D_/` → `CAUCASIAN SUPPLY...`.
+    IBAN-a bənzər və boş seqmentlər atlanır; ilk mənalı seqment ad sayılır.
+    """
+    parts = [p.strip() for p in re.split(r"_x000D_|/", text) if p.strip()]
+    for part in parts:
+        if not _IBAN_RE.match(part):
+            return part
+    return ""
+
+
+def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, str]:
+    """Ağıllı VÖEN + ad çıxarışı: xalis rəqəm → birbaşa; qarışıq mətn → split."""
+    voen_text = _cell_text(voen_cell)
+    if _VOEN_RE.match(voen_text):
+        return voen_text, _clean_counterparty_name(_cell_text(name_cell))
+    voen, ad = _split_counter_account(voen_text)
+    return voen, ad or _clean_counterparty_name(_cell_text(name_cell))
+
+
+def _first_col(
+    keys: list[str], key_to_col: dict[str, int], aliases: tuple[str, ...]
+) -> int | None:
+    """Alias siyahısındakı ilk uyğun (dəqiq və ya substring) sütun indeksini qaytarır."""
+    for alias in aliases:
+        exact = key_to_col.get(alias)
+        if exact is not None:
+            return exact
+        for key in keys:
+            if alias in key:
+                return key_to_col[key]
+    return None
+
+
+def _detect_bank_header(
+    rows: list[list[Any]],
+) -> tuple[int, dict[str, int]] | None:
+    """Bank çıxarışında başlıq sətrini dinamik tapır və sütunları xəritələyir.
+
+    Qaytarır: (header_idx, col_map) — col_map açarları: voen, date, debit,
+    signed, name, desc. Debit rejimi üçün `debit`, işarəli rejim üçün `signed`.
+    """
+    for idx, row in enumerate(rows):
+        key_to_col: dict[str, int] = {}
+        for col_idx, value in enumerate(row):
+            key = normalize_text(_cell_text(value))
+            if key:
+                key_to_col.setdefault(key, col_idx)
+        if not key_to_col:
+            continue
+        keys = list(key_to_col)
+
+        voen_col = _first_col(keys, key_to_col, _BANK_VOEN_ALIASES)
+        date_col = _first_col(keys, key_to_col, _BANK_DATE_ALIASES)
+        debit_col = _first_col(keys, key_to_col, _BANK_DEBIT_ALIASES)
+        signed_col = _first_col(keys, key_to_col, _BANK_SIGNED_ALIASES)
+        name_col = _first_col(keys, key_to_col, _BANK_NAME_ALIASES)
+        desc_col = _first_col(keys, key_to_col, _BANK_DESC_ALIASES)
+
+        if voen_col is None or date_col is None:
+            continue
+        if debit_col is None and signed_col is None:
+            continue
+
+        col_map: dict[str, int] = {"voen": voen_col, "date": date_col}
+        if debit_col is not None:
+            col_map["debit"] = debit_col
+        if signed_col is not None:
+            col_map["signed"] = signed_col
+        if name_col is not None:
+            col_map["name"] = name_col
+        if desc_col is not None:
+            col_map["desc"] = desc_col
+        return idx, col_map
+    return None
 
 
 def parse_gelen(raw: bytes) -> list[dict[str, Any]]:
@@ -280,41 +374,52 @@ def parse_depozit(raw: bytes) -> list[dict[str, Any]]:
 
 
 def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
-    """Kapital Bank çıxarışını oxuyur (V1 yalnız bu formatı dəstəkləyir).
+    """Çoxbanklı bank çıxarışı parseri (dinamik auto-detection).
 
-    Yalnız debit (mənfi) sətirlər qaytarılır — bunlar tədarükçüyə edilən
-    Əsas (principal) ödənişlərdir.
+    Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri) və PAŞA
+    (VÖEN ayrıca sütunda + müsbət Məxaric) formatlarını tanıyır. Balans/
+    summary sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar
+    tədarükçüyə edilən Əsas (principal) ödənişlərdir.
     """
     rows_list = _load_rows(raw)
     for rows in rows_list:
-        found = _find_header(rows, _BANK_REQUIRED, _BANK_FIELDS)
+        found = _detect_bank_header(rows)
         if found is None:
             continue
         header_idx, col_map = found
         result: list[dict[str, Any]] = []
         for row in rows[header_idx + 1 :]:
-            eks = _cell_text(_get(row, col_map, "eks_hesab"))
-            if not eks:
-                continue
-            azn = _to_float(_get(row, col_map, "azn_deyeri"))
-            mebleg = _to_float(_get(row, col_map, "mebleg"))
-            amount = azn if azn is not None else mebleg
-            if amount is None or amount >= 0:
-                continue  # yalnız debit (pul çıxır)
-            voen, ad = _split_counter_account(eks)
+            name_cell = _get(row, col_map, "name")
+            desc_cell = _get(row, col_map, "desc")
+            name_text = _cell_text(name_cell)
+            desc_text = _cell_text(desc_cell)
+            combined = normalize_text(name_text + " " + desc_text)
+            if any(tok in combined for tok in _BANK_BALANCE_TOKENS):
+                continue  # balans/summary sətirləri
+
+            if "debit" in col_map:
+                amount = _to_float(_get(row, col_map, "debit"))
+                if amount is None or amount <= 0:
+                    continue
+            else:
+                amount = _to_float(_get(row, col_map, "signed"))
+                if amount is None or amount >= 0:
+                    continue
+                amount = abs(amount)
+
+            voen, ad = _extract_voen_and_name(_get(row, col_map, "voen"), name_cell)
             result.append(
                 {
                     "voen": voen,
                     "ad": ad,
-                    "tarix": _format_date(_get(row, col_map, "tarix")),
-                    "mebleg": abs(amount),
+                    "tarix": _format_date(_get(row, col_map, "date")),
+                    "mebleg": amount,
                 }
             )
         return result
     raise ValueError(
-        "Bank çıxarışında başlıq sətri tapılmadı. "
-        "V1 yalnız Kapital Bank formatını dəstəkləyir "
-        "(Tarix + Məbləğ + AZN dəyəri + Təyinat)."
+        "Bank çıxarışında başlıq sətri tapılmadı "
+        "(VÖEN + Tarix + Məbləğ/Məxaric sütunları gözlənilir)."
     )
 
 

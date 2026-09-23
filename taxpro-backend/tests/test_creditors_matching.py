@@ -8,6 +8,8 @@ from openpyxl import Workbook, load_workbook
 from app.services.deterministic.creditors import (
     MAIN_SHEET_NAME,
     UNMATCHED_SHEET_NAME,
+    _clean_counterparty_name,
+    _extract_voen_and_name,
     _split_counter_account,
     build_workbook,
     generate_creditors_workbook,
@@ -98,6 +100,27 @@ def _bank_row(tarix, eks_hesab, mebleg, azn):
     return ["", tarix, "", eks_hesab, mebleg, "AZN", azn, "", ""]
 
 
+_PASHA_HEADER = [
+    "Əməliyyat tarixi", "İcra tarixi", "Ödəyən/Benefisiar", "Təyinat",
+    "İstinad No", "VÖEN", "Mədaxil", "Məxaric", "Balans",
+]
+
+
+def _pasha_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_PASHA_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _pasha_row(tarix, odeyen, voen, medaxil, mexaric):
+    return [tarix, tarix, odeyen, "Urgent payment", "", voen, medaxil, mexaric, ""]
+
+
 # ===== Parser testləri =====
 
 
@@ -173,8 +196,73 @@ def test_parse_bank_statement_missing_header_raises():
     wb = Workbook()
     ws = wb.active
     ws.append(["a", "b"])
-    with pytest.raises(ValueError, match="Kapital Bank"):
+    with pytest.raises(ValueError, match="başlıq sətri tapılmadı"):
         parse_bank_statement(_save(wb))
+
+
+def test_clean_counterparty_name():
+    assert (
+        _clean_counterparty_name(
+            "/AZ55KABA00000000000006526675_x000D_CAUCASIAN SUPPLY AND SERVICES MMC_x000D_/"
+        )
+        == "CAUCASIAN SUPPLY AND SERVICES MMC"
+    )
+    assert _clean_counterparty_name("Pasha Bank") == "Pasha Bank"
+    assert _clean_counterparty_name("") == ""
+
+
+def test_extract_voen_and_name():
+    # xalis rəqəm (ayrıca VÖEN sütunu) + ad ayrıca
+    assert _extract_voen_and_name("1601005511", "IMA ENERGY MMC") == (
+        "1601005511",
+        "IMA ENERGY MMC",
+    )
+    # qarışıq mətn (Kapital) — VÖEN + ad eyni hüceyrədə
+    assert _extract_voen_and_name(
+        "AZ37AIIB / IMA ENERGY MMC / 1601005511", ""
+    ) == ("1601005511", "IMA ENERGY MMC")
+    # boş VÖEN + PAŞA `_x000D_` adı
+    assert _extract_voen_and_name(
+        "", "/AZ03KABA_x000D_CENTRO MMC_x000D_/"
+    ) == (None, "CENTRO MMC")
+
+
+def test_parse_bank_statement_pasha():
+    raw = _pasha_xlsx(
+        [
+            _pasha_row("09.06.2026", "CAUCASIAN MMC", "2006687041", "", 5500),
+            _pasha_row("09.06.2026", "Pasha Bank", "", "", 1000),  # bank haqqı (boş VÖEN)
+            _pasha_row("10.06.2026", "IMA ENERGY MMC", "1601005511", 100000, ""),  # mədaxil
+            _pasha_row("11.06.2026", "CENTRO MMC", "1202255201", "", 2600),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 3  # mədaxil sətri atlanır
+    assert {r["voen"] for r in rows} == {"2006687041", None, "1202255201"}
+    by_voen = {r["voen"]: r for r in rows}
+    assert by_voen["2006687041"]["mebleg"] == 5500.0
+    assert by_voen["2006687041"]["ad"] == "CAUCASIAN MMC"
+    assert by_voen["1202255201"]["mebleg"] == 2600.0
+
+
+def test_parse_bank_statement_pasha_real():
+    raw = (FIXTURES / "PAŞA BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 67  # 67 debit sətri (balans/summary atlanır)
+
+    totals: dict[str, float] = {}
+    empty_voen = 0
+    for r in rows:
+        if r["voen"]:
+            totals[r["voen"]] = totals.get(r["voen"], 0.0) + r["mebleg"]
+        else:
+            empty_voen += 1
+
+    assert round(totals["2006687041"], 2) == 23371.72
+    assert round(totals["1202255201"], 2) == 14643.0
+    assert empty_voen == 24  # Pasha Bank daxili haqq sətirləri
+    # DÖVRÜN SONUNA BALANS sətri (349999.79) heç bir yerdə debit kimi düşməməlidir
+    assert all(r["mebleg"] != 349999.79 for r in rows)
 
 
 def test_split_counter_account():
