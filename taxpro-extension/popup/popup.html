@@ -21,6 +21,7 @@
       <button class="tab-btn" data-tab="autofill" type="button">Doldur</button>
       <button class="tab-btn" data-tab="profiles-import" type="button">Toplu Profil</button>
       <button class="tab-btn" data-tab="bank" type="button">Bank Çıxarışı</button>
+      <button class="tab-btn" data-tab="creditors" type="button">Hesabat</button>
     </nav>
 
     <main>
@@ -336,6 +337,32 @@
           </div>
         </div>
       </section>
+
+      <!-- Kreditorlar/Debitorlar -->
+      <section id="tab-creditors" class="tab-panel">
+        <div class="card">
+          <div class="card-label">Gələn (Kreditorlar)</div>
+          <div class="form-group">
+            <label class="file-label" for="credGelenFile">GƏLƏN.xlsx (satınalma qaimələri)</label>
+            <input type="file" id="credGelenFile" accept=".xlsx" />
+          </div>
+          <div class="form-group">
+            <label class="file-label" for="credDepozitFile">DEPOZİT.xlsx (ƏDV sub-uçot çıxarışı)</label>
+            <input type="file" id="credDepozitFile" accept=".xlsx" />
+          </div>
+          <div class="form-group">
+            <label class="file-label" for="credBankFile">BANK ÇIXARIŞI.xlsx (Kapital Bank)</label>
+            <input type="file" id="credBankFile" accept=".xlsx" />
+          </div>
+          <button id="credGenerateBtn" class="btn primary block" type="button">Generasiya et</button>
+          <div id="credResult" class="import-result" hidden></div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Gedən (Debitorlar)</div>
+          <div class="empty-state">Tezliklə…</div>
+        </div>
+      </section>
     </main>
 
     <!-- Profil modalı -->
@@ -370,6 +397,7 @@
 
     <script src="../lib/api.js"></script>
     <script src="tabs/import.js"></script>
+    <script src="tabs/creditors.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

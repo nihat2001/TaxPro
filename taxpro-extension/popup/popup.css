@@ -92,18 +92,20 @@ body {
 /* ===== Tabs ===== */
 .tabs {
   display: flex;
+  overflow-x: auto;
   border-bottom: 1px solid var(--border);
   background: var(--bg-soft);
 }
 
 .tab-btn {
-  flex: 1;
-  padding: 10px 0;
+  flex: 0 0 auto;
+  padding: 10px 12px;
   background: transparent;
   border: none;
   color: var(--text-muted);
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
   border-bottom: 2px solid transparent;
 }
 .tab-btn:hover { color: var(--text); }
