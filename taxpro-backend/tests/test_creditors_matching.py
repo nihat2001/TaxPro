@@ -10,6 +10,7 @@ from app.services.deterministic.creditors import (
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
     _extract_voen_and_name,
+    _extract_voen_from_text,
     _split_counter_account,
     build_workbook,
     generate_creditors_workbook,
@@ -263,6 +264,43 @@ def test_parse_bank_statement_pasha_real():
     assert empty_voen == 24  # Pasha Bank daxili haqq sətirləri
     # DÖVRÜN SONUNA BALANS sətri (349999.79) heç bir yerdə debit kimi düşməməlidir
     assert all(r["mebleg"] != 349999.79 for r in rows)
+
+
+def test_extract_voen_from_text():
+    assert _extract_voen_from_text("Ödəniş VOEN: 1403610931 bitdi") == "1403610931"
+    assert _extract_voen_from_text("VÖEN 9900001231") == "9900001231"
+    assert _extract_voen_from_text("adi mətn 1403610931 yox") == "1403610931"
+    # IBAN içindəki rəqəm ardıcıllığı VÖEN deyil
+    assert _extract_voen_from_text("IBAN AZ55KABA00000000000006526675") is None
+    assert _extract_voen_from_text("") is None
+
+
+def test_parse_bank_statement_yapikredi():
+    raw = (FIXTURES / "YAPIKREDİ BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 3  # yalnız Debit (mənfi) sətirləri; Kredit/mədaxil atlanır
+    amounts = sorted(r["mebleg"] for r in rows)
+    assert amounts == [4000.0, 8532.0, 31000.0]
+    assert all(r["voen"] is None for r in rows)  # VÖEN yoxdur → uyğunsuz
+    ads = {r["ad"] for r in rows}
+    assert ads == {"HAFİZ ASLANLI", "BUBBLE GUM BAKU MMC"}
+
+
+def test_parse_bank_statement_described_format():
+    # Təsvir olunan format: Tarix / Əməliyyatın adı / Təyinat / Məbləğ (AZN)
+    header = ["Tarix", "Əməliyyatın adı", "", "Təyinat", "", "", "", "Məbləğ (AZN)"]
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["meta"])
+    ws.append(header)
+    ws.append(["01.01.2026", "Ödəniş", "", "Muqavile VOEN: 1403610931", "", "", "", -1000.50])
+    ws.append(["02.01.2026", "Daxilolma", "", "Muqavile VÖEN 9900001231", "", "", "", 500.00])
+    ws.append(["03.01.2026", "Yekun", "", "CƏM", "", "", "", -9999.00])
+    rows = parse_bank_statement(_save(wb))
+    assert len(rows) == 1  # mədaxil (müsbət) və Yekun/CƏM sətri atlanır
+    assert rows[0]["voen"] == "1403610931"
+    assert rows[0]["mebleg"] == 1000.5
+    assert rows[0]["tarix"] == "01.01.2026"
 
 
 def test_split_counter_account():

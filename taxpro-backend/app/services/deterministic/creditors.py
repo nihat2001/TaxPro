@@ -84,6 +84,10 @@ _DEPOZIT_REQUIRED = ("voen", "mexaric")
 # PAŞA: başlıq 13-cü sətirdə (Əməliyyat tarixi, İcra tarixi, Ödəyən/Benefisiar,
 #   Təyinat, İstinad No, VÖEN, Mədaxil, Məxaric, Balans) — VÖEN ayrıca sütunda,
 #   debit = müsbət Məxaric.
+# Yapı Kredi ("standard"): başlıq 15-ci sətirdə (Əməliyyat Tarixi,
+#   Həyata Keçmə Tarixi, Göndərən/Alıcı adı, Göndərən/Alıcı Hesabı,
+#   Əməliyyat Detalları, Kredit, Debit, Balans) — VÖEN yoxdur, debit = mənfi
+#   "Debit". VÖEN təyinat mətnindən regex-lə çıxarıla bilər (label forması).
 _BANK_VOEN_ALIASES = (
     "voen",
     "terefinvoeni",
@@ -91,8 +95,8 @@ _BANK_VOEN_ALIASES = (
     "ekshesab",
     "hesablasmahesabivoeen",
 )
-_BANK_DEBIT_ALIASES = ("mexaric", "debet")
-_BANK_SIGNED_ALIASES = ("azndeyeri", "mebleg")
+_BANK_DEBIT_ALIASES = ("mexaric",)
+_BANK_SIGNED_ALIASES = ("debit", "debet", "azndeyeri", "mebleg")
 _BANK_DATE_ALIASES = ("emeliyyattarixi", "tarix")
 _BANK_NAME_ALIASES = (
     "odeyenbenefisiar",
@@ -101,11 +105,32 @@ _BANK_NAME_ALIASES = (
     "qarsiterefinadi",
     "adi",
 )
-_BANK_DESC_ALIASES = ("teyinat", "emeliyyatdetallari")
-_BANK_BALANCE_TOKENS = ("balans", "dovrun", "movcud")
+_BANK_DESC_ALIASES = (
+    "teyinat",
+    "emeliyyatdetallari",
+    "emeliyyatinadi",
+    "emeliyyatinteyinati",
+)
+_BANK_BALANCE_TOKENS = ("balans", "dovrun", "movcud", "qaliq", "yekun", "cem")
 
 _VOEN_RE = re.compile(r"^\d{7,12}$")
 _IBAN_RE = re.compile(r"^[A-Za-z]{2}\d")
+_VOEN_LABEL_RE = re.compile(r"(?:voen|vöen)\s*[:#]?\s*(\d{7,12})", re.IGNORECASE)
+_BARE_VOEN_RE = re.compile(r"(?<!\d)(\d{10})(?!\d)")
+
+
+def _is_summary_row(combined: str) -> bool:
+    """Balans/yekun/cəm sətirini tanıyır (yalan-pozitivdən qorunaraq).
+
+    `cem` token-i "cəmiyyət" (şirkət) sözünün daxilindədirsə summary sayılmır.
+    """
+    for tok in _BANK_BALANCE_TOKENS:
+        if tok not in combined:
+            continue
+        if tok == "cem" and "cemiyyet" in combined:
+            continue
+        return True
+    return False
 
 
 def _cell_text(value: Any) -> str:
@@ -255,6 +280,23 @@ def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, 
     return voen, ad or _clean_counterparty_name(_cell_text(name_cell))
 
 
+def _extract_voen_from_text(text: str) -> str | None:
+    """Təyinat/əməliyyat mətnindən VÖEN-i regex-lə çıxarır.
+
+    Əvvəlcə label forması (`VOEN: 1403610931`, `VÖEN 9900001231`), sonra boş
+    dayanan 10 rəqəmli pattern. IBAN substring-i (bitişik rəqəmlər) tutulmur.
+    """
+    if not text:
+        return None
+    match = _VOEN_LABEL_RE.search(text)
+    if match:
+        return match.group(1)
+    match = _BARE_VOEN_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
 def _first_col(
     keys: list[str], key_to_col: dict[str, int], aliases: tuple[str, ...]
 ) -> int | None:
@@ -274,8 +316,9 @@ def _detect_bank_header(
 ) -> tuple[int, dict[str, int]] | None:
     """Bank çıxarışında başlıq sətrini dinamik tapır və sütunları xəritələyir.
 
-    Qaytarır: (header_idx, col_map) — col_map açarları: voen, date, debit,
-    signed, name, desc. Debit rejimi üçün `debit`, işarəli rejim üçün `signed`.
+    Qaytarır: (header_idx, col_map) — col_map açarları: date, voen (məcburi
+    deyil), debit, signed, name, desc. Debit rejimi üçün `debit` (müsbət),
+    işarəli rejim üçün `signed` (mənfi).
     """
     for idx, row in enumerate(rows):
         key_to_col: dict[str, int] = {}
@@ -294,12 +337,14 @@ def _detect_bank_header(
         name_col = _first_col(keys, key_to_col, _BANK_NAME_ALIASES)
         desc_col = _first_col(keys, key_to_col, _BANK_DESC_ALIASES)
 
-        if voen_col is None or date_col is None:
+        if date_col is None:
             continue
         if debit_col is None and signed_col is None:
             continue
 
-        col_map: dict[str, int] = {"voen": voen_col, "date": date_col}
+        col_map: dict[str, int] = {"date": date_col}
+        if voen_col is not None:
+            col_map["voen"] = voen_col
         if debit_col is not None:
             col_map["debit"] = debit_col
         if signed_col is not None:
@@ -376,9 +421,10 @@ def parse_depozit(raw: bytes) -> list[dict[str, Any]]:
 def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     """Çoxbanklı bank çıxarışı parseri (dinamik auto-detection).
 
-    Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri) və PAŞA
-    (VÖEN ayrıca sütunda + müsbət Məxaric) formatlarını tanıyır. Balans/
-    summary sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar
+    Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri), PAŞA
+    (VÖEN ayrıca sütunda + müsbət Məxaric) və Yapı Kredi "standard"
+    (VÖEN yoxdur + mənfi Debit) formatlarını tanıyır. Balans/summary
+    sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar
     tədarükçüyə edilən Əsas (principal) ödənişlərdir.
     """
     rows_list = _load_rows(raw)
@@ -394,7 +440,7 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             name_text = _cell_text(name_cell)
             desc_text = _cell_text(desc_cell)
             combined = normalize_text(name_text + " " + desc_text)
-            if any(tok in combined for tok in _BANK_BALANCE_TOKENS):
+            if _is_summary_row(combined):
                 continue  # balans/summary sətirləri
 
             if "debit" in col_map:
@@ -408,6 +454,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 amount = abs(amount)
 
             voen, ad = _extract_voen_and_name(_get(row, col_map, "voen"), name_cell)
+            if voen is None:
+                voen = _extract_voen_from_text(desc_text)
             result.append(
                 {
                     "voen": voen,
