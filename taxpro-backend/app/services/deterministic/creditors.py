@@ -10,8 +10,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
 PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank,
-Bank Respublika, Yelo Bank, Bank of Baku; digər banklar alias siyahıları
-ilə genişləndirilə bilər).
+Bank Respublika, Yelo Bank, Bank of Baku, VTB Bank; digər banklar alias
+siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -356,6 +356,31 @@ def _extract_voen_from_text(text: str) -> str | None:
     return None
 
 
+_SELF_VOEN_RE = re.compile(r"(?<!\d)(\d{7,12})(?!\d)")
+
+
+def _detect_self_voens(preamble_rows: list[list[Any]]) -> set[str]:
+    """VTB kimi fayllarda öz (kreditor olmayan) VÖEN-ləri preamble-dən çıxarır.
+
+    Preamble-də `bankvtb` aşkarlanarsa, `voen` sözlü preamble sətirlərindəki
+    7-12 rəqəmli tokenlər toplanır (bankın öz VÖEN-i + hesab sahibinin öz
+    VÖEN-i). VTB olmadıqda boş set qaytarılır — digər banklara təsir yoxdur.
+    """
+    normalized_rows = [
+        " ".join(normalize_text(_cell_text(cell)) for cell in row)
+        for row in preamble_rows
+    ]
+    if not any("bankvtb" in text for text in normalized_rows):
+        return set()
+    self_voens: set[str] = set()
+    for row, row_norm in zip(preamble_rows, normalized_rows):
+        if "voen" not in row_norm:
+            continue
+        for cell in row:
+            self_voens.update(_SELF_VOEN_RE.findall(_cell_text(cell)))
+    return self_voens
+
+
 def _first_col(
     keys: list[str], key_to_col: dict[str, int], aliases: tuple[str, ...]
 ) -> int | None:
@@ -495,7 +520,9 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     müsbət `Debet`, `Kredit` atlanır), Yelo Bank (`Ödəyən/alan`
     kompozit sütununda `AD<boşluq>VÖEN` + işarəsiz müsbət `Məxaric`) və
     Bank of Baku (`Credit Account` sütununda `AD / VÖEN / IBAN` +
-    işarəsiz müsbət `Expenditure`) formatlarını tanıyır. Balans/summary sətirləri
+    işarəsiz müsbət `Expenditure`) və VTB Bank (ayrıca `VÖEN` sütunu +
+    işarəsiz müsbət `Debet`; bankın/müştərinin öz VÖEN-li sətirləri
+    preamble-dən aşkarlanıb atılır) formatlarını tanıyır. Balans/summary sətirləri
     atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
@@ -509,6 +536,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             continue
         header_idx, col_map = found
         has_voen_col = "voen" in col_map
+        # VTB kimi fayllarda bank/müştəri öz VÖEN-lərini kreditor sayma
+        self_voens = _detect_self_voens(rows[:header_idx])
         result: list[dict[str, Any]] = []
         for row in rows[header_idx + 1 :]:
             name_cell = _get(row, col_map, "name")
@@ -548,6 +577,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 continue
             if voen is None:
                 voen = _extract_voen_from_text(desc_text)
+            if voen and voen in self_voens:
+                continue  # bank/müştəri öz VÖEN-i → kreditor deyil (VTB)
             if not ad:
                 ad = re.sub(r"_x000D_", " ", desc_text).strip()  # təyinatdan ad (Turan)
             result.append(

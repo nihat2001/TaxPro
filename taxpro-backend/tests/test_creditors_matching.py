@@ -12,6 +12,7 @@ from app.services.deterministic.creditors import (
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
     _detect_bank_header,
+    _detect_self_voens,
     _extract_voen_and_name,
     _extract_voen_from_text,
     _is_summary_row,
@@ -311,6 +312,34 @@ def _bankofbaku_xlsx(rows, meta_rows=2) -> bytes:
 
 def _bankofbaku_row(tarix, debet_acc, credit_acc, teyinat, profit, expenditure):
     return ["", tarix, debet_acc, credit_acc, teyinat, profit, expenditure, "", 0]
+
+
+_VTB_HEADER = [
+    "Tarix", "Qarşı hesab", "Adı", "VÖEN", "Debet", "Kredit", "Qalıq", "Təyinat",
+]
+
+_VTB_PREAMBLE = [
+    ["BANK VTB (AZƏRBAYCAN) ASC"],
+    ["VÖEN: 1400117231"],
+    ["Müştərinin adı", '"GLOBAL EXPORTS" MMC'],
+    ["Hesab", "AZ19VTBA04006004375789AZN001"],
+    ["VÖEN", "1302070301"],
+]
+
+
+def _vtb_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for r in _VTB_PREAMBLE:
+        ws.append(r)
+    ws.append(_VTB_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _vtb_row(tarix, hesab, ad, voen, debet=None, kredit=None, teyinat=""):
+    return [tarix, hesab, ad, voen, debet, kredit, None, teyinat]
 
 
 # ===== Parser testləri =====
@@ -978,6 +1007,87 @@ def test_parse_bank_statement_bankofbaku_synthetic():
     _, cm = found
     assert cm.get("debit") == 5  # Debet sütunu
     assert cm.get("voen") == 3   # Qarşı tərəfin hesab nömrəsi
+
+
+def test_parse_bank_statement_vtb():
+    raw = (FIXTURES / "VTB BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 94 debit; bankın öz (1400117231, 52 sətir) və müştərinin öz
+    # (1302070301, 10 sətir) VÖEN-li sətirləri dynamic skip → 32 sətir.
+    assert len(rows) == 32
+    assert round(sum(r["mebleg"] for r in rows), 2) == 601489.58
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    assert Counter(r["voen"] for r in rows) == {
+        "2905379861": 18,
+        "2005868601": 7,
+        "1701911851": 2,
+        "1300115511": 2,
+        "1307752521": 2,
+        "6800018151": 1,
+    }
+    # Öz VÖEN-lər daxil edilməməlidir
+    assert all(r["voen"] not in {"1400117231", "1302070301"} for r in rows)
+
+    # Sütun xəritəsi
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    _, col_map = found
+    assert col_map["date"] == 0
+    assert col_map["debit"] == 4
+    assert col_map["name"] == 2
+    assert col_map["voen"] == 3
+    assert col_map["desc"] == 7
+
+    # Dinamik öz-VÖEN aşkarlanması məhz VTB preamble-ını tanıyır
+    preamble = _load_rows(raw)[0][: found[0]]
+    assert _detect_self_voens(preamble) == {"1400117231", "1302070301"}
+
+
+def test_parse_bank_statement_vtb_synthetic():
+    raw = _vtb_xlsx(
+        [
+            # xarici kreditor → daxil
+            _vtb_row(
+                "16.12.2025 12:55", "AZ13AIIB400500C9443987031118",
+                "SH Logistik MMC", "2005868601", debet=1650, teyinat="odəniş",
+            ),
+            # bankın öz komissiyası → skip
+            _vtb_row(
+                "16.12.2025 12:55", "670130040325AZN",
+                "BANK VTB (AZƏRBAYCAN) ASC", "1400117231",
+                debet=1.65, teyinat="commission",
+            ),
+            # müştərinin öz daxili köçürməsi → skip
+            _vtb_row(
+                "18.12.2025 10:00", "AZ00AZRT...", "GLOBAL EXPORTS MMC",
+                "1302070301", debet=12000, teyinat="SHIRKET DAXILI",
+            ),
+            # kredit (mədaxil) → skip
+            _vtb_row(
+                "19.12.2025 10:00", "AZ00", "MÜŞTƏRİ MMC", "1701911851",
+                kredit=5000, teyinat="mədaxil",
+            ),
+            # mənfi debet → skip
+            _vtb_row(
+                "20.12.2025 10:00", "AZ00", "ADI MMC", "1300115511",
+                debet=-5, teyinat="geri",
+            ),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 1
+    assert rows[0]["voen"] == "2005868601"
+    assert rows[0]["ad"] == "SH Logistik MMC"
+    assert rows[0]["mebleg"] == 1650
+
+    # VTB olmayan preamble → öz-VÖEN aşkarlanmır
+    assert _detect_self_voens([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) == set()
 
 
 def test_parse_bank_statement_described_format():
