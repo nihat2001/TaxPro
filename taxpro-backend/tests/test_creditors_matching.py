@@ -245,6 +245,27 @@ def _accessbank_row(tarix, tid, mexaric, ad, taxid, teyinat, medaxil=""):
     return ["", tarix, tarix, tid, medaxil, mexaric, "", ad, taxid, teyinat]
 
 
+_BANKRES_HEADER = [
+    "", "Tarix", "Sənədin N", "Göndərənin adı/Alanın adı", "VÖEN",
+    "Hesab", "Ödənişin təyinatı", "Kredit", "Debet", "Qalıq",
+]
+
+
+def _bankrespublika_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_BANKRES_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _bankrespublika_row(tarix, ad, voen, kredit, debet, teyinat=""):
+    return ["", tarix, "DOC1", ad, voen, "AZ00BRES...", teyinat, kredit, debet, ""]
+
+
 # ===== Parser testləri =====
 
 
@@ -648,6 +669,85 @@ def test_parse_bank_statement_accessbank_synthetic():
     _, cm = found
     assert cm.get("name") == 2  # Ödəyən/Benefisiar
     assert cm.get("voen") == 5  # VÖEN
+
+
+def test_parse_bank_statement_bankrespublika():
+    raw = (FIXTURES / "BANK RESPUBLİKA ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 53 sətirdən 43 debet (I>0, "Debet dövriyyəsi"); 10 kredit atlanır.
+    assert len(rows) == 43
+    assert round(sum(r["mebleg"] for r in rows), 2) == 96238.80
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    first = rows[0]
+    assert first["voen"] == "1301650741"
+    assert first["ad"] == "LUBRISTAR LLC"
+    assert first["mebleg"] == 2102.0
+    assert first["tarix"] == "06.01.2025"
+
+    # öz VÖEN (Bank Respublika) debit sətirləri saxlanılır (Unibank məntiqi)
+    assert sum(1 for r in rows if r["voen"] == "9900001901") == 5
+
+    # Sütun xəritəsi: date=B(1), voen=E(4), debit=I(8), name=D(3)
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    _, col_map = found
+    assert col_map["date"] == 1
+    assert col_map["voen"] == 4
+    assert col_map["debit"] == 8
+    assert col_map["name"] == 3
+
+
+def test_parse_bank_statement_bankrespublika_synthetic():
+    raw = _bankrespublika_xlsx(
+        [
+            # debet → daxil
+            _bankrespublika_row(
+                "06.01.2025", "LUBRISTAR LLC", "1301650741", 0, 2102, "odəniş"
+            ),
+            # kredit (Debet=0) → skip
+            _bankrespublika_row(
+                "07.01.2025", "AGM MMC", "7201226221", 2000, 0, "mədaxil"
+            ),
+            # sıfır/boş → skip
+            _bankrespublika_row(
+                "08.01.2025", "BOŞ MMC", "1234567890", 0, 0, ""
+            ),
+            # boş VÖEN debet → skip
+            _bankrespublika_row(
+                "09.01.2025", "ADSIZ", "", 0, 550, "odəniş"
+            ),
+            # debet (string məbləğ) → daxil
+            _bankrespublika_row(
+                "10.01.2025", "F AYDINOGLU MMC", "2005568521", 0, "1726", "odəniş"
+            ),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    by_voen = {r["voen"]: r for r in rows}
+    assert set(by_voen) == {"1301650741", "2005568521"}
+    assert by_voen["1301650741"]["ad"] == "LUBRISTAR LLC"
+    assert by_voen["1301650741"]["mebleg"] == 2102.0
+    assert by_voen["2005568521"]["mebleg"] == 1726.0
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    # Alias əlavələri Access Bank başlığının mappingini pozmur
+    found = _detect_bank_header(
+        [
+            _ACCESS_HEADER,
+            _accessbank_row("01.07.2025", "FT1", 1.0, "X MMC", "1605270611", "t"),
+        ]
+    )
+    assert found is not None
+    _, cm = found
+    assert cm.get("name") == 7  # H
+    assert cm.get("voen") == 8  # I (Tax ID)
 
 
 def test_parse_bank_statement_described_format():

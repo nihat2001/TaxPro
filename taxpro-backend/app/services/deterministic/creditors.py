@@ -9,8 +9,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
-PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank;
-digər banklar alias siyahıları ilə genişləndirilə bilər).
+PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank,
+Bank Respublika; digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -116,6 +116,8 @@ _BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
 _BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix")
 _BANK_NAME_ALIASES = (
+    "gondereninadialaninadi",
+    "gondereninadi",
     "senderbeneficiaryname",
     "terefinadi",
     "odeyenbenefisiar",
@@ -471,7 +473,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     Məbləğ/AZN dəyəri), Rabitəbank (VÖEN ayrıca hesab sütununda
     `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun) və
     Access Bank (ayrıca `Tax ID` sütunu + işarəsiz müsbət Məxaric, ad
-    sütunu çoxsətirli) formatlarını tanıyır. Balans/summary sətirləri
+    sütunu çoxsətirli) və Bank Respublika (ayrıca `VÖEN` sütunu + işarəsiz
+    müsbət `Debet`, `Kredit` atlanır) formatlarını tanıyır. Balans/summary sətirləri
     atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
