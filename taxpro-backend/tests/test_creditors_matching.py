@@ -148,6 +148,34 @@ def _abb_row(tarix, debit, kredit, voen):
     return [tarix, "ref", "eks", debit, kredit, "teyinat", voen]
 
 
+_UNIBANK_HEADER = [
+    "VÖEN\n(TIN)",
+    "Əməliyyat tarixi\n(Transaction date)",
+    "Mədaxil\n(Paid In)",
+    "Məxaric\n(Paid Out)",
+    "Balans\n(Balance)",
+    "Əməliyyat Tərəfdaşı\n(Counterparty Name)",
+    "Təyinat\n(Description)",
+    "POS Transaction ID",
+    "Transaction ID",
+]
+
+
+def _unibank_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_UNIBANK_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _unibank_row(voen, tarix, medaxil, mexaric, ad, teyinat):
+    return [voen, tarix, medaxil, mexaric, "", ad, teyinat, "", ""]
+
+
 # ===== Parser testləri =====
 
 
@@ -312,6 +340,39 @@ def test_parse_bank_statement_abb_synthetic():
     assert len(rows) == 1
     assert rows[0]["voen"] == "1506275021"
     assert rows[0]["mebleg"] == 100.0
+
+
+def test_parse_bank_statement_unibank():
+    raw = (FIXTURES / "UNİBANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 74  # 95 debit - 20 boş-VÖEN - 1 Yekun(summary)
+    assert all(r["voen"] for r in rows)  # boş-VÖEN sətirləri skip edildi
+    assert all(r["mebleg"] != 965154.48 for r in rows)  # Yekun (Summary) skip
+
+    voens = {r["voen"] for r in rows}
+    assert "1102475261" in voens  # şirkətin öz VÖEN-i (Uyğunsuza düşəcək, skip deyil)
+    assert "1300017201" in voens  # filial kodu
+
+    dsmf = next(r for r in rows if r["voen"] == "1300115511")
+    assert dsmf["ad"] == "Hüquqi şəxslər üzrə Adi Merkezi Sosial sig.FUI"
+    assert dsmf["mebleg"] == 4500.0
+
+
+def test_parse_bank_statement_unibank_synthetic():
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("1102475261", "05.01.2026", "32700", "-", "ÖZ ŞİRKƏT", "kassa"),  # Məxaric "-" → skip
+            _unibank_row("1102475261", "06.01.2026", "-", "5000", "ÖZ ŞİRKƏT", "hesablararasi"),  # öz VÖEN debit → dolu
+            _unibank_row("3103655452", "07.01.2026", "-", "4500", "SUPPLIER X", "ödəniş"),  # string debit
+            _unibank_row("", "08.01.2026", "-", "100", "", "daxili"),  # boş VÖEN → skip
+            _unibank_row("Yekun (Summary)", "", "-", "965154.48", "", ""),  # summary → skip
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    by_voen = {r["voen"]: r for r in rows}
+    assert by_voen["3103655452"]["mebleg"] == 4500.0
+    assert by_voen["1102475261"]["mebleg"] == 5000.0
 
 
 def test_extract_voen_from_text():

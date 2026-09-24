@@ -93,6 +93,11 @@ _DEPOZIT_REQUIRED = ("voen", "mexaric")
 #   Kredit məbləğ / Credit amount, Ödənişin təyinatı / Description,
 #   Qarşı tərəfin VÖEN-i / Counterparty TAX ID) — VÖEN ayrıca sütunda,
 #   debit = işarəsiz müsbət "Debit məbləğ".
+# Unibank: başlıq 13-cü sətirdə (VÖEN\n(TIN), Əməliyyat tarixi\n(Transaction
+#   date), Mədaxil\n(Paid In), Məxaric\n(Paid Out), Balans\n(Balance),
+#   Əməliyyat Tərəfdaşı\n(Counterparty Name), Təyinat\n(Description), ...) —
+#   VÖEN ayrıca sütunda, debit = işarəsiz müsbət "Məxaric"; məbləğlər string,
+#   boş xana "-" işarəsidir; "Yekun (Summary)" sətri VÖEN sütunundadır.
 _BANK_VOEN_ALIASES = (
     "voen",
     "terefinvoeni",
@@ -108,6 +113,8 @@ _BANK_NAME_ALIASES = (
     "odeyen",
     "benefisiar",
     "qarsiterefinadi",
+    "tarafdasi",
+    "counterpartyname",
     "adi",
 )
 _BANK_DESC_ALIASES = (
@@ -184,6 +191,8 @@ def _to_float(value: Any) -> float | None:
     )
     if not text:
         return None
+    if text == "-":
+        return 0.0  # boş xana markeri (Unibank) → 0
     try:
         if "," in text:
             text = text.replace(".", "").replace(",", ".")
@@ -428,11 +437,12 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
 
     Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri), PAŞA
     (VÖEN ayrıca sütunda + müsbət Məxaric), Yapı Kredi "standard"
-    (VÖEN yoxdur + mənfi Debit) və ABB (VÖEN ayrıca sütunda + işarəsiz
-    müsbət Debit məbləğ) formatlarını tanıyır. Balans/summary sətirləri
-    atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə edilən
-    Əsas (principal) ödənişlərdir. VÖEN sütunu mövcud olub dəyəri boş olan
-    debit sətirləri (bank haqqı/kart sifarişi — daxili əməliyyat) atlanır.
+    (VÖEN yoxdur + mənfi Debit), ABB (VÖEN ayrıca sütunda + işarəsiz
+    müsbət Debit məbləğ) və Unibank (VÖEN ayrıca sütunda + müsbət Məxaric,
+    məbləğlər string, boş xana "-") formatlarını tanıyır. Balans/summary
+    sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə
+    edilən Əsas (principal) ödənişlərdir. VÖEN sütunu mövcud olub dəyəri boş
+    olan debit sətirləri (bank haqqı/kart sifarişi — daxili əməliyyat) atlanır.
     """
     rows_list = _load_rows(raw)
     for rows in rows_list:
@@ -445,11 +455,13 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
         for row in rows[header_idx + 1 :]:
             name_cell = _get(row, col_map, "name")
             desc_cell = _get(row, col_map, "desc")
+            voen_cell = _get(row, col_map, "voen")
             name_text = _cell_text(name_cell)
             desc_text = _cell_text(desc_cell)
-            combined = normalize_text(name_text + " " + desc_text)
+            voen_raw = _cell_text(voen_cell)
+            combined = normalize_text(name_text + " " + desc_text + " " + voen_raw)
             if _is_summary_row(combined):
-                continue  # balans/summary sətirləri
+                continue  # balans/yekun/cəm summary sətirləri
 
             if "debit" in col_map:
                 amount = _to_float(_get(row, col_map, "debit"))
@@ -461,9 +473,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                     continue
                 amount = abs(amount)
 
-            voen_cell = _get(row, col_map, "voen")
             voen, ad = _extract_voen_and_name(voen_cell, name_cell)
-            if voen is None and has_voen_col and _cell_text(voen_cell) == "":
+            if voen is None and has_voen_col and voen_raw == "":
                 continue  # VÖEN sütunu mövcud, dəyər boş → daxili əməliyyat
             if voen is None:
                 voen = _extract_voen_from_text(desc_text)
