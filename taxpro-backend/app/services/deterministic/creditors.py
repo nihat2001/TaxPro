@@ -9,8 +9,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
-PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank; digər banklar
-alias siyahıları ilə genişləndirilə bilər).
+PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank;
+digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -110,11 +110,13 @@ _BANK_VOEN_ALIASES = (
     "ekshesab",
     "hesablasmahesabivoeen",
     "qarsiterefinhesabnomresi",
+    "taxid",
 )
 _BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
 _BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix")
 _BANK_NAME_ALIASES = (
+    "senderbeneficiaryname",
     "terefinadi",
     "odeyenbenefisiar",
     "odeyen",
@@ -288,12 +290,13 @@ def _split_counter_account(text: str) -> tuple[str | None, str]:
 
 
 def _clean_counterparty_name(text: str) -> str:
-    """Ödəyən/Benefisiar mətnindən adı təmizləyir (PAŞA `_x000D_` artefaktı).
+    """Ödəyən/Benefisiar mətnindən adı təmizləyir (PAŞA `_x000D_`, Access `\\n`).
 
-    `/AZ03KABA..._x000D_CAUCASIAN SUPPLY..._x000D_/` → `CAUCASIAN SUPPLY...`.
-    IBAN-a bənzər və boş seqmentlər atlanır; ilk mənalı seqment ad sayılır.
+    `/AZ03KABA..._x000D_CAUCASIAN SUPPLY..._x000D_/` → `CAUCASIAN SUPPLY...`;
+    Access `İFARƏ...\\nVÖEN\\nHesab` → `İFARƏ...`. IBAN-a bənzər və boş
+    seqmentlər atlanır; ilk mənalı seqment ad sayılır.
     """
-    parts = [p.strip() for p in re.split(r"_x000D_|/", text) if p.strip()]
+    parts = [p.strip() for p in re.split(r"_x000D_|\r\n|\r|\n|/", text) if p.strip()]
     for part in parts:
         if not _IBAN_RE.match(part):
             return part
@@ -465,9 +468,11 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     (VÖEN yoxdur + mənfi Debit), ABB (VÖEN ayrıca sütunda + işarəsiz
     müsbət Debit məbləğ), Unibank (VÖEN ayrıca sütunda + müsbət Məxaric,
     məbləğlər string, boş xana "-"), TuranBank (VÖEN yoxdur + mənfi
-    Məbləğ/AZN dəyəri) və Rabitəbank (VÖEN ayrıca hesab sütununda
-    `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun)
-    formatlarını tanıyır. Balans/summary sətirləri atlanır. Yalnız debit
+    Məbləğ/AZN dəyəri), Rabitəbank (VÖEN ayrıca hesab sütununda
+    `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun) və
+    Access Bank (ayrıca `Tax ID` sütunu + işarəsiz müsbət Məxaric, ad
+    sütunu çoxsətirli) formatlarını tanıyır. Balans/summary sətirləri
+    atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
     əməliyyat: bank haqqı/komissiya), həmçinin tarixi boş olan footer/cəm

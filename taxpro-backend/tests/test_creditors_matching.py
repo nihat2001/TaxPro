@@ -10,8 +10,10 @@ from app.services.deterministic.creditors import (
     MAIN_SHEET_NAME,
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
+    _detect_bank_header,
     _extract_voen_and_name,
     _extract_voen_from_text,
+    _load_rows,
     _split_counter_account,
     build_workbook,
     generate_creditors_workbook,
@@ -218,6 +220,29 @@ def _rabitabank_xlsx(rows, meta_rows=2) -> bytes:
 
 def _rabitabank_row(tarix, hesab, ad, debet, kredit, tesvir=""):
     return [tarix, tarix, "RABİTƏBANK ASC", hesab, ad, debet, kredit, "", tesvir]
+
+
+_ACCESS_HEADER = [
+    "", "Hesablaşma tarixi\nValue Date", "Əməliyyat tarixi\nPosting Date",
+    "Əməliyyatın №-si\nTransaction ID", "Mədaxil\nIn", "Məxaric\nOut",
+    "Balans\nBalance", "Göndərənin/Alanın Adı\nSender / Beneficiary Name",
+    "Göndərən/Alanin Tax ID\nSender/Beneficiary TAX ID", "Təyinat\nDescription",
+]
+
+
+def _accessbank_xlsx(rows, meta_rows=1) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append([""])
+    ws.append(_ACCESS_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _accessbank_row(tarix, tid, mexaric, ad, taxid, teyinat, medaxil=""):
+    return ["", tarix, tarix, tid, medaxil, mexaric, "", ad, taxid, teyinat]
 
 
 # ===== Parser testləri =====
@@ -546,6 +571,83 @@ def test_parse_bank_statement_rabitabank_synthetic():
     assert all("komissiya" not in r["ad"].lower() for r in rows)
     by_voen = {r["voen"]: r for r in rows}
     assert by_voen["1405631661"]["ad"] == "Digital Classifieds MMC"
+
+
+def test_parse_bank_statement_accessbank():
+    raw = (FIXTURES / "ACCES BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 706 sətirdən 429 debit; 275 boş-Tax ID skip, 277 kredit daxil edilmir
+    # → 154 debit sətri.
+    assert len(rows) == 154
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert round(sum(r["mebleg"] for r in rows), 2) == 31939.75
+    assert all(r["mebleg"] > 0 for r in rows)
+    assert rows[0]["tarix"] == "07.04.2025"
+
+    # Tarix: C ("Əməliyyat tarixi / Posting Date"), B ("Hesablaşma") deyil
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    _, col_map = found
+    assert col_map["date"] == 2  # C sütunu
+    assert col_map["voen"] == 8  # I (Tax ID)
+    assert col_map["name"] == 7  # H
+
+    # Ad "Göndərənin/Alanın Adı" (H) sütunundan, çoxsətirdən ilk sətir
+    assert any(r["ad"] == "Mərkəzi Sos.Sığ.FUİ (yığım)" for r in rows)
+    # Kredit sətirləri (Mədaxil) daxil edilmir — 1605270611 yalnız kreditdə
+    assert all(r["voen"] != "1605270611" for r in rows)
+
+
+def test_parse_bank_statement_accessbank_synthetic():
+    raw = _accessbank_xlsx(
+        [
+            # Tax ID + çoxsətirli ad → daxil; ad ilk sətirdir
+            _accessbank_row(
+                "01.07.2025", "FT1", 127.12,
+                "HASANLI-H MMC\n1605270611/\n200004/9900003611",
+                "1605270611", "odəniş",
+            ),
+            # boş Tax ID (komissiya) → skip
+            _accessbank_row(
+                "02.07.2025", "FT2", 0.9,
+                "Ölkədaxili köç komm.haqqı", "", "komm.haqqı",
+            ),
+            # kredit (Mədaxil>0, Məxaric boş) → skip
+            _accessbank_row(
+                "03.07.2025", "FT3", "", "MÜŞTƏRİ MMC", "1503971131",
+                "daxilolma", medaxil=700,
+            ),
+            # Tax ID var, ad boş → daxil; ad Təyinatdan
+            _accessbank_row(
+                "04.07.2025", "FT4", 38, "", "1701911851", "İssizlik odenisi",
+            ),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    by_voen = {r["voen"]: r for r in rows}
+    assert set(by_voen) == {"1605270611", "1701911851"}
+    assert by_voen["1605270611"]["ad"] == "HASANLI-H MMC"
+    assert by_voen["1605270611"]["mebleg"] == 127.12
+    assert by_voen["1701911851"]["ad"] == "İssizlik odenisi"
+    assert all(r["mebleg"] != 700 for r in rows)  # kredit skip
+    assert all(r["voen"] for r in rows)  # boş Tax ID skip
+
+    # Alias əlavələri başqa formatların mappingini pozmur (PAŞA nümunəsi)
+    found = _detect_bank_header(
+        [
+            _PASHA_HEADER,
+            _pasha_row("09.06.2026", "CAUCASIAN MMC", "2006687041", "", 5500),
+        ]
+    )
+    assert found is not None
+    _, cm = found
+    assert cm.get("name") == 2  # Ödəyən/Benefisiar
+    assert cm.get("voen") == 5  # VÖEN
 
 
 def test_parse_bank_statement_described_format():
