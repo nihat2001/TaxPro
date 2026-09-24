@@ -88,6 +88,11 @@ _DEPOZIT_REQUIRED = ("voen", "mexaric")
 #   Həyata Keçmə Tarixi, Göndərən/Alıcı adı, Göndərən/Alıcı Hesabı,
 #   Əməliyyat Detalları, Kredit, Debit, Balans) — VÖEN yoxdur, debit = mənfi
 #   "Debit". VÖEN təyinat mətnindən regex-lə çıxarıla bilər (label forması).
+# ABB (Kapital Bank Business, AZ/EN bilinqval): başlıq 18-ci sətirdə
+#   (Əməliyyatın tarixi / Operation date, Debit məbləğ / Debit amount,
+#   Kredit məbləğ / Credit amount, Ödənişin təyinatı / Description,
+#   Qarşı tərəfin VÖEN-i / Counterparty TAX ID) — VÖEN ayrıca sütunda,
+#   debit = işarəsiz müsbət "Debit məbləğ".
 _BANK_VOEN_ALIASES = (
     "voen",
     "terefinvoeni",
@@ -95,9 +100,9 @@ _BANK_VOEN_ALIASES = (
     "ekshesab",
     "hesablasmahesabivoeen",
 )
-_BANK_DEBIT_ALIASES = ("mexaric",)
+_BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg")
 _BANK_SIGNED_ALIASES = ("debit", "debet", "azndeyeri", "mebleg")
-_BANK_DATE_ALIASES = ("emeliyyattarixi", "tarix")
+_BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix")
 _BANK_NAME_ALIASES = (
     "odeyenbenefisiar",
     "odeyen",
@@ -422,10 +427,12 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     """Çoxbanklı bank çıxarışı parseri (dinamik auto-detection).
 
     Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri), PAŞA
-    (VÖEN ayrıca sütunda + müsbət Məxaric) və Yapı Kredi "standard"
-    (VÖEN yoxdur + mənfi Debit) formatlarını tanıyır. Balans/summary
-    sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar
-    tədarükçüyə edilən Əsas (principal) ödənişlərdir.
+    (VÖEN ayrıca sütunda + müsbət Məxaric), Yapı Kredi "standard"
+    (VÖEN yoxdur + mənfi Debit) və ABB (VÖEN ayrıca sütunda + işarəsiz
+    müsbət Debit məbləğ) formatlarını tanıyır. Balans/summary sətirləri
+    atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə edilən
+    Əsas (principal) ödənişlərdir. VÖEN sütunu mövcud olub dəyəri boş olan
+    debit sətirləri (bank haqqı/kart sifarişi — daxili əməliyyat) atlanır.
     """
     rows_list = _load_rows(raw)
     for rows in rows_list:
@@ -433,6 +440,7 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
         if found is None:
             continue
         header_idx, col_map = found
+        has_voen_col = "voen" in col_map
         result: list[dict[str, Any]] = []
         for row in rows[header_idx + 1 :]:
             name_cell = _get(row, col_map, "name")
@@ -453,7 +461,10 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                     continue
                 amount = abs(amount)
 
-            voen, ad = _extract_voen_and_name(_get(row, col_map, "voen"), name_cell)
+            voen_cell = _get(row, col_map, "voen")
+            voen, ad = _extract_voen_and_name(voen_cell, name_cell)
+            if voen is None and has_voen_col and _cell_text(voen_cell) == "":
+                continue  # VÖEN sütunu mövcud, dəyər boş → daxili əməliyyat
             if voen is None:
                 voen = _extract_voen_from_text(desc_text)
             result.append(

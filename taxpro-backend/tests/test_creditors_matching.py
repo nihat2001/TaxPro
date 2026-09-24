@@ -122,6 +122,32 @@ def _pasha_row(tarix, odeyen, voen, medaxil, mexaric):
     return [tarix, tarix, odeyen, "Urgent payment", "", voen, medaxil, mexaric, ""]
 
 
+_ABB_HEADER = [
+    "Əməliyyatın tarixi / Operation date",
+    "Əməliyyatın referensi / Reference İD",
+    "Əks hesab üzrə məlumatlar / Counterparty account details",
+    "Debit məbləğ / Debit amount",
+    "Kredit məbləğ / Credit amount",
+    "Ödənişin təyinatı / Description",
+    "Qarşı tərəfin VÖEN-i / Counterparty TAX ID",
+]
+
+
+def _abb_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_ABB_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _abb_row(tarix, debit, kredit, voen):
+    return [tarix, "ref", "eks", debit, kredit, "teyinat", voen]
+
+
 # ===== Parser testləri =====
 
 
@@ -232,14 +258,14 @@ def test_parse_bank_statement_pasha():
     raw = _pasha_xlsx(
         [
             _pasha_row("09.06.2026", "CAUCASIAN MMC", "2006687041", "", 5500),
-            _pasha_row("09.06.2026", "Pasha Bank", "", "", 1000),  # bank haqqı (boş VÖEN)
+            _pasha_row("09.06.2026", "Pasha Bank", "", "", 1000),  # bank haqqı (boş VÖEN → skip)
             _pasha_row("10.06.2026", "IMA ENERGY MMC", "1601005511", 100000, ""),  # mədaxil
             _pasha_row("11.06.2026", "CENTRO MMC", "1202255201", "", 2600),
         ]
     )
     rows = parse_bank_statement(raw)
-    assert len(rows) == 3  # mədaxil sətri atlanır
-    assert {r["voen"] for r in rows} == {"2006687041", None, "1202255201"}
+    assert len(rows) == 2  # mədaxil + boş-VÖEN sətirləri atlanır
+    assert {r["voen"] for r in rows} == {"2006687041", "1202255201"}
     by_voen = {r["voen"]: r for r in rows}
     assert by_voen["2006687041"]["mebleg"] == 5500.0
     assert by_voen["2006687041"]["ad"] == "CAUCASIAN MMC"
@@ -249,7 +275,7 @@ def test_parse_bank_statement_pasha():
 def test_parse_bank_statement_pasha_real():
     raw = (FIXTURES / "PAŞA BANK ÇIXARIŞI.xlsx").read_bytes()
     rows = parse_bank_statement(raw)
-    assert len(rows) == 67  # 67 debit sətri (balans/summary atlanır)
+    assert len(rows) == 43  # 67 debit - 24 boş-VÖEN bank haqqı sətri (skip)
 
     totals: dict[str, float] = {}
     empty_voen = 0
@@ -261,9 +287,31 @@ def test_parse_bank_statement_pasha_real():
 
     assert round(totals["2006687041"], 2) == 23371.72
     assert round(totals["1202255201"], 2) == 14643.0
-    assert empty_voen == 24  # Pasha Bank daxili haqq sətirləri
+    assert empty_voen == 0  # boş-VÖEN sətirləri skip edildi
     # DÖVRÜN SONUNA BALANS sətri (349999.79) heç bir yerdə debit kimi düşməməlidir
     assert all(r["mebleg"] != 349999.79 for r in rows)
+
+
+def test_parse_bank_statement_abb():
+    raw = (FIXTURES / "ABB ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 9 debit sətri daxili əməliyyatdır (kart sifarişi/əmək haqqı/bank haqqı),
+    # hamısının VÖEN-i boş → skip edilir.
+    assert rows == []
+
+
+def test_parse_bank_statement_abb_synthetic():
+    raw = _abb_xlsx(
+        [
+            _abb_row("13.07.2026", 100, 0, " 1506275021"),  # dolu VÖEN (trim) → debit
+            _abb_row("14.07.2026", 50, 0, ""),  # boş VÖEN → skip
+            _abb_row("15.07.2026", 0, 200, "1506275021"),  # kredit (debit=0) → skip
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 1
+    assert rows[0]["voen"] == "1506275021"
+    assert rows[0]["mebleg"] == 100.0
 
 
 def test_extract_voen_from_text():
