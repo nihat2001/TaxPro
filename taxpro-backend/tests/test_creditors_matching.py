@@ -12,6 +12,7 @@ from app.services.deterministic.creditors import (
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
     _detect_bank_header,
+    _detect_preamble_family,
     _detect_self_voens,
     _extract_voen_and_name,
     _extract_voen_from_text,
@@ -340,6 +341,35 @@ def _vtb_xlsx(rows) -> bytes:
 
 def _vtb_row(tarix, hesab, ad, voen, debet=None, kredit=None, teyinat=""):
     return [tarix, hesab, ad, voen, debet, kredit, None, teyinat]
+
+
+_ATB_HEADER = [
+    "Valyutalaşma tarixi", "Tranzaksiya tarixi", "Müxbir",
+    "Göndərənin VÖEN-i", "Təsvir", "Sənəd nömrəsi", "Debit", "Kredit", "Balans",
+]
+
+_ATB_PREAMBLE = [
+    ["Hesabdan çıxarış"],
+    ["Filial", "Azər-Türk Bank Müştəri Xidmətləri Mərkəzi"],
+    ["Hesabın adı", "1/GLOBAL EXPORTS LLC"],
+    ["VÖEN", "1302070301"],
+    ["IBAN", "AZ18AZRT40060019440389924001"],
+]
+
+
+def _atb_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for r in _ATB_PREAMBLE:
+        ws.append(r)
+    ws.append(_ATB_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _atb_row(tarix, muxbir, teyinat, debet=None, kredit=None):
+    return [tarix, tarix, muxbir, None, teyinat, "DOC1", debet, kredit, None]
 
 
 # ===== Parser testləri =====
@@ -1087,6 +1117,92 @@ def test_parse_bank_statement_vtb_synthetic():
     assert rows[0]["mebleg"] == 1650
 
     # VTB olmayan preamble → öz-VÖEN aşkarlanmır
+    assert _detect_self_voens([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) == set()
+
+
+def test_parse_bank_statement_atb():
+    raw = (FIXTURES / "ATB BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 378 debit; VÖEN-siz (komissiya/kassa) + müştərinin öz VÖEN-i +
+    # INN-ə bitişik xarici VÖEN çıxılır → 207 sətir.
+    assert len(rows) == 207
+    assert round(sum(r["mebleg"] for r in rows), 2) == 3139662.92
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    assert Counter(r["voen"] for r in rows) == {
+        "2004054941": 40,
+        "2905379861": 36,
+        "1005583201": 18,
+        "1506336722": 14,
+        "1307752521": 12,
+        "1300115511": 12,
+        "1701911851": 11,
+        "1700166231": 9,
+        "1307910081": 8,
+        "2005868601": 8,
+        "2905457861": 8,
+        "1300144711": 8,
+        "2005234191": 4,
+        "6000083631": 4,
+        "1404005431": 4,
+        "1304906281": 4,
+        "1406765321": 3,
+        "1006114441": 2,
+        "6800018151": 2,
+    }
+    # Müştərinin öz VÖEN-i və INN-ə bitişik xarici VÖEN daxil deyil
+    assert all(r["voen"] != "1302070301" for r in rows)
+    assert all(r["voen"] != "7730278227" for r in rows)
+
+    # Sütun xəritəsi: date=A(0), debit=G(6), name=voen=Müxbir(C, 2), desc=Təsvir(E, 4)
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    header_idx, col_map = found
+    assert header_idx == 11
+    assert col_map["date"] == 0
+    assert col_map["debit"] == 6
+    assert col_map["name"] == 2
+    assert col_map["voen"] == 2
+    assert col_map["desc"] == 4
+
+    preamble = _load_rows(raw)[0][:header_idx]
+    assert _detect_preamble_family(preamble) == "atb"
+    assert _detect_self_voens(preamble) == {"1302070301"}
+
+
+def test_parse_bank_statement_atb_synthetic():
+    raw = _atb_xlsx(
+        [
+            # VÖEN-li real kreditor (VÖEN "/"-dən əvvəl) → daxil
+            _atb_row("07.01.2025", "KHAZAR DRINK MMC 2905457861/", "odəniş", debet=97810.17),
+            # VÖEN IBAN-dan sonra (boşluqla) → daxil
+            _atb_row("08.01.2025", "AZ48CTRE00000000000000014001 1300115511 DSMF",
+                     "sosial ödəniş", debet=50),
+            # müştərinin öz VÖEN-i → skip
+            _atb_row("09.01.2025", "GLOBAL EXPORTS MMC 1302070301/", "daxili", debet=500),
+            # VÖEN-siz komissiya → skip
+            _atb_row("10.01.2025", "D-Hüquqi şəxslərin köçürmələri üzrə haqq-m/val.",
+                     "Xidmet Haqqi", debet=1),
+            # xarici INN (hərfə bitişik) → skip (word boundary)
+            _atb_row("11.01.2025", "INN7730278227 Smart Import LLC", "import", debet=2000),
+            # kredit (Debit boş) → skip
+            _atb_row("12.01.2025", "MÜŞTƏRİ MMC 1234567890/", "mədaxil", kredit=5000),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    assert {r["voen"] for r in rows} == {"2905457861", "1300115511"}
+    by_voen = {r["voen"]: r for r in rows}
+    assert by_voen["2905457861"]["ad"] == "KHAZAR DRINK MMC"
+    assert by_voen["2905457861"]["mebleg"] == 97810.17
+
+    # ATB olmayan preamble → öz-VÖEN aşkarlanmır
+    assert _detect_preamble_family([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) is None
     assert _detect_self_voens([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) == set()
 
 
