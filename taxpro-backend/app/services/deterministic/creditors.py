@@ -10,7 +10,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
 PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank,
-Bank Respublika; digər banklar alias siyahıları ilə genişləndirilə bilər).
+Bank Respublika, Yelo Bank; digər banklar alias siyahıları ilə
+genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -111,6 +112,7 @@ _BANK_VOEN_ALIASES = (
     "hesablasmahesabivoeen",
     "qarsiterefinhesabnomresi",
     "taxid",
+    "odeyenalan",  # Yelo: "Ödəyən/alan" kompozitində VÖEN (AD<boşluq>VÖEN)
 )
 _BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
@@ -305,11 +307,19 @@ def _clean_counterparty_name(text: str) -> str:
     return ""
 
 
+def _strip_trailing_voen(text: str, voen: str) -> str:
+    """Kompozit `AD<boşluq(lar)>VÖEN` mətnindən son VÖEN-i silir (Yelo)."""
+    if not text or not voen:
+        return text
+    return re.sub(r"[\s()]*" + re.escape(voen) + r"\s*$", "", text).strip()
+
+
 def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, str]:
     """Ağıllı VÖEN + ad çıxarışı: xalis rəqəm → birbaşa; qarışıq mətn → split.
 
     Split uğursuz olarsa (məs. Rabitə `IBAN VOEN___<rəqəm>`) regex fallback
-    işə düşür.
+    işə düşür. VÖEN və ad eyni kompozit xanadadırsa (məs. Yelo
+    `AD<boşluq>VÖEN`), addan son VÖEN silinir.
     """
     voen_text = _cell_text(voen_cell)
     if _VOEN_RE.match(voen_text):
@@ -317,6 +327,9 @@ def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, 
     voen, ad = _split_counter_account(voen_text)
     if voen is None:
         voen = _extract_voen_from_text(voen_text)
+    if voen is not None and _cell_text(name_cell) == voen_text:
+        # VÖEN və ad eyni xanada (kompozit) → addan VÖEN-i təmizlə
+        ad = _clean_counterparty_name(_strip_trailing_voen(voen_text, voen)) or ad
     return voen, ad or _clean_counterparty_name(_cell_text(name_cell))
 
 
@@ -473,8 +486,10 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     Məbləğ/AZN dəyəri), Rabitəbank (VÖEN ayrıca hesab sütununda
     `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun) və
     Access Bank (ayrıca `Tax ID` sütunu + işarəsiz müsbət Məxaric, ad
-    sütunu çoxsətirli) və Bank Respublika (ayrıca `VÖEN` sütunu + işarəsiz
-    müsbət `Debet`, `Kredit` atlanır) formatlarını tanıyır. Balans/summary sətirləri
+    sütunu çoxsətirli), Bank Respublika (ayrıca `VÖEN` sütunu + işarəsiz
+    müsbət `Debet`, `Kredit` atlanır) və Yelo Bank (`Ödəyən/alan`
+    kompozit sütununda `AD<boşluq>VÖEN` + işarəsiz müsbət `Məxaric`)
+    formatlarını tanıyır. Balans/summary sətirləri
     atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
@@ -498,8 +513,11 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             desc_text = _cell_text(desc_cell)
             voen_raw = _cell_text(voen_cell)
             ref_raw = _cell_text(ref_cell)
-            combined = normalize_text(
-                name_text + " " + desc_text + " " + voen_raw + " " + ref_raw
+            # Sahələr AYRI normalize edilib boşluqla birləşir: sahə sərhədində
+            # yalan "cem"/"yekun" tokeni yaranmasın (məs. "...bankASC"+"EMeliyyat").
+            combined = " ".join(
+                normalize_text(x)
+                for x in (name_text, desc_text, voen_raw, ref_raw)
             )
             if _is_summary_row(combined):
                 continue  # balans/yekun/cəm summary sətirləri

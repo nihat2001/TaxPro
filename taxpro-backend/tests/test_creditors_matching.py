@@ -1,5 +1,6 @@
 import io
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from app.services.deterministic.creditors import (
     _detect_bank_header,
     _extract_voen_and_name,
     _extract_voen_from_text,
+    _is_summary_row,
     _load_rows,
     _split_counter_account,
     build_workbook,
@@ -24,6 +26,7 @@ from app.services.deterministic.creditors import (
     sanitize_sheet_name,
     unique_sheet_name,
 )
+from app.services.deterministic.excel_parser import normalize_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -264,6 +267,29 @@ def _bankrespublika_xlsx(rows, meta_rows=2) -> bytes:
 
 def _bankrespublika_row(tarix, ad, voen, kredit, debet, teyinat=""):
     return ["", tarix, "DOC1", ad, voen, "AZ00BRES...", teyinat, kredit, debet, ""]
+
+
+_YELO_HEADER = [
+    "Əməl.tarixi/\ntr.date", "İcra tarixi/\nreal date", "Təyinat/\nDescription",
+    "Ödəyən/alan\npayer/reciever", "Qarşı hesab/\ncounter account",
+    "Mədaxil/\nincome", "Məxaric/\noutcome", "Balans/\nbalance",
+    "Kurs/\nrate", "AZN/\nekv", "",
+]
+
+
+def _yelobank_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_YELO_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _yelobank_row(tarix, teyinat, odeyen, medaxil, mexaric):
+    return [tarix, tarix, teyinat, odeyen, "803-25010322-9001", medaxil, mexaric, "", 1, mexaric, ""]
 
 
 # ===== Parser testləri =====
@@ -748,6 +774,105 @@ def test_parse_bank_statement_bankrespublika_synthetic():
     _, cm = found
     assert cm.get("name") == 7  # H
     assert cm.get("voen") == 8  # I (Tax ID)
+
+
+def test_parse_bank_statement_yelobank():
+    raw = (FIXTURES / "YELO BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 186 data sətirindən 168 debit; VÖEN yalnız "Ödəyən/alan" kompozitində
+    # olan 31 sətir tutulur (137 VÖEN-siz + 18 kredit atlanır).
+    assert len(rows) == 31
+    assert round(sum(r["mebleg"] for r in rows), 2) == 54945.44
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    # VÖEN üzrə saylar (boş VÖEN-lər atılıb)
+    assert Counter(r["voen"] for r in rows) == {
+        "0900070722": 10,
+        "1300115511": 9,
+        "1300144711": 4,
+        "1701911851": 6,
+        "2900361451": 2,
+    }
+
+    first = rows[0]
+    assert first["voen"] == "1300115511"
+    assert first["ad"] == "DSMF SUMQAYIT SAHAR SOBASI"
+    assert first["mebleg"] == 35.76
+    assert first["tarix"] == "19.01.26"
+
+    # Adlardan son VÖEN təmizlənib
+    assert all(not re.search(r"\d{7,12}\s*$", r["ad"]) for r in rows)
+
+    # Sütun xəritəsi: date=A(0), debit=G(6), name=D(3), voen=D(3)
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    _, col_map = found
+    assert col_map["date"] == 0
+    assert col_map["debit"] == 6
+    assert col_map["name"] == 3
+    assert col_map["voen"] == 3
+
+
+def test_parse_bank_statement_yelobank_synthetic():
+    raw = _yelobank_xlsx(
+        [
+            # çoxboşluqlu "AD   VÖEN" → daxil, ad təmiz
+            _yelobank_row(
+                "15.01.26", "B44:...", "ALI MAMMADOGLU MMC   1008767821", 0, 1200
+            ),
+            # təkboşluqlu "AD VÖEN" → daxil, ad təmiz
+            _yelobank_row(
+                "16.01.26", "AZIPS...",
+                "HEYDƏROV FƏRHAD QURBANƏLİ OĞLU 0900070722", 0, 500,
+            ),
+            # VÖEN-siz ad (bank daxili) → skip
+            _yelobank_row(
+                "17.01.26", "Əməliyyat komissiyası", "YELO BANK ASC", 0, 0.38
+            ),
+            # boş D → skip
+            _yelobank_row("18.01.26", "Loan payment", "  ", 0, 5000),
+            # kredit → skip
+            _yelobank_row(
+                "19.01.26", "daxilolma", "MÜŞTƏRİ MMC   1234567890", 700, 0
+            ),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    by_voen = {r["voen"]: r for r in rows}
+    assert set(by_voen) == {"1008767821", "0900070722"}
+    assert by_voen["1008767821"]["ad"] == "ALI MAMMADOGLU MMC"
+    assert by_voen["0900070722"]["ad"] == "HEYDƏROV FƏRHAD QURBANƏLİ OĞLU"
+    assert by_voen["1008767821"]["mebleg"] == 1200.0
+
+    # Cross-field "cem" yalan-pozitivi düzəldi: "...bankASC"+"EMeliyyat" summary deyil
+    assert not _is_summary_row(
+        " ".join(
+            normalize_text(x)
+            for x in ("YELO BANK ASC", "Əməliyyat komissiyası", "", "")
+        )
+    )
+
+    # Alias/düzəlişlər digər başlıqları pozmur (Kapital nümunəsi)
+    found = _detect_bank_header(
+        [
+            _BANK_HEADER,
+            _bank_row(
+                "13.03.2026",
+                "AZ37AIIB / IMA ENERGY MMC / 1601005511",
+                -100000,
+                -100000,
+            ),
+        ]
+    )
+    assert found is not None
+    _, cm = found
+    assert cm.get("voen") == 3
 
 
 def test_parse_bank_statement_described_format():
