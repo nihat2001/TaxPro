@@ -176,6 +176,27 @@ def _unibank_row(voen, tarix, medaxil, mexaric, ad, teyinat):
     return [voen, tarix, medaxil, mexaric, "", ad, teyinat, "", ""]
 
 
+_TURAN_HEADER = [
+    "№", "Tarix", "Hesab nömrəsi", "Məbləğ", "Məbləğin AZN dəyəri",
+    "Qalıq", "Qalığın AZN dəyəri", "Valyuta", "Təyinat",
+]
+
+
+def _turan_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_TURAN_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _turan_row(hesab, tarix, mebleg, azn, teyinat):
+    return ["", tarix, hesab, mebleg, azn, "", "", "AZN", teyinat]
+
+
 # ===== Parser testləri =====
 
 
@@ -373,6 +394,39 @@ def test_parse_bank_statement_unibank_synthetic():
     by_voen = {r["voen"]: r for r in rows}
     assert by_voen["3103655452"]["mebleg"] == 4500.0
     assert by_voen["1102475261"]["mebleg"] == 5000.0
+
+
+def test_parse_bank_statement_turanbank():
+    raw = (FIXTURES / "TURAN BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 11  # mənfi Məbləğ/Məbləğin AZN dəyəri → debit
+    assert all(r["voen"] is None for r in rows)  # VÖEN sütunu yoxdur → Uyğunsuz
+    amounts = sorted(r["mebleg"] for r in rows)
+    assert amounts == sorted(
+        [2162.25, 1479.13, 1391.38, 2250, 68611, 68.61, 30000, 300, 10, 10, 1000]
+    )
+    # "Cəmi" (Hesab nömrəsi sütununda, E=17.63) sətri daxil deyil
+    assert all(r["mebleg"] != 17.63 for r in rows)
+    # ad = Təyinat
+    first = next(r for r in rows if r["mebleg"] == 2162.25)
+    assert first["ad"] == "L032404/0001 - nömrəli müqavilə üçün əsas borc üzrə ödəniş"
+
+
+def test_parse_bank_statement_turanbank_synthetic():
+    raw = _turan_xlsx(
+        [
+            _turan_row("AZ09...", "24-08-2026", -2162.25, -2162.25, "əsas borc ödənişi"),
+            _turan_row("AZ09...", "25-08-2026", -100, -85, "valyuta fərqli"),  # AZN dəyəri (E) üstün
+            _turan_row("Cəmi", "", -9999.00, -9999.00, ""),  # MƏNFİ cəm sətri → ref sütunundan skip
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 2
+    by_date = {r["tarix"]: r for r in rows}
+    assert by_date["24-08-2026"]["mebleg"] == 2162.25
+    assert by_date["24-08-2026"]["ad"] == "əsas borc ödənişi"
+    # "azndeyeri" (E) üstünlüyü: D=-100, E=-85 → mebleg 85 (mebleg 100 deyil)
+    assert by_date["25-08-2026"]["mebleg"] == 85.0
 
 
 def test_extract_voen_from_text():

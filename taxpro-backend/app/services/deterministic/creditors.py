@@ -98,6 +98,10 @@ _DEPOZIT_REQUIRED = ("voen", "mexaric")
 #   Əməliyyat Tərəfdaşı\n(Counterparty Name), Təyinat\n(Description), ...) —
 #   VÖEN ayrıca sütunda, debit = işarəsiz müsbət "Məxaric"; məbləğlər string,
 #   boş xana "-" işarəsidir; "Yekun (Summary)" sətri VÖEN sütunundadır.
+# TuranBank: başlıq 13-cü sətirdə (№, Tarix, Hesab nömrəsi, Məbləğ,
+#   Məbləğin AZN dəyəri, Qalıq, Qalığın AZN dəyəri, Valyuta, Təyinat) —
+#   VÖEN sütunu YOXDUR, debit = mənfi Məbləğ/Məbləğin AZN dəyəri (azndeyeri
+#   üstünlüklü); "Cəmi" sətri "Hesab nömrəsi" sütunundadır.
 _BANK_VOEN_ALIASES = (
     "voen",
     "terefinvoeni",
@@ -122,6 +126,14 @@ _BANK_DESC_ALIASES = (
     "emeliyyatdetallari",
     "emeliyyatinadi",
     "emeliyyatinteyinati",
+)
+_BANK_REF_ALIASES = (
+    "hesabnomresi",
+    "senedinnomresi",
+    "istinadno",
+    "referens",
+    "emeliyyatinreferensi",
+    "gonderenalicihesabi",
 )
 _BANK_BALANCE_TOKENS = ("balans", "dovrun", "movcud", "qaliq", "yekun", "cem")
 
@@ -350,6 +362,7 @@ def _detect_bank_header(
         signed_col = _first_col(keys, key_to_col, _BANK_SIGNED_ALIASES)
         name_col = _first_col(keys, key_to_col, _BANK_NAME_ALIASES)
         desc_col = _first_col(keys, key_to_col, _BANK_DESC_ALIASES)
+        ref_col = _first_col(keys, key_to_col, _BANK_REF_ALIASES)
 
         if date_col is None:
             continue
@@ -367,6 +380,8 @@ def _detect_bank_header(
             col_map["name"] = name_col
         if desc_col is not None:
             col_map["desc"] = desc_col
+        if ref_col is not None:
+            col_map["ref"] = ref_col
         return idx, col_map
     return None
 
@@ -438,9 +453,10 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri), PAŞA
     (VÖEN ayrıca sütunda + müsbət Məxaric), Yapı Kredi "standard"
     (VÖEN yoxdur + mənfi Debit), ABB (VÖEN ayrıca sütunda + işarəsiz
-    müsbət Debit məbləğ) və Unibank (VÖEN ayrıca sütunda + müsbət Məxaric,
-    məbləğlər string, boş xana "-") formatlarını tanıyır. Balans/summary
-    sətirləri atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə
+    müsbət Debit məbləğ), Unibank (VÖEN ayrıca sütunda + müsbət Məxaric,
+    məbləğlər string, boş xana "-") və TuranBank (VÖEN yoxdur + mənfi
+    Məbləğ/AZN dəyəri) formatlarını tanıyır. Balans/summary sətirləri
+    atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə
     edilən Əsas (principal) ödənişlərdir. VÖEN sütunu mövcud olub dəyəri boş
     olan debit sətirləri (bank haqqı/kart sifarişi — daxili əməliyyat) atlanır.
     """
@@ -456,10 +472,14 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             name_cell = _get(row, col_map, "name")
             desc_cell = _get(row, col_map, "desc")
             voen_cell = _get(row, col_map, "voen")
+            ref_cell = _get(row, col_map, "ref")
             name_text = _cell_text(name_cell)
             desc_text = _cell_text(desc_cell)
             voen_raw = _cell_text(voen_cell)
-            combined = normalize_text(name_text + " " + desc_text + " " + voen_raw)
+            ref_raw = _cell_text(ref_cell)
+            combined = normalize_text(
+                name_text + " " + desc_text + " " + voen_raw + " " + ref_raw
+            )
             if _is_summary_row(combined):
                 continue  # balans/yekun/cəm summary sətirləri
 
@@ -478,6 +498,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 continue  # VÖEN sütunu mövcud, dəyər boş → daxili əməliyyat
             if voen is None:
                 voen = _extract_voen_from_text(desc_text)
+            if not ad:
+                ad = re.sub(r"_x000D_", " ", desc_text).strip()  # təyinatdan ad (Turan)
             result.append(
                 {
                     "voen": voen,
