@@ -8,8 +8,9 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
   - "Uyğunsuz ödənişlər" sheet (GƏLƏN-də olmayan VÖEN-ə ödənişlər)
 
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
-BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital +
-PAŞA; digər banklar alias siyahıları ilə genişləndirilə bilər).
+BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
+PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank; digər banklar
+alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -108,11 +109,13 @@ _BANK_VOEN_ALIASES = (
     "eksterefvoen",
     "ekshesab",
     "hesablasmahesabivoeen",
+    "qarsiterefinhesabnomresi",
 )
-_BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg")
-_BANK_SIGNED_ALIASES = ("debit", "debet", "azndeyeri", "mebleg")
+_BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "debet")
+_BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
 _BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix")
 _BANK_NAME_ALIASES = (
+    "terefinadi",
     "odeyenbenefisiar",
     "odeyen",
     "benefisiar",
@@ -139,7 +142,7 @@ _BANK_BALANCE_TOKENS = ("balans", "dovrun", "movcud", "qaliq", "yekun", "cem")
 
 _VOEN_RE = re.compile(r"^\d{7,12}$")
 _IBAN_RE = re.compile(r"^[A-Za-z]{2}\d")
-_VOEN_LABEL_RE = re.compile(r"(?:voen|vöen)\s*[:#]?\s*(\d{7,12})", re.IGNORECASE)
+_VOEN_LABEL_RE = re.compile(r"(?:voen|vöen)\s*[:#_\s]*\s*(\d{7,12})", re.IGNORECASE)
 _BARE_VOEN_RE = re.compile(r"(?<!\d)(\d{10})(?!\d)")
 
 
@@ -298,19 +301,26 @@ def _clean_counterparty_name(text: str) -> str:
 
 
 def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, str]:
-    """Ağıllı VÖEN + ad çıxarışı: xalis rəqəm → birbaşa; qarışıq mətn → split."""
+    """Ağıllı VÖEN + ad çıxarışı: xalis rəqəm → birbaşa; qarışıq mətn → split.
+
+    Split uğursuz olarsa (məs. Rabitə `IBAN VOEN___<rəqəm>`) regex fallback
+    işə düşür.
+    """
     voen_text = _cell_text(voen_cell)
     if _VOEN_RE.match(voen_text):
         return voen_text, _clean_counterparty_name(_cell_text(name_cell))
     voen, ad = _split_counter_account(voen_text)
+    if voen is None:
+        voen = _extract_voen_from_text(voen_text)
     return voen, ad or _clean_counterparty_name(_cell_text(name_cell))
 
 
 def _extract_voen_from_text(text: str) -> str | None:
     """Təyinat/əməliyyat mətnindən VÖEN-i regex-lə çıxarır.
 
-    Əvvəlcə label forması (`VOEN: 1403610931`, `VÖEN 9900001231`), sonra boş
-    dayanan 10 rəqəmli pattern. IBAN substring-i (bitişik rəqəmlər) tutulmur.
+    Əvvəlcə label forması (`VOEN: 1403610931`, `VÖEN 9900001231`,
+    `VOEN___1405631661`), sonra boş dayanan 10 rəqəmli pattern. IBAN
+    substring-i (bitişik rəqəmlər) tutulmur.
     """
     if not text:
         return None
@@ -454,11 +464,14 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     (VÖEN ayrıca sütunda + müsbət Məxaric), Yapı Kredi "standard"
     (VÖEN yoxdur + mənfi Debit), ABB (VÖEN ayrıca sütunda + işarəsiz
     müsbət Debit məbləğ), Unibank (VÖEN ayrıca sütunda + müsbət Məxaric,
-    məbləğlər string, boş xana "-") və TuranBank (VÖEN yoxdur + mənfi
-    Məbləğ/AZN dəyəri) formatlarını tanıyır. Balans/summary sətirləri
-    atlanır. Yalnız debit sətirlər qaytarılır — bunlar tədarükçüyə
-    edilən Əsas (principal) ödənişlərdir. VÖEN sütunu mövcud olub dəyəri boş
-    olan debit sətirləri (bank haqqı/kart sifarişi — daxili əməliyyat) atlanır.
+    məbləğlər string, boş xana "-"), TuranBank (VÖEN yoxdur + mənfi
+    Məbləğ/AZN dəyəri) və Rabitəbank (VÖEN ayrıca hesab sütununda
+    `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun)
+    formatlarını tanıyır. Balans/summary sətirləri atlanır. Yalnız debit
+    sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
+    ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
+    əməliyyat: bank haqqı/komissiya), həmçinin tarixi boş olan footer/cəm
+    sətirləri atlanır.
     """
     rows_list = _load_rows(raw)
     for rows in rows_list:
@@ -482,6 +495,8 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             )
             if _is_summary_row(combined):
                 continue  # balans/yekun/cəm summary sətirləri
+            if not _cell_text(_get(row, col_map, "date")):
+                continue  # tarixi boş footer/cəm sətri (məs. Rabitə 289) → işlənmir
 
             if "debit" in col_map:
                 amount = _to_float(_get(row, col_map, "debit"))
@@ -494,8 +509,11 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 amount = abs(amount)
 
             voen, ad = _extract_voen_and_name(voen_cell, name_cell)
-            if voen is None and has_voen_col and voen_raw == "":
-                continue  # VÖEN sütunu mövcud, dəyər boş → daxili əməliyyat
+            if voen is None and has_voen_col and "/" not in voen_raw:
+                # VÖEN sütunu mövcud, sətirdə VÖEN yox → daxili əməliyyat.
+                # "/" olan qarışıq xana (Kapital `IBAN / AD / VÖEN`) real
+                # qarşı tərəfdir; VÖEN-siz olsa da Uyğunsuz kimi saxlanılır.
+                continue
             if voen is None:
                 voen = _extract_voen_from_text(desc_text)
             if not ad:

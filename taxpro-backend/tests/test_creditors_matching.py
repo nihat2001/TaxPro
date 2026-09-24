@@ -1,4 +1,5 @@
 import io
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -195,6 +196,28 @@ def _turan_xlsx(rows, meta_rows=2) -> bytes:
 
 def _turan_row(hesab, tarix, mebleg, azn, teyinat):
     return ["", tarix, hesab, mebleg, azn, "", "", "AZN", teyinat]
+
+
+_RABITE_HEADER = [
+    "Əməliyyat tarixi", "Silinmə tarixi", "Benefisiarın bankı",
+    "Qarşı tərəfin hesab nömrəsi", "Qarşı tərəfin adı",
+    "Debet", "Kredit", "Balans", "Təsvir",
+]
+
+
+def _rabitabank_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_RABITE_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _rabitabank_row(tarix, hesab, ad, debet, kredit, tesvir=""):
+    return [tarix, tarix, "RABİTƏBANK ASC", hesab, ad, debet, kredit, "", tesvir]
 
 
 # ===== Parser testləri =====
@@ -433,6 +456,10 @@ def test_extract_voen_from_text():
     assert _extract_voen_from_text("Ödəniş VOEN: 1403610931 bitdi") == "1403610931"
     assert _extract_voen_from_text("VÖEN 9900001231") == "9900001231"
     assert _extract_voen_from_text("adi mətn 1403610931 yox") == "1403610931"
+    # Ayırıcı variasiyaları: boşluq/kolon/hash/alt-xətt (Rabitə `VOEN___`)
+    assert _extract_voen_from_text("AZ82UBAZ001 VOEN___1405631661") == "1405631661"
+    assert _extract_voen_from_text("IBAN VOEN_1503971131") == "1503971131"
+    assert _extract_voen_from_text("VOEN#1600855111") == "1600855111"
     # IBAN içindəki rəqəm ardıcıllığı VÖEN deyil
     assert _extract_voen_from_text("IBAN AZ55KABA00000000000006526675") is None
     assert _extract_voen_from_text("") is None
@@ -447,6 +474,78 @@ def test_parse_bank_statement_yapikredi():
     assert all(r["voen"] is None for r in rows)  # VÖEN yoxdur → uyğunsuz
     ads = {r["ad"] for r in rows}
     assert ads == {"HAFİZ ASLANLI", "BUBBLE GUM BAKU MMC"}
+
+
+def test_parse_bank_statement_rabitabank():
+    raw = (FIXTURES / "RABİTƏ BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 279 sətirdən 129 debit; 76 VÖEN-siz (56 komissiya + 17 HÖP + 3 şəxs)
+    # skip, 149 kredit daxil edilmir → 53 debit sətri.
+    assert len(rows) == 53
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert round(sum(r["mebleg"] for r in rows), 2) == 197296.38
+    assert sum(1 for r in rows if r["voen"] == "1306715831") == 10  # öz VÖEN
+
+    first = next(r for r in rows if r["voen"] == "1405631661")
+    assert first["ad"] == "Digital Classifieds MMC"
+    assert first["mebleg"] == 127.12
+    assert first["tarix"] == "01.07.2025"
+
+    # ad "Qarşı tərəfin adı" (E) sütunundan oxunur
+    assert any(r["ad"] == "PARROTIAS MMC" for r in rows)
+
+    # VÖEN-siz daxili əməliyyatlar (komissiya/HÖP) skip olunur
+    assert all("komissiya" not in r["ad"].lower() for r in rows)
+    # Kredit sətirləri (pul girişi) daxil edilmir — 1304456331 yalnız kreditdə
+    assert all(r["voen"] != "1304456331" for r in rows)
+    # Son cəm sətri (289) heç bir qeyd yaratmır
+    assert all(r["mebleg"] != 235233.29 for r in rows)
+
+
+def test_parse_bank_statement_rabitabank_synthetic():
+    raw = _rabitabank_xlsx(
+        [
+            # VÖEN___ ayırıcı (real format) → daxil
+            _rabitabank_row(
+                "01.07.2025",
+                "AZ82UBAZ04564842440060AZN001 VOEN___1405631661",
+                "Digital Classifieds MMC",
+                127.12, 0,
+            ),
+            # VOEN_ və VOEN# / VOEN: ayırıcı variasiyaları → daxil
+            _rabitabank_row(
+                "02.07.2025", "AZ09RBTA0001 VOEN_1503971131", "GLOLYNX MMC", 100, 0,
+            ),
+            _rabitabank_row(
+                "03.07.2025", "AZ09RBTA0002 VOEN: 1700232971", "AR SHURA", 50, 0,
+            ),
+            _rabitabank_row(
+                "04.07.2025", "AZ09RBTA0003 VOEN#1600855111", "ATS FEED MMC", 20, 0,
+            ),
+            # VÖEN-siz daxili əməliyyat (komissiya) → skip
+            _rabitabank_row(
+                "05.07.2025", "AZ68RBTA02670130100944414555 ",
+                "Haqq və komissiya gəlirləri", 0.5, 0,
+            ),
+            # Kredit sətri (pul girişi) → skip
+            _rabitabank_row(
+                "06.07.2025", "AZ09RBTA0004 VOEN___1304456331",
+                "MÜŞTƏRİ MMC", 0, 499,
+            ),
+            # Tarixi boş footer/cəm sətri (mətn yoxdur) → skip
+            _rabitabank_row("", "", "", 235233.29, 240603.66),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 4
+    assert {r["voen"] for r in rows} == {
+        "1405631661", "1503971131", "1700232971", "1600855111",
+    }
+    assert all(r["mebleg"] != 235233.29 for r in rows)  # footer skip
+    assert all(r["mebleg"] != 499 for r in rows)  # kredit skip
+    assert all("komissiya" not in r["ad"].lower() for r in rows)
+    by_voen = {r["voen"]: r for r in rows}
+    assert by_voen["1405631661"]["ad"] == "Digital Classifieds MMC"
 
 
 def test_parse_bank_statement_described_format():
