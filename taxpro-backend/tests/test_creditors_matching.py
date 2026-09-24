@@ -292,6 +292,27 @@ def _yelobank_row(tarix, teyinat, odeyen, medaxil, mexaric):
     return [tarix, tarix, teyinat, odeyen, "803-25010322-9001", medaxil, mexaric, "", 1, mexaric, ""]
 
 
+_BOB_HEADER = [
+    "", "Date", "Debet Account", "Credit Account", "Description",
+    "Profit", "Expenditure", "Balance", "Comission",
+]
+
+
+def _bankofbaku_xlsx(rows, meta_rows=2) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for _ in range(meta_rows):
+        ws.append(["meta"])
+    ws.append(_BOB_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _bankofbaku_row(tarix, debet_acc, credit_acc, teyinat, profit, expenditure):
+    return ["", tarix, debet_acc, credit_acc, teyinat, profit, expenditure, "", 0]
+
+
 # ===== Parser testləri =====
 
 
@@ -873,6 +894,90 @@ def test_parse_bank_statement_yelobank_synthetic():
     assert found is not None
     _, cm = found
     assert cm.get("voen") == 3
+
+
+def test_parse_bank_statement_bankofbaku():
+    raw = (FIXTURES / "BANK OF BAKU ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # 73 debit; 54-ü VÖEN-li, 19 VÖEN-siz (slashsız daxili hesab) → skip.
+    assert len(rows) == 54
+    assert round(sum(r["mebleg"] for r in rows), 2) == 98831.0
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+
+    assert Counter(r["voen"] for r in rows) == {
+        "8300183802": 18,
+        "1300115511": 18,
+        "1602473621": 6,
+        "1701911851": 6,
+        "1309284521": 6,
+    }
+
+    first = rows[0]
+    assert first["voen"] == "8300183802"
+    assert first["ad"] == "Qardasov Vuqar Saday"
+    assert first["mebleg"] == 10000.0
+    assert first["tarix"] == "01.05.2026"
+
+    # Sütun xəritəsi (başlıq Excel sətri 12 = indeks 11)
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    header_idx, col_map = found
+    assert header_idx == 11
+    assert col_map["date"] == 1
+    assert col_map["debit"] == 6
+    assert col_map["name"] == 3
+    assert col_map["voen"] == 3
+    assert col_map["desc"] == 4
+
+
+def test_parse_bank_statement_bankofbaku_synthetic():
+    raw = _bankofbaku_xlsx(
+        [
+            # kompozit "AD / VÖEN / IBAN" debit → daxil
+            _bankofbaku_row(
+                "01.05.2026", "3821000012508814A83",
+                "Qardasov Vuqar Saday / 8300183802 / AZ61IBAZ41040019442118",
+                "avans odenisi", 0, 10000,
+            ),
+            # VÖEN-siz D (slashsız daxili hesab) → skip
+            _bankofbaku_row(
+                "02.05.2026", "3821000012508814A83",
+                "3821000012508814A83", "daxili köçürmə", 0, 500,
+            ),
+            # mənfi Expenditure → skip
+            _bankofbaku_row(
+                "03.05.2026", "3821000012508814A83",
+                "ADSIZ / 1234567890 / AZ00", "geri ödəniş", 0, -5,
+            ),
+            # sıfır Expenditure + kredit (Profit>0) → skip
+            _bankofbaku_row(
+                "04.05.2026", "VASIF DADASOV VAQIF OGLU / 6300178492 / AZ12",
+                "3821000012508814A83", "mədaxil", 5000, 0,
+            ),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 1
+    assert rows[0]["voen"] == "8300183802"
+    assert rows[0]["ad"] == "Qardasov Vuqar Saday"
+    assert rows[0]["mebleg"] == 10000.0
+
+    # Alias dəyişiklikləri başqa başlıqları pozmur (Rabitə nümunəsi)
+    found = _detect_bank_header(
+        [
+            _RABITE_HEADER,
+            _rabitabank_row("01.07.2025", "AZ00 VOEN___1405631661", "X MMC", 100, 0),
+        ]
+    )
+    assert found is not None
+    _, cm = found
+    assert cm.get("debit") == 5  # Debet sütunu
+    assert cm.get("voen") == 3   # Qarşı tərəfin hesab nömrəsi
 
 
 def test_parse_bank_statement_described_format():

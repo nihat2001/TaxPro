@@ -10,8 +10,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
 PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank,
-Bank Respublika, Yelo Bank; digər banklar alias siyahıları ilə
-genişləndirilə bilər).
+Bank Respublika, Yelo Bank, Bank of Baku; digər banklar alias siyahıları
+ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -113,11 +113,15 @@ _BANK_VOEN_ALIASES = (
     "qarsiterefinhesabnomresi",
     "taxid",
     "odeyenalan",  # Yelo: "Ödəyən/alan" kompozitində VÖEN (AD<boşluq>VÖEN)
+    "creditaccount",  # Bank of Baku (debet sətri qarşı tərəfi)
+    "debetaccount",   # Bank of Baku (kredit sətri qarşı tərəfi)
 )
-_BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "debet")
+_BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "expenditure", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
-_BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix")
+_BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix", "date")
 _BANK_NAME_ALIASES = (
+    "creditaccount",   # Bank of Baku ("AD / VÖEN / IBAN")
+    "debetaccount",
     "gondereninadialaninadi",
     "gondereninadi",
     "senderbeneficiaryname",
@@ -135,6 +139,7 @@ _BANK_DESC_ALIASES = (
     "emeliyyatdetallari",
     "emeliyyatinadi",
     "emeliyyatinteyinati",
+    "description",  # Bank of Baku (Təyinat)
 )
 _BANK_REF_ALIASES = (
     "hesabnomresi",
@@ -487,9 +492,10 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     `IBAN VOEN___<rəqəm>` + işarəsiz müsbət Debet/Kredit iki-sütun) və
     Access Bank (ayrıca `Tax ID` sütunu + işarəsiz müsbət Məxaric, ad
     sütunu çoxsətirli), Bank Respublika (ayrıca `VÖEN` sütunu + işarəsiz
-    müsbət `Debet`, `Kredit` atlanır) və Yelo Bank (`Ödəyən/alan`
-    kompozit sütununda `AD<boşluq>VÖEN` + işarəsiz müsbət `Məxaric`)
-    formatlarını tanıyır. Balans/summary sətirləri
+    müsbət `Debet`, `Kredit` atlanır), Yelo Bank (`Ödəyən/alan`
+    kompozit sütununda `AD<boşluq>VÖEN` + işarəsiz müsbət `Məxaric`) və
+    Bank of Baku (`Credit Account` sütununda `AD / VÖEN / IBAN` +
+    işarəsiz müsbət `Expenditure`) formatlarını tanıyır. Balans/summary sətirləri
     atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
