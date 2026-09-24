@@ -10,8 +10,8 @@ alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
 V1: stateless — DB-yə yazılmır; yalnız .xlsx generasiya olunur.
 BANK ÇIXARIŞI parseri dinamik auto-detection ilə çoxbanklıdır (Kapital,
 PAŞA, Yapı Kredi, ABB, Unibank, TuranBank, Rabitəbank, Access Bank,
-Bank Respublika, Yelo Bank, Bank of Baku, VTB Bank, ATB Bank; digər
-banklar alias siyahıları ilə genişləndirilə bilər).
+Bank Respublika, Yelo Bank, Bank of Baku, VTB Bank, ATB Bank, Ziraat Bank;
+digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
@@ -105,6 +105,7 @@ _DEPOZIT_REQUIRED = ("voen", "mexaric")
 #   VÖEN sütunu YOXDUR, debit = mənfi Məbləğ/Məbləğin AZN dəyəri (azndeyeri
 #   üstünlüklü); "Cəmi" sətri "Hesab nömrəsi" sütunundadır.
 _BANK_VOEN_ALIASES = (
+    "muxbirinadi",  # Ziraat: "Müxbirin adı" (D) — "muxbir"-dən əvvəl
     "muxbir",  # ATB: "Müxbir" sütununda AD + VÖEN (voen-dən əvvəl)
     "voen",
     "terefinvoeni",
@@ -121,6 +122,7 @@ _BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "expenditure", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
 _BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix", "date")
 _BANK_NAME_ALIASES = (
+    "muxbirinadi",     # Ziraat: "Müxbirin adı" (D)
     "muxbir",          # ATB: "Müxbir" (qarşı tərəf + VÖEN)
     "creditaccount",   # Bank of Baku ("AD / VÖEN / IBAN")
     "debetaccount",
@@ -363,7 +365,7 @@ _SELF_VOEN_RE = re.compile(r"(?<!\d)(\d{7,12})(?!\d)")
 
 
 def _detect_preamble_family(preamble_rows: list[list[Any]]) -> str | None:
-    """Preamble-dən bank ailəsini təyin edir: `"vtb"` | `"atb"` | `None`."""
+    """Preamble-dən bank ailəsini təyin edir: `"vtb"` | `"atb"` | `"ziraat"` | `None`."""
     normalized = " ".join(
         normalize_text(_cell_text(cell))
         for row in preamble_rows
@@ -373,16 +375,18 @@ def _detect_preamble_family(preamble_rows: list[list[Any]]) -> str | None:
         return "vtb"
     if "azerturkbank" in normalized or "bankatb" in normalized:
         return "atb"
+    if "ziraatbank" in normalized or "tczb" in normalized:
+        return "ziraat"
     return None
 
 
 def _detect_self_voens(preamble_rows: list[list[Any]]) -> set[str]:
-    """VTB/ATB kimi fayllarda öz (kreditor olmayan) VÖEN-ləri preamble-dən çıxarır.
+    """VTB/ATB/Ziraat kimi fayllarda öz (kreditor olmayan) VÖEN-ləri çıxarır.
 
-    Preamble VTB (`bankvtb`) və ya ATB (`azerturkbank`/`bankatb`) kimi
-    aşkarlanarsa, `voen` sözlü preamble sətirlərindəki 7-12 rəqəmli tokenlər
-    toplanır (bankın öz VÖEN-i + hesab sahibinin öz VÖEN-i). Digər banklarda
-    boş set qaytarılır — təsir yoxdur.
+    Preamble VTB (`bankvtb`), ATB (`azerturkbank`/`bankatb`) və ya Ziraat
+    (`ziraatbank`/`tczb`) kimi aşkarlanarsa, `voen` sözlü preamble
+    sətirlərindəki 7-12 rəqəmli tokenlər toplanır (bankın öz VÖEN-i + hesab
+    sahibinin öz VÖEN-i). Digər banklarda boş set qaytarılır — təsir yoxdur.
     """
     family = _detect_preamble_family(preamble_rows)
     if family is None:
@@ -545,10 +549,11 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
     kompozit sütununda `AD<boşluq>VÖEN` + işarəsiz müsbət `Məxaric`) və
     Bank of Baku (`Credit Account` sütununda `AD / VÖEN / IBAN` +
     işarəsiz müsbət `Expenditure`), VTB Bank (ayrıca `VÖEN` sütunu +
-    işarəsiz müsbət `Debet`) və ATB Bank (`Müxbir` sütununda `AD + VÖEN` +
-    işarəsiz müsbət `Debit`) formatlarını tanıyır; VTB/ATB-də bankın/
-    müştərinin öz VÖEN-li sətirləri, ATB-də həmçinin VÖEN-siz sətirlər
-    preamble-dən aşkarlanıb atılır. Balans/summary sətirləri
+    işarəsiz müsbət `Debet`), ATB Bank (`Müxbir` sütununda `AD + VÖEN` +
+    işarəsiz müsbət `Debit`) və Ziraat Bank (`Müxbirin adı`/`Təyinat`-da
+    VÖEN + işarəsiz müsbət `Debet`) formatlarını tanıyır; VTB/ATB/Ziraat-də
+    bankın/müştərinin öz VÖEN-li sətirləri, ATB/Ziraat-da həmçinin VÖEN-siz
+    sətirlər preamble-dən aşkarlanıb atılır. Balans/summary sətirləri
     atlanır. Yalnız debit
     sətirlər qaytarılır — bunlar tədarükçüyə edilən Əsas (principal)
     ödənişlərdir. VÖEN sütunu mövcud olub sətirdə VÖEN çıxmırsa (daxili
@@ -563,9 +568,11 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
         header_idx, col_map = found
         has_voen_col = "voen" in col_map
         preamble = rows[:header_idx]
-        # VTB/ATB kimi fayllarda bank/müştəri öz VÖEN-lərini kreditor sayma
+        # VTB/ATB/Ziraat kimi fayllarda bank/müştəri öz VÖEN-lərini kreditor sayma
         self_voens = _detect_self_voens(preamble)
-        is_atb = _detect_preamble_family(preamble) == "atb"
+        family = _detect_preamble_family(preamble)
+        is_atb = family == "atb"
+        is_ziraat = family == "ziraat"
         result: list[dict[str, Any]] = []
         for row in rows[header_idx + 1 :]:
             name_cell = _get(row, col_map, "name")
@@ -582,7 +589,9 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 normalize_text(x)
                 for x in (name_text, desc_text, voen_raw, ref_raw)
             )
-            if _is_summary_row(combined):
+            if (not is_ziraat) and _is_summary_row(combined):
+                # Ziraat-da Təyinat "qalıq" sözünü ehtiva edə bilər → yalnış
+                # summary; ora footer onsuz da VÖEN-siz skip ilə atılır.
                 continue  # balans/yekun/cəm summary sətirləri
             if not _cell_text(_get(row, col_map, "date")):
                 continue  # tarixi boş footer/cəm sətri (məs. Rabitə 289) → işlənmir
@@ -598,17 +607,20 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
                 amount = abs(amount)
 
             voen, ad = _extract_voen_and_name(voen_cell, name_cell)
-            if voen is None and is_atb:
-                continue  # ATB: VÖEN-siz (komissiya/kassa/daxili) → kreditor deyil
-            if voen is None and has_voen_col and "/" not in voen_raw:
-                # VÖEN sütunu mövcud, sətirdə VÖEN yox → daxili əməliyyat.
-                # "/" olan qarışıq xana (Kapital `IBAN / AD / VÖEN`) real
-                # qarşı tərəfdir; VÖEN-siz olsa da Uyğunsuz kimi saxlanılır.
-                continue
+            if voen is None and is_ziraat:
+                # Ziraat: VÖEN "Müxbirin adı" (D) yoxdursa "Təyinat"dan (H)
+                voen = _extract_voen_from_text(desc_text)
             if voen is None:
+                if is_atb or is_ziraat:
+                    continue  # VÖEN-siz (komissiya/kassa/daxili) → kreditor deyil
+                if has_voen_col and "/" not in voen_raw:
+                    # VÖEN sütunu mövcud, sətirdə VÖEN yox → daxili əməliyyat.
+                    # "/" olan qarışıq xana (Kapital `IBAN / AD / VÖEN`) real
+                    # qarşı tərəfdir; VÖEN-siz olsa da Uyğunsuz kimi saxlanılır.
+                    continue
                 voen = _extract_voen_from_text(desc_text)
             if voen and voen in self_voens:
-                continue  # bank/müştəri öz VÖEN-i → kreditor deyil (VTB/ATB)
+                continue  # bank/müştəri öz VÖEN-i → kreditor deyil (VTB/ATB/Ziraat)
             if not ad:
                 ad = re.sub(r"_x000D_", " ", desc_text).strip()  # təyinatdan ad (Turan)
             result.append(

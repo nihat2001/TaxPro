@@ -372,6 +372,35 @@ def _atb_row(tarix, muxbir, teyinat, debet=None, kredit=None):
     return [tarix, tarix, muxbir, None, teyinat, "DOC1", debet, kredit, None]
 
 
+_ZIRAAT_HEADER = [
+    "Tarix", "Sənədin N-si", "Müxbirin hesabı", "Müxbirin adı",
+    "Debet", "Kredit", "Ara qaliq", "Təyinat", "Əməliyat saatı",
+]
+
+_ZIRAAT_PREAMBLE = [
+    ["27.05.25 16:55"],
+    ["Ziraat Bank Azərbaycan ASC"],
+    ["Kod - 513218,M/H - AZ42NABZ01350100000000095944"],
+    ["Hesablaşma hesabı: ", "AZ53TCZB40030944006598700102"],
+    ["Hesabın Adı: ", "İNTEKS MMC"],
+]
+
+
+def _ziraat_xlsx(rows) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    for r in _ZIRAAT_PREAMBLE:
+        ws.append(r)
+    ws.append(_ZIRAAT_HEADER)
+    for r in rows:
+        ws.append(r)
+    return _save(wb)
+
+
+def _ziraat_row(tarix, muxbirin_adi, teyinat, debet=None, kredit=None):
+    return [tarix, "DOC1", "AZ00TCZB...", muxbirin_adi, debet, kredit, None, teyinat, "10:00:00"]
+
+
 # ===== Parser testləri =====
 
 
@@ -1204,6 +1233,76 @@ def test_parse_bank_statement_atb_synthetic():
     # ATB olmayan preamble → öz-VÖEN aşkarlanmır
     assert _detect_preamble_family([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) is None
     assert _detect_self_voens([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) == set()
+
+
+def test_parse_bank_statement_ziraat():
+    raw = (FIXTURES / "ZİRAAT BANK ÇIXARIŞI.xlsx").read_bytes()
+    rows = parse_bank_statement(raw)
+    # VÖEN-siz (komissiya/daxili/"İNTEKS MMC") sətirlər atılır → 43.
+    assert len(rows) == 43
+    assert round(sum(r["mebleg"] for r in rows), 2) == 3901385.34
+    assert all(r["voen"] and re.fullmatch(r"\d{7,12}", r["voen"]) for r in rows)
+    assert all(r["mebleg"] > 0 for r in rows)
+    assert Counter(r["voen"] for r in rows) == {
+        "1300115511": 24,
+        "1701911851": 12,
+        "1602473621": 5,
+        "2716000000": 2,
+    }
+
+    found = None
+    for sheet_rows in _load_rows(raw):
+        found = _detect_bank_header(sheet_rows)
+        if found is not None:
+            break
+    assert found is not None
+    header_idx, col_map = found
+    assert header_idx == 12
+    assert col_map["date"] == 0
+    assert col_map["debit"] == 4
+    assert col_map["name"] == 3
+    assert col_map["voen"] == 3
+    assert col_map["desc"] == 7
+
+    preamble = _load_rows(raw)[0][:header_idx]
+    assert _detect_preamble_family(preamble) == "ziraat"
+    assert _detect_self_voens(preamble) == set()  # preamble-də müştəri VÖEN-i yox
+
+
+def test_parse_bank_statement_ziraat_synthetic():
+    raw = _ziraat_xlsx(
+        [
+            # VÖEN "Müxbirin adı" (D) → daxil
+            _ziraat_row(
+                "01.01.2022",
+                "VN Milli Gəlir.Departamenti - AZ17CTRE... - 1602473621",
+                "sadələşdirilmiş vergi", debet=1000,
+            ),
+            # VÖEN "Təyinat" (H) → daxil
+            _ziraat_row(
+                "02.01.2022", "AZERISHIQ ASC",
+                "EBBW 1624447 2716000000 AKTİV ENERJİ", debet=500,
+            ),
+            # Təyinat-da "qalıq" var, VÖEN-li → daxil (summary bypass)
+            _ziraat_row(
+                "03.01.2022", "Mərkəzi Sos.Sığ.FUİ - AZ89... - 1300115511",
+                "tutulmalar \nson qalıq", debet=250,
+            ),
+            # VÖEN-siz komissiya → skip
+            _ziraat_row("04.01.2022", "İçərişəhər filialı", "komissiya", debet=120),
+            # müştərinin özü (VÖEN-siz) → skip
+            _ziraat_row("05.01.2022", "İNTEKS MMC", "Transfer", debet=3502.07),
+            # kredit → skip
+            _ziraat_row("06.01.2022", "İNTEKS MMC", "Valyuta Satışı", kredit=1198804.1),
+        ]
+    )
+    rows = parse_bank_statement(raw)
+    assert len(rows) == 3
+    assert {r["voen"] for r in rows} == {"1602473621", "2716000000", "1300115511"}
+    assert all(r["voen"] for r in rows)
+
+    # Ziraat olmayan preamble → ailə aşkarlanmır
+    assert _detect_preamble_family([["ADİ BANK ASC"], ["VÖEN: 1234567890"]]) is None
 
 
 def test_parse_bank_statement_described_format():
