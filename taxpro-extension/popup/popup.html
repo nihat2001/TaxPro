@@ -359,8 +359,21 @@
         </div>
 
         <div class="card">
-          <div class="card-label">DEBİTORLAR</div>
-          <div class="empty-state">Tezliklə…</div>
+          <div class="card-label">DEBİTORLAR (Gedən)</div>
+          <div class="form-group">
+            <label class="file-label" for="debGedenFile">GEDƏN.xlsx (göndərilən qaimələr)</label>
+            <input type="file" id="debGedenFile" accept=".xlsx" />
+          </div>
+          <div class="form-group">
+            <label class="file-label" for="debDepozitFile">DEPOZİT.xlsx (ƏDV sub-uçot çıxarışı)</label>
+            <input type="file" id="debDepozitFile" accept=".xlsx" />
+          </div>
+          <div class="form-group">
+            <label class="file-label" for="debBankFile">BANK ÇIXARIŞI.xlsx (cari hesab çıxarışı)</label>
+            <input type="file" id="debBankFile" accept=".xlsx" />
+          </div>
+          <button id="debGenerateBtn" class="btn primary block" type="button">Generasiya et</button>
+          <div id="debResult" class="import-result" hidden></div>
         </div>
       </section>
     </main>

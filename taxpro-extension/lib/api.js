@@ -236,6 +236,33 @@
       }
       return res.blob();
     },
+
+    /* ===== Debitorlar (Gedən) ===== */
+    generateDebitors: async (gedeni, depozit, bank) => {
+      const base = await getBaseUrl();
+      const fd = new FormData();
+      fd.append("gedeni", gedeni);
+      fd.append("depozit", depozit);
+      fd.append("bank", bank);
+      const res = await fetchWithBase(
+        base,
+        "/api/v1/import/debitors/generate",
+        { method: "POST", body: fd }
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => null);
+        let data = null;
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (err) {
+            data = text;
+          }
+        }
+        throw apiError(res, data);
+      }
+      return res.blob();
+    },
   };
 
   function fileForm(file) {

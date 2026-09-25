@@ -120,6 +120,8 @@ _BANK_VOEN_ALIASES = (
 )
 _BANK_DEBIT_ALIASES = ("mexaric", "debitmebleg", "expenditure", "debet")
 _BANK_SIGNED_ALIASES = ("debit", "azndeyeri", "mebleg")
+# Debitorlar (GEDƏN): əks istiqamət — kredit/mədaxil sütunu
+_BANK_CREDIT_ALIASES = ("kreditmebleg", "kredit", "medaxil", "profit", "income")
 _BANK_DATE_ALIASES = ("emeliyyatintarixi", "emeliyyattarixi", "tarix", "date")
 _BANK_NAME_ALIASES = (
     "muxbirinadi",     # Ziraat: "Müxbirin adı" (D)
@@ -438,6 +440,7 @@ def _detect_bank_header(
         date_col = _first_col(keys, key_to_col, _BANK_DATE_ALIASES)
         debit_col = _first_col(keys, key_to_col, _BANK_DEBIT_ALIASES)
         signed_col = _first_col(keys, key_to_col, _BANK_SIGNED_ALIASES)
+        credit_col = _first_col(keys, key_to_col, _BANK_CREDIT_ALIASES)
         name_col = _first_col(keys, key_to_col, _BANK_NAME_ALIASES)
         desc_col = _first_col(keys, key_to_col, _BANK_DESC_ALIASES)
         ref_col = _first_col(keys, key_to_col, _BANK_REF_ALIASES)
@@ -462,6 +465,8 @@ def _detect_bank_header(
             col_map["debit"] = debit_col
         if signed_col is not None:
             col_map["signed"] = signed_col
+        if credit_col is not None:
+            col_map["credit"] = credit_col
         if name_col is not None:
             col_map["name"] = name_col
         if desc_col is not None:
@@ -504,7 +509,16 @@ def parse_gelen(raw: bytes) -> list[dict[str, Any]]:
     )
 
 
-def parse_depozit(raw: bytes) -> list[dict[str, Any]]:
+def parse_depozit(
+    raw: bytes, direction: str = "expense"
+) -> list[dict[str, Any]]:
+    """DEPOZİT çıxarışını oxuyur.
+
+    direction="expense" (default): "Məxaric" > 0 (Kreditorlar — VÖEN-ə ödənilən
+    ƏDV). direction="income": "Mədaxil" > 0 (Debitorlar — müştərinin ƏDV-ni
+    depozit hesabına ödəməsi).
+    """
+    column = "mexaric" if direction == "expense" else "medaxil"
     rows_list = _load_rows(raw)
     for rows in rows_list:
         found = _find_header(rows, _DEPOZIT_REQUIRED, _DEPOZIT_FIELDS)
@@ -516,25 +530,32 @@ def parse_depozit(raw: bytes) -> list[dict[str, Any]]:
             voen = _voen_str(_get(row, col_map, "voen"))
             if not voen:
                 continue
-            mexaric = _to_float(_get(row, col_map, "mexaric")) or 0.0
-            if mexaric <= 0:
-                continue  # yalnız VÖEN-ə ödənilən ƏDV (Məxaric)
+            amount = _to_float(_get(row, col_map, column)) or 0.0
+            if amount <= 0:
+                continue
             result.append(
                 {
                     "voen": voen,
                     "ad": _cell_text(_get(row, col_map, "ad")),
                     "tarix": _format_date(_get(row, col_map, "tarix")),
-                    "mexaric": mexaric,
+                    "mexaric": amount,
                 }
             )
         return result
     raise ValueError(
-        "DEPOZİT faylında başlıq sətri tapılmadı (VÖEN + Məxaric gözlənilir)."
+        "DEPOZİT faylında başlıq sətri tapılmadı (VÖEN + Məxaric/Mədaxil gözlənilir)."
     )
 
 
-def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
+def parse_bank_statement(
+    raw: bytes, direction: str = "debit"
+) -> list[dict[str, Any]]:
     """Çoxbanklı bank çıxarışı parseri (dinamik auto-detection).
+
+    direction="debit" (default): Kreditorlar — tədarükçüyə edilən ödənişlər
+    (debit/məxaric). direction="credit": Debitorlar — müştəridən daxil olan
+    ödənişlər (kredit/mədaxil); eyni col_map istifadə olunur, yalnız əks
+    məbləğ sütunu oxunur.
 
     Kapital (VÖEN qarışıq mətndə + mənfi Məbləğ/AZN dəyəri), PAŞA
     (VÖEN ayrıca sütunda + müsbət Məxaric), Yapı Kredi "standard"
@@ -596,7 +617,19 @@ def parse_bank_statement(raw: bytes) -> list[dict[str, Any]]:
             if not _cell_text(_get(row, col_map, "date")):
                 continue  # tarixi boş footer/cəm sətri (məs. Rabitə 289) → işlənmir
 
-            if "debit" in col_map:
+            if direction == "credit":
+                # Debitorlar: əks istiqamət — kredit/mədaxil sütunu
+                if "credit" in col_map:
+                    amount = _to_float(_get(row, col_map, "credit"))
+                    if amount is None or amount <= 0:
+                        continue
+                elif "signed" in col_map:
+                    amount = _to_float(_get(row, col_map, "signed"))
+                    if amount is None or amount <= 0:
+                        continue
+                else:
+                    continue  # kredit sütunu yoxdursa (məs. yalnız debit) → atla
+            elif "debit" in col_map:
                 amount = _to_float(_get(row, col_map, "debit"))
                 if amount is None or amount <= 0:
                     continue
@@ -805,11 +838,17 @@ def _auto_fit_columns(ws, money_cols: tuple[int, ...] = ()) -> None:
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
-def _build_supplier_sheet(wb: Workbook, s: dict[str, Any], sheet_name: str) -> int:
+def _build_supplier_sheet(
+    wb: Workbook,
+    s: dict[str, Any],
+    sheet_name: str,
+    main_sheet_name: str = MAIN_SHEET_NAME,
+    back_label: str = "← KREDİTORLAR",
+) -> int:
     ws = wb.create_sheet(sheet_name)
 
     ws["A1"] = s["ad"]
-    _set_link(ws["A1"], MAIN_SHEET_NAME + "!A1", display=s["ad"])
+    _set_link(ws["A1"], main_sheet_name + "!A1", display=s["ad"])
     ws.merge_cells("A1:J1")
     voen_val: Any = s["voen"]
     if voen_val.isdigit() and not voen_val.startswith("0"):
@@ -817,8 +856,8 @@ def _build_supplier_sheet(wb: Workbook, s: dict[str, Any], sheet_name: str) -> i
     ws["A2"] = voen_val
     ws.merge_cells("A2:J2")
     k2 = ws["K2"]
-    k2.value = "← KREDİTORLAR"
-    _set_link(k2, MAIN_SHEET_NAME + "!A1", display="← KREDİTORLAR")
+    k2.value = back_label
+    _set_link(k2, main_sheet_name + "!A1", display=back_label)
 
     ws["A4"] = "Date"
     ws["B4"] = "Elektron Qaimə"
@@ -899,13 +938,18 @@ def _build_unmatched_sheet(wb: Workbook, unmatched: list[dict[str, Any]]) -> Non
     _auto_fit_columns(ws, money_cols=(5,))
 
 
-def build_workbook(match_result: dict[str, Any]) -> bytes:
+def build_workbook(
+    match_result: dict[str, Any],
+    sheet_title: str = MAIN_SHEET_NAME,
+    back_label: str = "← KREDİTORLAR",
+    aciqlama: str = _ACIQLAMA,
+) -> bytes:
     wb = Workbook()
     main = wb.active
-    main.title = MAIN_SHEET_NAME
+    main.title = sheet_title
 
     main["A1"] = "№"
-    main["B1"] = "KREDİTORLAR"
+    main["B1"] = sheet_title
     main["C1"] = "Açıqlama"
     main["D1"] = "Hesablanıb"
     main["F1"] = "Ödənilib"
@@ -924,13 +968,14 @@ def build_workbook(match_result: dict[str, Any]) -> bytes:
     row = 3
     for i, s in enumerate(match_result["suppliers"], start=1):
         sheet_name = unique_sheet_name(s["ad"], s["voen"], used)
-        sum_row = _build_supplier_sheet(wb, s, sheet_name)
+        sum_row = _build_supplier_sheet(wb, s, sheet_name, sheet_title, back_label)
 
         main.cell(row=row, column=1, value=i)
         target = f"{_quote_sheet(sheet_name)}!A1"
+        # Görünən mətn HƏMİŞƏ əsl addır; hyperlink.location arxada qalır
         b_cell = main.cell(row=row, column=2, value=s["ad"])
         _set_link(b_cell, target, display=s["ad"])
-        main.cell(row=row, column=3, value=_ACIQLAMA)
+        main.cell(row=row, column=3, value=aciqlama)
         q = _quote_sheet(sheet_name)
         for col, letter in zip((4, 5, 6, 7, 8, 9), "EFGHIJ"):
             cell = main.cell(row=row, column=col, value=f"={q}!{letter}{sum_row}")
@@ -964,7 +1009,31 @@ def generate_creditors_workbook(
     gelen_raw: bytes, depozit_raw: bytes, bank_raw: bytes
 ) -> bytes:
     gelen_rows = parse_gelen(gelen_raw)
-    depozit_rows = parse_depozit(depozit_raw)
-    bank_rows = parse_bank_statement(bank_raw)
+    depozit_rows = parse_depozit(depozit_raw, direction="expense")
+    bank_rows = parse_bank_statement(bank_raw, direction="debit")
     matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
     return build_workbook(matched)
+
+
+DEBITOR_MAIN_SHEET_NAME = "DEBİTORLAR"
+_DEBITOR_ACIQLAMA = "Mal material satışı"
+
+
+def generate_debitors_workbook(
+    geden_raw: bytes, depozit_raw: bytes, bank_raw: bytes
+) -> bytes:
+    """Debitorlar (Gedən) workbook-u.
+
+    GEDƏN (göndərilən qaimələr) − [bank kredit + depozit mədaxil] = Qalıq.
+    KREDİTORLAR ilə eyni infrastruktur, istiqamət tərsinə.
+    """
+    geden_rows = parse_gelen(geden_raw)
+    depozit_rows = parse_depozit(depozit_raw, direction="income")
+    bank_rows = parse_bank_statement(bank_raw, direction="credit")
+    matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
+    return build_workbook(
+        matched,
+        sheet_title=DEBITOR_MAIN_SHEET_NAME,
+        back_label="← DEBİTORLAR",
+        aciqlama=_DEBITOR_ACIQLAMA,
+    )

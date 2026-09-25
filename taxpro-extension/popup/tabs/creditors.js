@@ -68,9 +68,42 @@
     }
   }
 
+  async function runGenerateDebitors() {
+    const gelen = $("debGedenFile").files[0];
+    const depozit = $("debDepozitFile").files[0];
+    const bank = $("debBankFile").files[0];
+    const btn = $("debGenerateBtn");
+    const resultBox = $("debResult");
+    resultBox.hidden = true;
+
+    if (!gelen || !depozit || !bank) {
+      showToast("3 faylı da seçin (GEDƏN, DEPOZİT, BANK ÇIXARIŞI).", "err");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Yüklənir…";
+    try {
+      const blob = await api.generateDebitors(gelen, depozit, bank);
+      downloadBlob(blob, "taxpro_debitorlar.xlsx");
+      resultBox.innerHTML =
+        '<div class="result-box ok">DEBİTORLAR workbook-u endirildi.</div>';
+    } catch (err) {
+      resultBox.innerHTML =
+        `<div class="result-box err">${escapeHtml(err.message)}</div>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Generasiya et";
+      resultBox.hidden = false;
+    }
+  }
+
   function init() {
     if (!window.TaxProAPI || !document.getElementById("credGenerateBtn")) return;
     $("credGenerateBtn").addEventListener("click", runGenerate);
+    if (document.getElementById("debGenerateBtn")) {
+      $("debGenerateBtn").addEventListener("click", runGenerateDebitors);
+    }
   }
 
   document.addEventListener("DOMContentLoaded", init);

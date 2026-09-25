@@ -19,7 +19,10 @@ from app.services.deterministic.bank_statement_categorizer import (
     categorize_statement_verbose,
     finalize_statement,
 )
-from app.services.deterministic.creditors import generate_creditors_workbook
+from app.services.deterministic.creditors import (
+    generate_creditors_workbook,
+    generate_debitors_workbook,
+)
 from app.services.deterministic.excel_parser import parse_standard
 from app.services.deterministic.profile_service import create_profile
 
@@ -148,6 +151,29 @@ async def generate_creditors(
         media_type=_XLSX_MIME,
         headers={
             "Content-Disposition": 'attachment; filename="taxpro_kreditorlar.xlsx"'
+        },
+    )
+
+
+@router.post("/debitors/generate")
+async def generate_debitors(
+    gedeni: UploadFile = File(...),
+    depozit: UploadFile = File(...),
+    bank: UploadFile = File(...),
+):
+    geden_raw = await gedeni.read()
+    depozit_raw = await depozit.read()
+    bank_raw = await bank.read()
+    try:
+        out = generate_debitors_workbook(geden_raw, depozit_raw, bank_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return StreamingResponse(
+        io.BytesIO(out),
+        media_type=_XLSX_MIME,
+        headers={
+            "Content-Disposition": 'attachment; filename="taxpro_debitorlar.xlsx"'
         },
     )
 

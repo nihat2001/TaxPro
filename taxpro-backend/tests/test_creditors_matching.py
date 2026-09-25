@@ -8,6 +8,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.services.deterministic.creditors import (
+    DEBITOR_MAIN_SHEET_NAME,
     MAIN_SHEET_NAME,
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
@@ -21,6 +22,7 @@ from app.services.deterministic.creditors import (
     _split_counter_account,
     build_workbook,
     generate_creditors_workbook,
+    generate_debitors_workbook,
     match_by_voen,
     parse_bank_statement,
     parse_depozit,
@@ -1650,6 +1652,118 @@ async def test_creditors_generate_invalid_file(client):
         "/api/v1/import/creditors/generate",
         files={
             "gelen": ("g.xlsx", b"notxlsx", XLSX_MIME_CR),
+            "depozit": ("d.xlsx", b"notxlsx", XLSX_MIME_CR),
+            "bank": ("b.xlsx", b"notxlsx", XLSX_MIME_CR),
+        },
+    )
+    assert resp.status_code == 422
+
+
+# ===== DEBİTORLAR (Gedən) =====
+
+
+def test_parse_depozit_income():
+    raw = _depozit_xlsx(
+        [
+            _depozit_row("1601005511", "IMA ENERGY MMC", datetime(2026, 8, 31), 9000, 0),
+            _depozit_row("1403427061", "SAR-2016 MMC", datetime(2026, 8, 19), 0, 1296),
+            _depozit_row("2004739712", "ABDULLAYEVA R", datetime(2026, 8, 19), 0, 208.23),
+        ]
+    )
+    income = parse_depozit(raw, direction="income")
+    assert len(income) == 1  # yalnız Mədaxil > 0
+    assert income[0]["voen"] == "1601005511"
+    assert income[0]["mexaric"] == 9000.0
+
+    expense = parse_depozit(raw, direction="expense")
+    assert len(expense) == 2  # Məxaric > 0 (mövcud davranış qorunur)
+    assert {r["voen"] for r in expense} == {"1403427061", "2004739712"}
+
+
+def test_parse_bank_statement_direction_credit_unsigned():
+    # PAŞA: Mədaxil/Məxaric ayrı, Məxaric unsigned debit → Mədaxil kredit
+    raw = _pasha_xlsx(
+        [
+            _pasha_row("09.06.2026", "CAUCASIAN MMC", "2006687041", "", 5500),  # məxaric
+            _pasha_row("10.06.2026", "IMA ENERGY MMC", "1601005511", 100000, ""),  # mədaxil
+        ]
+    )
+    debit = parse_bank_statement(raw, direction="debit")
+    credit = parse_bank_statement(raw, direction="credit")
+    assert {r["voen"] for r in debit} == {"2006687041"}
+    assert {r["voen"] for r in credit} == {"1601005511"}
+    assert credit[0]["mebleg"] == 100000.0
+
+
+def test_parse_bank_statement_direction_credit_signed():
+    # Yapı Kredi: signed mənfi=debit → müsbət=kredit
+    raw = (FIXTURES / "YAPIKREDİ BANK ÇIXARIŞI.xlsx").read_bytes()
+    debit = parse_bank_statement(raw, direction="debit")
+    credit = parse_bank_statement(raw, direction="credit")
+    assert len(debit) == 3
+    assert len(credit) == 8
+    assert all(r["mebleg"] > 0 for r in credit)
+
+
+def test_parse_bank_statement_direction_credit_real():
+    # Kapital (signed) + Bank of Baku (ayrıca Kredit sütunu) nümayəndələri
+    kapital = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+    bob = (FIXTURES / "BANK OF BAKU ÇIXARIŞI.xlsx").read_bytes()
+    assert len(parse_bank_statement(kapital, direction="credit")) == 2
+    assert len(parse_bank_statement(kapital, direction="debit")) == 50
+    # BoB-də kredit sütunu (Profit) var; debit istiqaməti dəyişməz
+    assert len(parse_bank_statement(bob, direction="debit")) == 54
+
+
+def test_generate_debitors_workbook_bugs():
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+
+    out = generate_debitors_workbook(geden_raw, depozit_raw, bank_raw)
+    wb = load_workbook(io.BytesIO(out))
+
+    assert wb.sheetnames[0] == DEBITOR_MAIN_SHEET_NAME  # "DEBİTORLAR"
+    main = wb[DEBITOR_MAIN_SHEET_NAME]
+    assert main["B1"].value == "DEBİTORLAR"
+
+    # BUQ 1: B sütununun GÖRÜNƏN mətni əsl müştəri adı olmalıdır
+    # (hyperlink.location arxada qalır, hüceyrə dəyəri location string deyil)
+    assert main["B3"].value == main["B3"].hyperlink.display
+    assert "!A1" not in str(main["B3"].value)
+
+    # BUQ 2: geri-link mətni və hədəfi "DEBİTORLAR!A1" olmalıdır
+    sup = wb[wb.sheetnames[1]]
+    assert sup["K2"].value == "← DEBİTORLAR"
+    assert sup["K2"].hyperlink.location == DEBITOR_MAIN_SHEET_NAME + "!A1"
+    assert sup["A1"].hyperlink.location == DEBITOR_MAIN_SHEET_NAME + "!A1"
+
+
+async def test_debitors_generate_endpoint(client):
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "BANK OF BAKU ÇIXARIŞI.xlsx").read_bytes()
+
+    resp = await client.post(
+        "/api/v1/import/debitors/generate",
+        files={
+            "gedeni": ("GEDƏN.xlsx", geden_raw, XLSX_MIME_CR),
+            "depozit": ("DEPOZİT.xlsx", depozit_raw, XLSX_MIME_CR),
+            "bank": ("BANK.xlsx", bank_raw, XLSX_MIME_CR),
+        },
+    )
+    assert resp.status_code == 200
+    assert "spreadsheetml" in resp.headers["content-type"]
+    wb = load_workbook(io.BytesIO(resp.content))
+    assert wb.sheetnames[0] == DEBITOR_MAIN_SHEET_NAME
+    assert wb[DEBITOR_MAIN_SHEET_NAME]["B1"].value == "DEBİTORLAR"
+
+
+async def test_debitors_generate_invalid_file(client):
+    resp = await client.post(
+        "/api/v1/import/debitors/generate",
+        files={
+            "gedeni": ("g.xlsx", b"notxlsx", XLSX_MIME_CR),
             "depozit": ("d.xlsx", b"notxlsx", XLSX_MIME_CR),
             "bank": ("b.xlsx", b"notxlsx", XLSX_MIME_CR),
         },
