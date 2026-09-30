@@ -20,6 +20,7 @@ from app.services.deterministic.bank_statement_categorizer import (
     finalize_statement,
 )
 from app.services.deterministic.creditors import (
+    MAX_BANK_FILES,
     generate_creditors_workbook,
     generate_debitors_workbook,
 )
@@ -132,17 +133,37 @@ async def finalize_bank_statement(
     )
 
 
+async def _read_banks(bank: list[UploadFile]) -> list[tuple[str, bytes]]:
+    """Çoxlu bank faylını oxuyur; say limitini yoxlayır."""
+    if not bank:
+        raise HTTPException(
+            status_code=422, detail="Bank çıxarışı faylı tələb olunur."
+        )
+    if len(bank) > MAX_BANK_FILES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Maksimum {MAX_BANK_FILES} bank çıxarışı faylı göndərilə bilər "
+                f"(göndərilən: {len(bank)})."
+            ),
+        )
+    result: list[tuple[str, bytes]] = []
+    for f in bank:
+        result.append((f.filename or "bank", await f.read()))
+    return result
+
+
 @router.post("/creditors/generate")
 async def generate_creditors(
     gelen: UploadFile = File(...),
     depozit: UploadFile = File(...),
-    bank: UploadFile = File(...),
+    bank: list[UploadFile] = File(...),
 ):
     gelen_raw = await gelen.read()
     depozit_raw = await depozit.read()
-    bank_raw = await bank.read()
+    banks = await _read_banks(bank)
     try:
-        out = generate_creditors_workbook(gelen_raw, depozit_raw, bank_raw)
+        out = generate_creditors_workbook(gelen_raw, depozit_raw, banks)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -159,13 +180,13 @@ async def generate_creditors(
 async def generate_debitors(
     gedeni: UploadFile = File(...),
     depozit: UploadFile = File(...),
-    bank: UploadFile = File(...),
+    bank: list[UploadFile] = File(...),
 ):
     geden_raw = await gedeni.read()
     depozit_raw = await depozit.read()
-    bank_raw = await bank.read()
+    banks = await _read_banks(bank)
     try:
-        out = generate_debitors_workbook(geden_raw, depozit_raw, bank_raw)
+        out = generate_debitors_workbook(geden_raw, depozit_raw, banks)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

@@ -165,11 +165,29 @@ Bank of Baku 54 · Bank Respublika 43 · Kapital 50 · PAŞA 43 · Rabitə 53 ·
 VTB 32 · Yapı Kredi 3 · Yelo 31 · Ziraat 43.
 
 **Nəticə workbook:** master sheet (**KREDİTORLAR** / **DEBİTORLAR**) + hər tərəf üçün ayrı sheet
-(hiperlink + SUM formulları, geri-link `← KREDİTORLAR` / `← DEBİTORLAR`) + "Uyğunsuz ödənişlər" sheet.
-B sütununun görünən mətni həmişə əsl addır; hyperlink hədəfi arxada saxlanılır.
+(hiperlink + SUM formulları, geri-link `← KREDİTORLAR` / `← DEBİTORLAR`) + "Uyğunsuz ödənişlər" sheet
++ **"Banklar üzrə xülasə"** sheet (həmişə, ən sonda). B sütununun görünən mətni həmişə əsl addır;
+hyperlink hədəfi arxada saxlanılır.
 
-**Endpoint-lər:** `POST /import/creditors/generate` (`gelen`, `depozit`, `bank`) və
-`POST /import/debitors/generate` (`gedeni`, `depozit`, `bank`) → `.xlsx` stream.
+**Çoxlu bank çıxarışı:** hər iki kart bir neçə bank faylını (fərqli banklar/hesablar/dövrlər) qəbul edir.
+Hər fayl ayrı-ayrı parse olunur, sonra birləşdirilir (hesablama düsturu dəyişmir). Hər ödənişə mənbə
+etiketi verilir: preamble-dən VTB/ATB/Ziraat aşkarlanarsa onun adı, əks halda uzantısız fayl adı; eyni
+etiket təkrarlanarsa " (2)", " (3)". Təchizatçı/müştəri sheet-lərində **"Bank"** sütunu (K), "Uyğunsuz
+ödənişlər"-də **"Bank"** sütunu (F); depozit ödənişləri üçün `Depozit (ƏDV)`. Eyni məzmunlu fayl (SHA-256)
+ikinci dəfə sayılmır — "Banklar üzrə xülasə"-də 0 əməliyyat + "Dublikat, sayılmadı" qeydi və ayrıca
+"Xəbərdarlıq" sətri. Limit: maksimum **20** bank faylı; korlanmış fayl → 422 (fayl adı ilə);
+boş siyahı → 422.
+
+**"Banklar üzrə xülasə"** sütunları: Bank · Fayl adı · Əməliyyat sayı · Ümumi məbləğ · Uyğunlaşan ·
+Uyğunsuz · Qeyd (+ `ÜMUMİ` sətri, `=SUM`). Yalnız bank fayllarını əhatə edir; depozit cəmlərə qarışmır.
+
+**Endpoint-lər:** `POST /import/creditors/generate` (`gelen`, `depozit`, `bank`×N) və
+`POST /import/debitors/generate` (`gedeni`, `depozit`, `bank`×N) → `.xlsx` stream. Multipart-da `bank`
+sahəsi təkrarlanan hissələr kimi göndərilir (tək fayl da geriyə uyğun işləyir).
+
+**Extension "Hesabat" tabı:** hər iki kartda `multiple` bank seçicisi — seçilmiş fayllar siyahı kimi
+(ad, ölçü, `×`), "Seçilib: N fayl" sayğacı, "Hamısını təmizlə" düyməsi; yalnız `.xlsx/.xls`; təkrar
+fayl əlavə olunmur; maksimum 20. Kreditorlar və Debitorlar state-i müstəqildir.
 
 ## Təhlükəsizlik qeydləri
 

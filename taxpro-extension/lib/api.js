@@ -211,12 +211,12 @@
     },
 
     /* ===== Kreditorlar/Debitorlar (Gələn) ===== */
-    generateCreditors: async (gelen, depozit, bank) => {
+    generateCreditors: async (gelen, depozit, banks) => {
       const base = await getBaseUrl();
       const fd = new FormData();
       fd.append("gelen", gelen);
       fd.append("depozit", depozit);
-      fd.append("bank", bank);
+      (Array.isArray(banks) ? banks : [banks]).forEach((b) => fd.append("bank", b));
       const res = await fetchWithBase(
         base,
         "/api/v1/import/creditors/generate",
@@ -238,12 +238,12 @@
     },
 
     /* ===== Debitorlar (Gedən) ===== */
-    generateDebitors: async (gedeni, depozit, bank) => {
+    generateDebitors: async (gedeni, depozit, banks) => {
       const base = await getBaseUrl();
       const fd = new FormData();
       fd.append("gedeni", gedeni);
       fd.append("depozit", depozit);
-      fd.append("bank", bank);
+      (Array.isArray(banks) ? banks : [banks]).forEach((b) => fd.append("bank", b));
       const res = await fetchWithBase(
         base,
         "/api/v1/import/debitors/generate",

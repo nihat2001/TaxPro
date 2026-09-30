@@ -8,7 +8,9 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.services.deterministic.creditors import (
+    BANK_SUMMARY_SHEET_NAME,
     DEBITOR_MAIN_SHEET_NAME,
+    MAX_BANK_FILES,
     MAIN_SHEET_NAME,
     UNMATCHED_SHEET_NAME,
     _clean_counterparty_name,
@@ -1448,7 +1450,9 @@ def test_build_workbook_main_sheet():
     wb = load_workbook(io.BytesIO(out))
     assert MAIN_SHEET_NAME in wb.sheetnames
     assert UNMATCHED_SHEET_NAME in wb.sheetnames
-    assert len(wb.sheetnames) == 4  # main + 2 tədarükçü + uyğunsuz
+    # main + 2 tədarükçü + uyğunsuz + "Banklar üzrə xülasə"
+    assert len(wb.sheetnames) == 5
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
 
     main = wb[MAIN_SHEET_NAME]
     assert main["B1"].value == "KREDİTORLAR"
@@ -1606,9 +1610,10 @@ def test_integration_real_files():
 
     out = generate_creditors_workbook(gelen_raw, depozit_raw, bank_raw)
     wb = load_workbook(io.BytesIO(out))
-    assert len(wb.sheetnames) == 59  # main + 57 tədarükçü + uyğunsuz
+    assert len(wb.sheetnames) == 60  # main + 57 tədarükçü + uyğunsuz + xülasə
     assert wb.sheetnames[0] == MAIN_SHEET_NAME
-    assert wb.sheetnames[-1] == UNMATCHED_SHEET_NAME
+    assert wb.sheetnames[-2] == UNMATCHED_SHEET_NAME
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
 
     main = wb[MAIN_SHEET_NAME]
     assert main.max_row == 60  # başlıq 2 + 57 tədarükçü + CƏMİ
@@ -1644,7 +1649,8 @@ async def test_creditors_generate_endpoint(client):
 
     wb = load_workbook(io.BytesIO(resp.content))
     assert wb.sheetnames[0] == MAIN_SHEET_NAME
-    assert wb.sheetnames[-1] == UNMATCHED_SHEET_NAME
+    assert UNMATCHED_SHEET_NAME in wb.sheetnames
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
 
 
 async def test_creditors_generate_invalid_file(client):
@@ -1769,3 +1775,247 @@ async def test_debitors_generate_invalid_file(client):
         },
     )
     assert resp.status_code == 422
+
+
+# ===== Çoxlu bank çıxarışı =====
+
+
+def _bank_fixture(name: str) -> bytes:
+    return (FIXTURES / name).read_bytes()
+
+
+def _cem(rows) -> float:
+    return round(sum(r["mebleg"] for r in rows), 4)
+
+
+def test_coxlu_bank_kapital_access_kreditorlar():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    access = _bank_fixture("ACCES BANK ÇIXARIŞI.xlsx")
+
+    def _paid(banks):
+        out = generate_creditors_workbook(gelen_raw, depozit_raw, banks)
+        wb = load_workbook(io.BytesIO(out))
+        ws = wb[BANK_SUMMARY_SHEET_NAME]
+        return {
+            ws.cell(row=r, column=1).value: (
+                ws.cell(row=r, column=3).value,
+                ws.cell(row=r, column=4).value,
+            )
+            for r in range(2, ws.max_row + 1)
+            if ws.cell(row=r, column=1).value not in (None, "ÜMUMİ")
+        }
+
+    tek = _paid([("kapital.xlsx", kapital)])
+    tek_a = _paid([("access.xlsx", access)])
+    cox = _paid([("kapital.xlsx", kapital), ("access.xlsx", access)])
+
+    # Çoxbanklı saylar/cəmlər ayrı-ayrı nəticələrin DƏQİQ cəmidir
+    assert cox["kapital"][0] == tek["kapital"][0]
+    assert cox["access"][0] == tek_a["access"][0]
+    assert round(cox["kapital"][1], 2) == round(tek["kapital"][1], 2)
+    assert round(cox["access"][1], 2) == round(tek_a["access"][1], 2)
+    # Real fixture sayları sabit
+    assert cox["kapital"][0] == 50
+    assert cox["access"][0] == 154
+
+
+def test_coxlu_bank_kapital_access_debitorlar():
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    access = _bank_fixture("ACCES BANK ÇIXARIŞI.xlsx")
+
+    tek = _cem(parse_bank_statement(kapital, direction="credit"))
+    tek_a = _cem(parse_bank_statement(access, direction="credit"))
+
+    out = generate_debitors_workbook(
+        geden_raw, depozit_raw, [("kapital.xlsx", kapital), ("access.xlsx", access)]
+    )
+    wb = load_workbook(io.BytesIO(out))
+    assert wb.sheetnames[0] == DEBITOR_MAIN_SHEET_NAME
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    rows = {
+        ws.cell(row=r, column=1).value: ws.cell(row=r, column=4).value
+        for r in range(2, ws.max_row + 1)
+        if ws.cell(row=r, column=1).value not in (None, "ÜMUMİ")
+    }
+    assert round(rows["kapital"], 2) == round(tek, 2)
+    assert round(rows["access"], 2) == round(tek_a, 2)
+
+
+def test_uc_bank_bank_sutunu_ve_xulase():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    banks = [
+        ("kapital.xlsx", _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")),
+        ("access.xlsx", _bank_fixture("ACCES BANK ÇIXARIŞI.xlsx")),
+        ("vtb.xlsx", _bank_fixture("VTB BANK ÇIXARIŞI.xlsx")),
+    ]
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, banks)
+    wb = load_workbook(io.BytesIO(out))
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    labels = {
+        ws.cell(row=r, column=1).value for r in range(2, 5)
+    }
+    assert {"kapital", "access", "VTB"} <= labels
+
+    # Hər bankın uyğunlaşan+uyğunsuz = ümumi
+    for r in range(2, 5):
+        cem = ws.cell(row=r, column=4).value or 0
+        uy = ws.cell(row=r, column=5).value or 0
+        uyg = ws.cell(row=r, column=6).value or 0
+        assert round(uy + uyg, 2) == round(cem, 2)
+
+
+def test_eyni_voen_farqli_bank_odenisleri_bank_sutunu():
+    # Eyni VÖEN-ə iki fərqli bankdan ödəniş → bir sheet, Bank sütunu fərqlənir
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    banks = [
+        ("kapital.xlsx", _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")),
+        ("access.xlsx", _bank_fixture("ACCES BANK ÇIXARIŞI.xlsx")),
+    ]
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, banks)
+    wb = load_workbook(io.BytesIO(out))
+
+    found_bank_col = False
+    for name in wb.sheetnames[1:]:
+        ws = wb[name]
+        if ws["K4"].value == "Bank":
+            for r in range(6, ws.max_row + 1):
+                v = ws.cell(row=r, column=11).value
+                if v in ("kapital", "access"):
+                    found_bank_col = True
+                    break
+        if found_bank_col:
+            break
+    assert found_bank_col
+
+
+def test_eyni_fayl_iki_defe_texrarsiz():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+
+    out = generate_creditors_workbook(
+        gelen_raw, depozit_raw, [("k.xlsx", kapital), ("k2.xlsx", kapital)]
+    )
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    dup = [
+        (ws.cell(row=r, column=3).value, ws.cell(row=r, column=7).value)
+        for r in range(2, ws.max_row + 1)
+        if ws.cell(row=r, column=7).value == "Dublikat, sayılmadı"
+    ]
+    assert len(dup) == 1
+    assert dup[0][0] == 0
+    texts = [
+        str(ws.cell(row=r, column=1).value or "")
+        for r in range(1, ws.max_row + 1)
+    ]
+    assert any("eyni" in t and "sayılmadı" in t for t in texts)
+
+
+def test_korlanmis_fayl_xetasi_fayl_adi():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    with pytest.raises(ValueError, match="problemli.xlsx"):
+        generate_creditors_workbook(
+            gelen_raw, depozit_raw, [("problemli.xlsx", b"notxlsx")]
+        )
+
+
+def test_sheet_adi_toqqusma_31_limit():
+    used = {UNMATCHED_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    n1 = unique_sheet_name(BANK_SUMMARY_SHEET_NAME, "1234567890", used)
+    assert n1 != BANK_SUMMARY_SHEET_NAME
+    assert len(n1) <= 31
+
+
+def test_eyni_etiket_2_ayrimi():
+    # Eyni ada malik iki FƏRQLİ fayl → "X", "X (2)" (VTB ailəsi ikisində də)
+    vtb = _bank_fixture("VTB BANK ÇIXARIŞI.xlsx")
+    # İkinci fayl eyni VTB strukturu, amma bayt fərqi ilə (dublikat olmasın):
+    # VTB sintetik faylını ayrıca qurmaq əvəzinə ATB-ni VTB kimi etiketləmək
+    # mümkün deyil; ona görə eyni fayl adı, fərqli məzmun yaradırıq.
+    from openpyxl import Workbook as _WB
+    wb0 = _WB()
+    ws0 = wb0.active
+    ws0.append(["BANK VTB (AZƏRBAYCAN) ASC"])
+    ws0.append(["VÖEN: 1400117231"])
+    ws0.append(["Hesab", "X"])
+    ws0.append(["VÖEN", "1302070301"])
+    ws0.append(["Tarix", "Qarşı hesab", "Adı", "VÖEN", "Debet", "Kredit", "Qalıq", "Təyinat"])
+    ws0.append(["16.12.2025 12:55", "AZ13", "SH Logistik MMC", "2005868601", 1650, None, None, "odəniş"])
+    buf = io.BytesIO()
+    wb0.save(buf)
+    vtb2 = buf.getvalue()
+
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    out = generate_creditors_workbook(
+        gelen_raw, depozit_raw, [("vtb1.xlsx", vtb), ("vtb2.xlsx", vtb2)]
+    )
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    labels = [ws.cell(row=r, column=1).value for r in range(2, 4)]
+    assert labels == ["VTB", "VTB (2)"]
+
+
+async def test_creditors_generate_multiple_bank(client):
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    access = _bank_fixture("ACCES BANK ÇIXARIŞI.xlsx")
+    resp = await client.post(
+        "/api/v1/import/creditors/generate",
+        files=[
+            ("gelen", ("GƏLƏN.xlsx", gelen_raw, XLSX_MIME_CR)),
+            ("depozit", ("DEPOZİT.xlsx", depozit_raw, XLSX_MIME_CR)),
+            ("bank", ("k.xlsx", kapital, XLSX_MIME_CR)),
+            ("bank", ("a.xlsx", access, XLSX_MIME_CR)),
+        ],
+    )
+    assert resp.status_code == 200
+    wb = load_workbook(io.BytesIO(resp.content))
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+
+
+async def test_debitors_generate_multiple_bank(client):
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    bob = _bank_fixture("BANK OF BAKU ÇIXARIŞI.xlsx")
+    resp = await client.post(
+        "/api/v1/import/debitors/generate",
+        files=[
+            ("gedeni", ("GEDƏN.xlsx", geden_raw, XLSX_MIME_CR)),
+            ("depozit", ("DEPOZİT.xlsx", depozit_raw, XLSX_MIME_CR)),
+            ("bank", ("k.xlsx", kapital, XLSX_MIME_CR)),
+            ("bank", ("b.xlsx", bob, XLSX_MIME_CR)),
+        ],
+    )
+    assert resp.status_code == 200
+    wb = load_workbook(io.BytesIO(resp.content))
+    assert wb.sheetnames[0] == DEBITOR_MAIN_SHEET_NAME
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+
+
+async def test_20_den_cox_bank_rejected(client):
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    kapital = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    files = [
+        ("gelen", ("GƏLƏN.xlsx", gelen_raw, XLSX_MIME_CR)),
+        ("depozit", ("DEPOZİT.xlsx", depozit_raw, XLSX_MIME_CR)),
+    ]
+    for i in range(MAX_BANK_FILES + 1):
+        files.append(("bank", (f"b{i}.xlsx", kapital, XLSX_MIME_CR)))
+    resp = await client.post("/api/v1/import/creditors/generate", files=files)
+    assert resp.status_code == 422
+    assert str(MAX_BANK_FILES) in resp.json()["detail"]

@@ -641,3 +641,58 @@ input[type="file"] {
   font-size: 12px;
 }
 
+/* Çoxlu bank faylı seçicisi */
+.file-counter {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.file-chips {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text);
+}
+.file-chip .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-chip .file-size {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.file-chip .file-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.file-chip .file-remove:hover {
+  color: #ff5c6c;
+}
+.file-clear {
+  margin-top: 6px;
+  width: auto;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+

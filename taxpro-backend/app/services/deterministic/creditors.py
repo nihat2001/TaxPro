@@ -15,7 +15,9 @@ digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
+import hashlib
 import io
+import os
 import re
 from datetime import date, datetime
 from typing import Any
@@ -29,6 +31,13 @@ from app.services.deterministic.excel_parser import normalize_text
 
 # ===== Sheet / sütun sabitləri =====
 MAIN_SHEET_NAME = "KREDİTORLAR"
+BANK_SUMMARY_SHEET_NAME = "Banklar üzrə xülasə"
+# Çoxlu bank çıxarışı: maksimum fayl sayı (endpoint səviyyəsində yoxlanılır)
+MAX_BANK_FILES = 20
+# Depozit ödənişlərinin "Bank" sütununda göstərilən mənbə etiketi
+DEPOZIT_BANK_LABEL = "Depozit (ƏDV)"
+# Bank preamble ailələri üçün oxunaqlı etiketlər
+_FAMILY_LABELS = {"vtb": "VTB", "atb": "ATB", "ziraat": "Ziraat"}
 UNMATCHED_SHEET_NAME = "Uyğunsuz ödənişlər"
 _ACIQLAMA = "Mal material satışı"
 
@@ -286,6 +295,47 @@ def _load_rows(raw: bytes) -> list[list[list[Any]]]:
     except Exception as exc:
         raise ValueError(f"Fayl oxunmadı (Excel gözlənilir): {exc}")
     return [[[cell.value for cell in row] for row in ws.iter_rows()] for ws in wb.worksheets]
+
+
+def _sha256(raw: bytes) -> str:
+    """Fayl məzmununun SHA-256 heşi (dublikat aşkarlaması üçün)."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _bank_source_label(filename: str, raw: bytes, used: set[str]) -> str:
+    """Bank faylı üçün mənbə etiketi qaytarır.
+
+    Preamble-dən VTB/ATB/Ziraat ailəsi aşkarlanarsa onun adı, əks halda
+    fayl adı (uzantısız, os.path.basename). Ad boş olarsa "bank_N" ehtiyatı.
+    Eyni etiket təkrarlanarsa sonuna " (2)", " (3)" ... əlavə olunur.
+    """
+    label = ""
+    try:
+        rows_list = _load_rows(raw)
+    except ValueError:
+        rows_list = []  # korlanmış fayl → etiket fayl adından götürülür
+    for rows in rows_list:
+        header = _detect_bank_header(rows)
+        if header is None:
+            continue
+        family = _detect_preamble_family(rows[: header[0]])
+        if family in _FAMILY_LABELS:
+            label = _FAMILY_LABELS[family]
+        break
+    if not label:
+        base = os.path.basename(filename or "").strip()
+        if base:
+            label = os.path.splitext(base)[0].strip()
+    if not label:
+        label = f"bank_{len(used) + 1}"
+    # Təkrar etiketlərə " (2)", " (3)" əlavə et
+    candidate = label
+    idx = 2
+    while candidate in used:
+        candidate = f"{label} ({idx})"
+        idx += 1
+    used.add(candidate)
+    return candidate
 
 
 def _split_counter_account(text: str) -> tuple[str | None, str]:
@@ -671,6 +721,110 @@ def parse_bank_statement(
     )
 
 
+def _normalize_banks(
+    banks: Any,
+) -> list[tuple[str, bytes]]:
+    """`banks` bayt (köhnə) və ya (ad, bayt) siyahısı ola bilər."""
+    if isinstance(banks, (bytes, bytearray)):
+        return [("bank", bytes(banks))]
+    result: list[tuple[str, bytes]] = []
+    for item in banks:
+        if isinstance(item, (bytes, bytearray)):
+            result.append(("bank", bytes(item)))
+        else:
+            name, raw = item
+            result.append((name, bytes(raw)))
+    return result
+
+
+def _parse_banks(
+    banks: Any, direction: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Çoxlu bank faylını tək-tək parse edib birləşdirir.
+
+    Qaytarır: (birləşmiş bank_rows [hər sətirdə "bank" etiketi], xülasə
+    sətirləri, xəbərdarlıq siyahısı). Eyni SHA-256-lı təkrar fayl sayılmır.
+    """
+    normalized = _normalize_banks(banks)
+    if not normalized:
+        raise ValueError("Bank çıxarışı faylı tələb olunur.")
+
+    used_labels: set[str] = set()
+    seen_hashes: dict[str, str] = {}  # hash -> label
+    combined: list[dict[str, Any]] = []
+    summary: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for idx, (filename, raw) in enumerate(normalized, start=1):
+        digest = _sha256(raw)
+        if digest in seen_hashes:
+            dup_of = seen_hashes[digest]
+            label = _bank_source_label(filename, raw, used_labels)
+            warnings.append(
+                f"'{filename or label}' faylı '{dup_of}' ilə eynidir, sayılmadı."
+            )
+            summary.append(
+                {
+                    "bank": label,
+                    "fayl": filename or label,
+                    "say": 0,
+                    "cem": 0.0,
+                    "uygunlasan": 0.0,
+                    "uygunsuz": 0.0,
+                    "qeyd": "Dublikat, sayılmadı",
+                }
+            )
+            continue
+        seen_hashes[digest] = filename or f"bank_{idx}"
+
+        label = _bank_source_label(filename, raw, used_labels)
+        try:
+            rows = parse_bank_statement(raw, direction=direction)
+        except ValueError as exc:
+            raise ValueError(f"'{filename or label}' faylı oxunmadı: {exc}")
+
+        total = 0.0
+        for r in rows:
+            r["bank"] = label
+            combined.append(r)
+            total += r["mebleg"]
+        summary.append(
+            {
+                "bank": label,
+                "fayl": filename or label,
+                "say": len(rows),
+                "cem": round(total, 4),
+                "uygunlasan": 0.0,
+                "uygunsuz": 0.0,
+                "qeyd": "",
+            }
+        )
+
+    return combined, summary, warnings
+
+
+def _finalize_bank_summary(
+    summary: list[dict[str, Any]],
+    matched: dict[str, Any],
+) -> None:
+    """Uyğunlaşan/uyğunsuz məbləğləri bank etiketi üzrə doldurur (hesablama dəyişmir)."""
+    by_label = {r["bank"]: r for r in summary if r.get("qeyd") != "Dublikat, sayılmadı"}
+    for s in matched["suppliers"]:
+        for p in s["odenis_esas"]:
+            label = p.get("bank", "")
+            if label in by_label:
+                by_label[label]["uygunlasan"] += p["mebleg"]
+    for u in matched["unmatched"]:
+        if u.get("menbe") != "Bank":
+            continue  # Depozit uyğunsuzları bank xülasəsinə düşmür
+        label = u.get("bank", "")
+        if label in by_label:
+            by_label[label]["uygunsuz"] += u["mebleg"]
+    for r in summary:
+        r["uygunlasan"] = round(r["uygunlasan"], 4)
+        r["uygunsuz"] = round(r["uygunsuz"], 4)
+
+
 def match_by_voen(
     gelen_rows: list[dict[str, Any]],
     depozit_rows: list[dict[str, Any]],
@@ -693,9 +847,11 @@ def match_by_voen(
 
     unmatched: list[dict[str, Any]] = []
     for b in bank_rows:
+        # "bank" YALNIZ etiketdir — uyğunlaşdırma açarına qatılmır.
+        bank_label = b.get("bank", "")
         if b["voen"] and b["voen"] in suppliers:
             suppliers[b["voen"]]["odenis_esas"].append(
-                {"tarix": b["tarix"], "mebleg": b["mebleg"]}
+                {"tarix": b["tarix"], "mebleg": b["mebleg"], "bank": bank_label}
             )
         else:
             unmatched.append(
@@ -705,12 +861,13 @@ def match_by_voen(
                     "tarix": b["tarix"],
                     "menbe": "Bank",
                     "mebleg": b["mebleg"],
+                    "bank": bank_label,
                 }
             )
     for d in depozit_rows:
         if d["voen"] and d["voen"] in suppliers:
             suppliers[d["voen"]]["odenis_edv"].append(
-                {"tarix": d["tarix"], "mebleg": d["mexaric"]}
+                {"tarix": d["tarix"], "mebleg": d["mexaric"], "bank": DEPOZIT_BANK_LABEL}
             )
         else:
             unmatched.append(
@@ -720,6 +877,7 @@ def match_by_voen(
                     "tarix": d["tarix"],
                     "menbe": "Depozit",
                     "mebleg": d["mexaric"],
+                    "bank": DEPOZIT_BANK_LABEL,
                 }
             )
 
@@ -865,18 +1023,22 @@ def _build_supplier_sheet(
     ws["E4"] = "Hesablanıb"
     ws["G4"] = "Ödənilib"
     ws["I4"] = "Qalıq"
+    ws["K4"] = "Bank"
     ws["E5"] = "Əsas"
     ws["F5"] = "ƏDV"
     ws["G5"] = "Əsas"
     ws["H5"] = "ƏDV"
     ws["I5"] = "Əsas"
     ws["J5"] = "ƏDV"
-    for rng in ("A4:A5", "B4:C5", "D4:D5", "E4:F4", "G4:H4", "I4:J4"):
+    for rng in ("A4:A5", "B4:C5", "D4:D5", "E4:F4", "G4:H4", "I4:J4", "K4:K5"):
         ws.merge_cells(rng)
 
     qaimeler = sorted(s["qaimeler"], key=lambda q: q["tarix"])
-    events = [(p["tarix"], p["mebleg"], 0.0) for p in s["odenis_esas"]] + [
-        (p["tarix"], 0.0, p["mebleg"]) for p in s["odenis_edv"]
+    # Sıralama sabit (stable): eyni tarixdə əvvəl əsas, sonra ƏDV ödənişləri
+    events = [
+        (p["tarix"], p["mebleg"], 0.0, p.get("bank", "")) for p in s["odenis_esas"]
+    ] + [
+        (p["tarix"], 0.0, p["mebleg"], p.get("bank", "")) for p in s["odenis_edv"]
     ]
     events.sort(key=lambda e: e[0])
 
@@ -888,22 +1050,26 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=5, value=q["esas"])
         ws.cell(row=row, column=6, value=q["edv"])
         if i == 0 and events:
-            tarix, esas, edv = events.pop(0)
+            tarix, esas, edv, bank = events.pop(0)
             ws.cell(row=row, column=4, value=tarix)
             if esas:
                 ws.cell(row=row, column=7, value=esas)
             if edv:
                 ws.cell(row=row, column=8, value=edv)
+            if bank:
+                ws.cell(row=row, column=11, value=bank)
         ws.cell(row=row, column=9, value=f"=E{row}-G{row}")
         ws.cell(row=row, column=10, value=f"=F{row}-H{row}")
         row += 1
 
-    for tarix, esas, edv in events:
+    for tarix, esas, edv, bank in events:
         ws.cell(row=row, column=4, value=tarix)
         if esas:
             ws.cell(row=row, column=7, value=esas)
         if edv:
             ws.cell(row=row, column=8, value=edv)
+        if bank:
+            ws.cell(row=row, column=11, value=bank)
         ws.cell(row=row, column=9, value=f"=E{row}-G{row}")
         ws.cell(row=row, column=10, value=f"=F{row}-H{row}")
         row += 1
@@ -917,25 +1083,94 @@ def _build_supplier_sheet(
         for col in "EFGHIJ":
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}6)"
 
-    _style_header_row(ws, 4, 10)
-    _style_header_row(ws, 5, 10)
+    _style_header_row(ws, 4, 11)
+    _style_header_row(ws, 5, 11)
     _style_money(ws, 6, sum_row, [5, 6, 7, 8, 9, 10])
-    _apply_text_alignment(ws, 6, sum_row, [1, 2, 3, 4])
-    _apply_borders(ws, 4, sum_row, 1, 10)
+    _apply_text_alignment(ws, 6, sum_row, [1, 2, 3, 4, 11])
+    _apply_borders(ws, 4, sum_row, 1, 11)
     _auto_fit_columns(ws, money_cols=(5, 6, 7, 8, 9, 10))
     return sum_row
 
 
 def _build_unmatched_sheet(wb: Workbook, unmatched: list[dict[str, Any]]) -> None:
     ws = wb.create_sheet(UNMATCHED_SHEET_NAME)
-    ws.append(["VÖEN", "Ad", "Tarix", "Mənbə", "Məbləğ"])
+    ws.append(["VÖEN", "Ad", "Tarix", "Mənbə", "Məbləğ", "Bank"])
     for u in unmatched:
-        ws.append([u["voen"], u["ad"], u["tarix"], u["menbe"], u["mebleg"]])
-    _style_header_row(ws, 1, 5)
+        ws.append(
+            [
+                u["voen"],
+                u["ad"],
+                u["tarix"],
+                u["menbe"],
+                u["mebleg"],
+                u.get("bank", ""),
+            ]
+        )
+    _style_header_row(ws, 1, 6)
     _style_money(ws, 2, max(ws.max_row, 2), [5])
-    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 3, 4])
-    _apply_borders(ws, 1, max(ws.max_row, 2), 1, 5)
+    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 3, 4, 6])
+    _apply_borders(ws, 1, max(ws.max_row, 2), 1, 6)
     _auto_fit_columns(ws, money_cols=(5,))
+
+
+def _build_bank_summary_sheet(
+    wb: Workbook,
+    bank_summary: list[dict[str, Any]],
+    main_sheet_name: str,
+    warnings: list[str],
+) -> None:
+    """Hər bank faylı üzrə xülasə + (varsa) xəbərdarlıq sətirləri + ÜMUMİ."""
+    ws = wb.create_sheet(BANK_SUMMARY_SHEET_NAME)
+    ws.append(
+        [
+            "Bank",
+            "Fayl adı",
+            "Əməliyyat sayı",
+            "Ümumi məbləğ",
+            "Uyğunlaşan",
+            "Uyğunsuz",
+            "Qeyd",
+        ]
+    )
+    for r in bank_summary:
+        ws.append(
+            [
+                r["bank"],
+                r["fayl"],
+                r["say"],
+                r["cem"],
+                r["uygunlasan"],
+                r["uygunsuz"],
+                r.get("qeyd", ""),
+            ]
+        )
+
+    first_data = 2
+    last_data = ws.max_row
+    total_row = last_data + 1
+    ws.cell(row=total_row, column=1, value="ÜMUMİ")
+    if last_data >= first_data:
+        for col in (3, 4, 5, 6):
+            letter = get_column_letter(col)
+            ws[f"{letter}{total_row}"] = f"=SUM({letter}{first_data}:{letter}{last_data})"
+
+    # Xəbərdarlıqlar ayrı sətirlər kimi (cədvəldən sonra)
+    warn_row = total_row + 2
+    if warnings:
+        ws.cell(row=warn_row, column=1, value="Xəbərdarlıq")
+        for i, msg in enumerate(warnings, start=1):
+            ws.cell(row=warn_row + i, column=1, value=msg)
+
+    # Geri-link master-ə
+    a1 = ws["A1"]
+    a1.value = "Banklar üzrə xülasə"
+    _set_link(a1, main_sheet_name + "!A1", display="Banklar üzrə xülasə")
+
+    _style_header_row(ws, 1, 7)
+    _style_money(ws, first_data, total_row, [4, 5, 6])
+    _apply_text_alignment(ws, first_data, total_row, [1, 2, 7])
+    _apply_borders(ws, 1, total_row, 1, 7)
+    _auto_fit_columns(ws, money_cols=(4, 5, 6))
 
 
 def build_workbook(
@@ -943,6 +1178,8 @@ def build_workbook(
     sheet_title: str = MAIN_SHEET_NAME,
     back_label: str = "← KREDİTORLAR",
     aciqlama: str = _ACIQLAMA,
+    bank_summary: list[dict[str, Any]] | None = None,
+    warnings: list[str] | None = None,
 ) -> bytes:
     wb = Workbook()
     main = wb.active
@@ -964,7 +1201,8 @@ def build_workbook(
     for rng in ("A1:A2", "B1:B2", "C1:C2", "D1:E1", "F1:G1", "H1:I1", "J1:J2"):
         main.merge_cells(rng)
 
-    used: set[str] = set()
+    # Qorunan sheet adları: təchizatçı adı bunlarla üst-üstə düşməsin
+    used: set[str] = {UNMATCHED_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
     row = 3
     for i, s in enumerate(match_result["suppliers"], start=1):
         sheet_name = unique_sheet_name(s["ad"], s["voen"], used)
@@ -998,6 +1236,10 @@ def build_workbook(
     _auto_fit_columns(main, money_cols=(4, 5, 6, 7, 8, 9))
 
     _build_unmatched_sheet(wb, match_result["unmatched"])
+    # "Banklar üzrə xülasə" ən SONA (index-ə bağlı köhnə testlər pozulmasın)
+    _build_bank_summary_sheet(
+        wb, bank_summary or [], sheet_title, warnings or []
+    )
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1006,13 +1248,15 @@ def build_workbook(
 
 
 def generate_creditors_workbook(
-    gelen_raw: bytes, depozit_raw: bytes, bank_raw: bytes
+    gelen_raw: bytes, depozit_raw: bytes, banks: Any
 ) -> bytes:
+    """Kreditorlar workbook-u. `banks` tək bayt və ya (ad, bayt) siyahısı."""
     gelen_rows = parse_gelen(gelen_raw)
     depozit_rows = parse_depozit(depozit_raw, direction="expense")
-    bank_rows = parse_bank_statement(bank_raw, direction="debit")
+    bank_rows, summary, warnings = _parse_banks(banks, direction="debit")
     matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
-    return build_workbook(matched)
+    _finalize_bank_summary(summary, matched)
+    return build_workbook(matched, bank_summary=summary, warnings=warnings)
 
 
 DEBITOR_MAIN_SHEET_NAME = "DEBİTORLAR"
@@ -1020,20 +1264,23 @@ _DEBITOR_ACIQLAMA = "Mal material satışı"
 
 
 def generate_debitors_workbook(
-    geden_raw: bytes, depozit_raw: bytes, bank_raw: bytes
+    geden_raw: bytes, depozit_raw: bytes, banks: Any
 ) -> bytes:
-    """Debitorlar (Gedən) workbook-u.
+    """Debitorlar (Gedən) workbook-u. `banks` tək bayt və ya (ad, bayt) siyahısı.
 
     GEDƏN (göndərilən qaimələr) − [bank kredit + depozit mədaxil] = Qalıq.
     KREDİTORLAR ilə eyni infrastruktur, istiqamət tərsinə.
     """
     geden_rows = parse_gelen(geden_raw)
     depozit_rows = parse_depozit(depozit_raw, direction="income")
-    bank_rows = parse_bank_statement(bank_raw, direction="credit")
+    bank_rows, summary, warnings = _parse_banks(banks, direction="credit")
     matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
+    _finalize_bank_summary(summary, matched)
     return build_workbook(
         matched,
         sheet_title=DEBITOR_MAIN_SHEET_NAME,
         back_label="← DEBİTORLAR",
         aciqlama=_DEBITOR_ACIQLAMA,
+        bank_summary=summary,
+        warnings=warnings,
     )

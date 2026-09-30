@@ -351,8 +351,11 @@
             <input type="file" id="credDepozitFile" accept=".xlsx" />
           </div>
           <div class="form-group">
-            <label class="file-label" for="credBankFile">BANK ÇIXARIŞI.xlsx (cari hesab çıxarışı)</label>
-            <input type="file" id="credBankFile" accept=".xlsx" />
+            <label class="file-label" for="credBankFile">BANK ÇIXARIŞLARI.xlsx (cari hesab çıxarışları, bir neçə fayl seçə bilərsiniz)</label>
+            <input type="file" id="credBankFile" accept=".xlsx,.xls" multiple />
+            <div id="credBankCounter" class="file-counter">Seçilib: 0 fayl</div>
+            <ul id="credBankList" class="file-chips"></ul>
+            <button id="credBankClear" class="btn danger-ghost file-clear" type="button">Hamısını təmizlə</button>
           </div>
           <button id="credGenerateBtn" class="btn primary block" type="button">Generasiya et</button>
           <div id="credResult" class="import-result" hidden></div>
@@ -369,8 +372,11 @@
             <input type="file" id="debDepozitFile" accept=".xlsx" />
           </div>
           <div class="form-group">
-            <label class="file-label" for="debBankFile">BANK ÇIXARIŞI.xlsx (cari hesab çıxarışı)</label>
-            <input type="file" id="debBankFile" accept=".xlsx" />
+            <label class="file-label" for="debBankFile">BANK ÇIXARIŞLARI.xlsx (cari hesab çıxarışları, bir neçə fayl seçə bilərsiniz)</label>
+            <input type="file" id="debBankFile" accept=".xlsx,.xls" multiple />
+            <div id="debBankCounter" class="file-counter">Seçilib: 0 fayl</div>
+            <ul id="debBankList" class="file-chips"></ul>
+            <button id="debBankClear" class="btn danger-ghost file-clear" type="button">Hamısını təmizlə</button>
           </div>
           <button id="debGenerateBtn" class="btn primary block" type="button">Generasiya et</button>
           <div id="debResult" class="import-result" hidden></div>
