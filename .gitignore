@@ -10,7 +10,7 @@ venv/
 .env
 .env.*
 !.env.example
-
+ 
 # === Testlər ===
 .pytest_cache/
 htmlcov/
