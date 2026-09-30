@@ -18,10 +18,14 @@ from app.services.deterministic.creditors import (
     _detect_preamble_family,
     _detect_self_voens,
     _extract_voen_and_name,
+    _compact,
     _extract_voen_from_text,
+    _is_adonly_format,
     _is_summary_row,
     _load_rows,
+    _norm_ad,
     _split_counter_account,
+    _token_sorted,
     build_workbook,
     generate_creditors_workbook,
     generate_debitors_workbook,
@@ -29,6 +33,7 @@ from app.services.deterministic.creditors import (
     parse_bank_statement,
     parse_depozit,
     parse_gelen,
+    resolve_adonly_payments,
     sanitize_sheet_name,
     unique_sheet_name,
 )
@@ -1907,10 +1912,15 @@ def test_eyni_fayl_iki_defe_texrarsiz():
     )
     wb = load_workbook(io.BytesIO(out))
     ws = wb[BANK_SUMMARY_SHEET_NAME]
+    # "Qeyd" sütununu başlıqla tap (yeni "Adsız" sütunları əlavə olunub)
+    qeyd_col = next(
+        c for c in range(1, ws.max_column + 1) if ws.cell(row=1, column=c).value == "Qeyd"
+    )
+    say_col = 3  # "Əməliyyat sayı"
     dup = [
-        (ws.cell(row=r, column=3).value, ws.cell(row=r, column=7).value)
+        (ws.cell(row=r, column=say_col).value, ws.cell(row=r, column=qeyd_col).value)
         for r in range(2, ws.max_row + 1)
-        if ws.cell(row=r, column=7).value == "Dublikat, sayılmadı"
+        if ws.cell(row=r, column=qeyd_col).value == "Dublikat, sayılmadı"
     ]
     assert len(dup) == 1
     assert dup[0][0] == 0
@@ -2019,3 +2029,144 @@ async def test_20_den_cox_bank_rejected(client):
     resp = await client.post("/api/v1/import/creditors/generate", files=files)
     assert resp.status_code == 422
     assert str(MAX_BANK_FILES) in resp.json()["detail"]
+
+
+# ===== Yapı Kredi ad-only (VÖEN-siz) rejimi =====
+
+
+def test_norm_ad_diakritik_mmc_dirnaq():
+    assert _norm_ad('"CR CONSTRUCTION" Məhdud Məsuliyyətli Cəmiyyəti') == "cr construction"
+    assert _norm_ad("MOBİL VƏLİYEV MƏHƏMMƏD OĞLU") == "mobil veliyev mehemmed oglu"
+    # Söz sırası fərqi token-sorted ilə bərabərləşir
+    assert _token_sorted(_norm_ad("MOBİL VƏLİYEV MƏHƏMMƏD OĞLU")) == _token_sorted(
+        _norm_ad("VƏLİYEV MOBİL MƏHƏMMƏD OĞLU")
+    )
+    # compact: tire/boşluq fərqi
+    assert _compact(_norm_ad("ASLANLI- H GROUP MMC")) == _compact(
+        _norm_ad("ASLANLIH GROUP MMC")
+    )
+
+
+def test_adonly_rejim_yalniz_yapikredi():
+    # 14 bank fixture-ı üzrə adonly rejimi YALNIZ Yapı Kredi-də aktivdir
+    yk = ["YAPI KREDİ (YENİ).xlsx", "YAPIKREDİ BANK ÇIXARIŞI.xlsx"]
+    others = [
+        "ABB ÇIXARIŞI.xlsx", "ACCES BANK ÇIXARIŞI.xlsx", "ATB BANK ÇIXARIŞI.xlsx",
+        "BANK OF BAKU ÇIXARIŞI.xlsx", "BANK RESPUBLİKA ÇIXARIŞI.xlsx",
+        "KAPİTAL BANK ÇIXARIŞI.xlsx", "PAŞA BANK ÇIXARIŞI.xlsx",
+        "RABİTƏ BANK ÇIXARIŞI.xlsx", "TURAN BANK ÇIXARIŞI.xlsx",
+        "UNİBANK ÇIXARIŞI.xlsx", "VTB BANK ÇIXARIŞI.xlsx", "YELO BANK ÇIXARIŞI.xlsx",
+        "ZİRAAT BANK ÇIXARIŞI.xlsx",
+    ]
+    for name in yk:
+        rows = _load_rows((FIXTURES / name).read_bytes())[0]
+        found = _detect_bank_header(rows)
+        assert found is not None
+        assert _is_adonly_format(rows[: found[0]], found[1]) is True, name
+    for name in others:
+        rows = _load_rows((FIXTURES / name).read_bytes())[0]
+        found = _detect_bank_header(rows)
+        assert found is not None
+        assert _is_adonly_format(rows[: found[0]], found[1]) is False, name
+
+
+def test_kohne_yapikredi_regressiya():
+    # Köhnə fixture sayları/cəmləri DƏYİŞMƏMƏLİDİR
+    raw = (FIXTURES / "YAPIKREDİ BANK ÇIXARIŞI.xlsx").read_bytes()
+    debit = parse_bank_statement(raw, direction="debit")
+    credit = parse_bank_statement(raw, direction="credit")
+    assert len(debit) == 3
+    assert round(sum(r["mebleg"] for r in debit), 2) == 43532.0
+    assert len(credit) == 8
+    assert round(sum(r["mebleg"] for r in credit), 2) == 67420.0
+
+
+def test_yeni_yapikredi_adsiz_bayraq():
+    # Adsız (ad_yoxdur) sətirlər saxlanılır, ad→VÖEN həllinə girmir
+    raw = (FIXTURES / "YAPI KREDİ (YENİ).xlsx").read_bytes()
+    rows = parse_bank_statement(raw, direction="debit")
+    adsiz = [r for r in rows if r.get("ad_yoxdur")]
+    adli = [r for r in rows if r.get("ad_ile")]
+    assert adsiz  # yeni faylda ATM/kart/faiz sətirləri var
+    assert adli
+    # adsız sətirlərin voen-i həll olunmur
+    assert all(r["voen"] is None for r in adsiz)
+    # desc mətni ad kimi götürülür, amma ad_yoxdur=True
+    assert all(r.get("ad_yoxdur") for r in adsiz)
+
+
+def test_adonly_uygunsuz_sheet_adsiz_cixarilir():
+    # Uyğunsuz ödənişlər sheet-ində ad_yoxdur sətirlər OLMAMALIDIR
+    gelen_raw = (FIXTURES / "GƏLƏN (YAPI KREDİ TEST).xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT (YAPI KREDİ TEST).xlsx").read_bytes()
+    bank_raw = (FIXTURES / "YAPI KREDİ (YENİ).xlsx").read_bytes()
+    out = generate_creditors_workbook(
+        gelen_raw, depozit_raw, [("YK.xlsx", bank_raw)]
+    )
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb[UNMATCHED_SHEET_NAME]
+    # Uyğunsuz sətirlərin çoxu (17) olmalıdır, 678 adsız YOX
+    assert ws.max_row - 1 < 100
+
+
+def test_adonly_desc_tesadufu_baglanmir():
+    # desc mətnində təchizatçı adına bənzər mətn olsa da adsız sətir BAĞLANMIR
+    rows = [
+        {
+            "voen": None,
+            "ad": "CAUCASIAN SUPPLY",  # desc-dən gələn mətn
+            "tarix": "01.01.2026",
+            "mebleg": 100.0,
+            "ad_yoxdur": True,
+            "bank": "YK",
+        },
+        {
+            "voen": None,
+            "ad": "CAUCASIAN SUPPLY AND SERVICES LLC",
+            "tarix": "02.01.2026",
+            "mebleg": 200.0,
+            "ad_ile": True,
+            "bank": "YK",
+        },
+    ]
+    stat = resolve_adonly_payments(
+        rows, [("CAUCASIAN SUPPLY AND SERVICES LLC", "1234567890")]
+    )
+    # Yalnız ad_ile sətir bağlanır
+    assert rows[0]["voen"] is None
+    assert rows[1]["voen"] == "1234567890"
+    assert stat["YK"][0] == 1  # uyğunlaşan
+    assert stat["YK"][2] == 0  # uyğunlaşmayan (adsız sayılmır)
+
+
+def test_adonly_cox_namiz_texmin_etmir():
+    # Eyni norm ad 2 fərqli VÖEN-ə → təxmin etmə, None
+    rows = [
+        {
+            "voen": None,
+            "ad": "TEST MMC",
+            "tarix": "01.01.2026",
+            "mebleg": 50.0,
+            "ad_ile": True,
+            "bank": "YK",
+        }
+    ]
+    stat = resolve_adonly_payments(
+        rows, [("TEST MMC", "1111111111"), ("TEST MMC", "2222222222")]
+    )
+    assert rows[0]["voen"] is None
+    assert stat["YK"][2] == 1  # uyğunlaşmadı
+
+
+def test_adonly_debitorlar_credit():
+    # DEBİTORLAR (credit) üçün ad-only mexanizmi (sintetik)
+    raw = (FIXTURES / "YAPI KREDİ (YENİ).xlsx").read_bytes()
+    credit = parse_bank_statement(raw, direction="credit")
+    adli = [r for r in credit if r.get("ad_ile")]
+    adsiz = [r for r in credit if r.get("ad_yoxdur")]
+    assert adli and adsiz
+    # GEDƏN adları ilə həll (sintetik lüğət)
+    stat = resolve_adonly_payments(
+        list(credit), [("Nar Transport Services MMC", "1300000001")]
+    )
+    assert isinstance(stat, dict)

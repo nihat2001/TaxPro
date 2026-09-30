@@ -160,6 +160,18 @@ TƏK nəticə workbook-u yaradır (AI/ML yoxdur). **Stateless** — DB-yə yazm�
 üçün ortaqdır. VTB/ATB/Ziraat üçün preamble-dən dinamik "öz VÖEN" skip (`_detect_preamble_family` +
 `_detect_self_voens`).
 
+**Ad-only (VÖEN-siz) bank formatı:** Yapı Kredi kimi bəzi formatlarda VÖEN sütunu yoxdur — qarşı tərəf
+yalnız ad + IBAN ilə verilir (`_is_adonly_format`: `voen` sütunu yox + `name`/`ref` sütunu var +
+preamble-də "Qurum Adı"). Bu rejimdə təyinatdan (desc) VÖEN fallback-ı SÖNDÜRÜLÜR (e-qaimə nömrəsi
+`MT26 0310043006` yanlış VÖEN verərdi) və öz şirkət köçürmələri (ad üzrə, norm + compact) skip olunur.
+Qarşı tərəf adı boş olan sətirlər (ATM/kart/faiz) saxlanılır, `ad_yoxdur=True` bayrağı ilə işarələnir.
+Ad→VÖEN həlli (`resolve_adonly_payments`) pilləli işləyir: (1) dəqiq norm ad, (2) token-sorted,
+(3) compact, (4) mühafizəkar fuzzy (`difflib ≥ 0.92`, unikal namizəd, 2-ci ilə fərq ≥ 0.05). Çox
+namizəd/qeyri-müəyyənlik → təxmin etmə, Uyğunsuz. `_norm_ad` diakritikləri silir və hüquqi şəkilçiləri
+(MMC/LLC/ASC/"Məhdud Məsuliyyətli Cəmiyyəti") atır. **Ad üzrə uyğunlaşdırma VÖEN-dən az dəqiqdir**
+(adi dəyişikliklər/oxşar adlar səhv bağlaya bilər); uyğunlaşmayanlar "Uyğunsuz ödənişlər"-ə düşür.
+Yalnız adonly rejimi aktiv olan banklara tətbiq olunur — digər bankların davranışı dəyişmir.
+
 **Real fixture-larla təsdiqlənmiş debit (Kreditorlar) sayları:** ABB 0 · Access 154 · ATB 207 ·
 Bank of Baku 54 · Bank Respublika 43 · Kapital 50 · PAŞA 43 · Rabitə 53 · Turan 11 · Unibank 74 ·
 VTB 32 · Yapı Kredi 3 · Yelo 31 · Ziraat 43.
@@ -179,7 +191,9 @@ ikinci dəfə sayılmır — "Banklar üzrə xülasə"-də 0 əməliyyat + "Dubl
 boş siyahı → 422.
 
 **"Banklar üzrə xülasə"** sütunları: Bank · Fayl adı · Əməliyyat sayı · Ümumi məbləğ · Uyğunlaşan ·
-Uyğunsuz · Qeyd (+ `ÜMUMİ` sətri, `=SUM`). Yalnız bank fayllarını əhatə edir; depozit cəmlərə qarışmır.
+Uyğunsuz · **Adsız (qarşı tərəf yoxdur)** · **Adsız sayı** · Qeyd (+ `ÜMUMİ` sətri, `=SUM`). Yalnız bank
+fayllarını əhatə edir; depozit cəmlərə qarışmır. Bərabərlik: `Ümumi = Uyğunlaşan + Uyğunsuz + Adsız`
+(öz köçürmələr self-skip olaraq ümumiyə daxil deyil; xəbərdarlıq sətrində göstərilir).
 
 **Endpoint-lər:** `POST /import/creditors/generate` (`gelen`, `depozit`, `bank`×N) və
 `POST /import/debitors/generate` (`gedeni`, `depozit`, `bank`×N) → `.xlsx` stream. Multipart-da `bank`

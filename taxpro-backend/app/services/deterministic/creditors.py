@@ -15,10 +15,12 @@ digər banklar alias siyahıları ilə genişləndirilə bilər).
 AI/ML yoxdur.
 """
 
+import difflib
 import hashlib
 import io
 import os
 import re
+import unicodedata
 from datetime import date, datetime
 from typing import Any
 
@@ -376,6 +378,52 @@ def _strip_trailing_voen(text: str, voen: str) -> str:
     return re.sub(r"[\s()]*" + re.escape(voen) + r"\s*/?\s*$", "", text).strip()
 
 
+# Ad müqayisəsi üçün diakritik/replasman cədvəli (AZ hərfləri → latın)
+_AD_CHAR_MAP = {
+    "ı": "i", "İ": "i", "I": "i",
+    "ə": "e", "Ə": "e",
+    "ö": "o", "Ö": "o",
+    "ü": "u", "Ü": "u",
+    "ş": "s", "Ş": "s",
+    "ç": "c", "Ç": "c",
+    "ğ": "g", "Ğ": "g",
+}
+# Hüquqi şəkilçilər (normallaşdırmada atılır)
+_LEGAL_STOPWORDS = {
+    "mmc", "llc", "asc", "qsc", "ojsc", "cjsc", "ltd", "jsc",
+    "mehdud", "mesuliyyetli", "cemiyyeti", "sirketi",
+}
+
+
+def _norm_ad(text: str) -> str:
+    """Adı müqayisə üçün normallaşdırır.
+
+    İ/ı/Ə/ə/Ö/Ü/Ş/Ç/Ğ → latın, NFKD ilə diakritiklər silinir, kiçik hərf,
+    durğu/dırnaq silinir, hüquqi şəkilçilər (MMC, LLC, ASC, QSC, "Məhdud
+    Məsuliyyətli Cəmiyyəti" ...) atılır, boşluqlar sıxılır.
+    """
+    if not text:
+        return ""
+    replaced = "".join(_AD_CHAR_MAP.get(ch, ch) for ch in text)
+    decomposed = unicodedata.normalize("NFKD", replaced)
+    ascii_like = "".join(
+        ch for ch in decomposed if not unicodedata.combining(ch)
+    ).lower()
+    cleaned = re.sub(r"[^a-z0-9 ]", " ", ascii_like)
+    tokens = [t for t in cleaned.split() if t and t not in _LEGAL_STOPWORDS]
+    return " ".join(tokens)
+
+
+def _compact(s: str) -> str:
+    """Boşluqları tamamilə silir (compact müqayisə üçün)."""
+    return re.sub(r"\s+", "", s or "")
+
+
+def _token_sorted(s: str) -> str:
+    """Sözləri əlifba sırası ilə düzür (söz sırasından asılı olmayan müqayisə)."""
+    return " ".join(sorted((s or "").split()))
+
+
 def _extract_voen_and_name(voen_cell: Any, name_cell: Any) -> tuple[str | None, str]:
     """Ağıllı VÖEN + ad çıxarışı: xalis rəqəm → birbaşa; qarışıq mətn → split.
 
@@ -430,6 +478,93 @@ def _detect_preamble_family(preamble_rows: list[list[Any]]) -> str | None:
     if "ziraatbank" in normalized or "tczb" in normalized:
         return "ziraat"
     return None
+
+
+def _is_adonly_format(
+    preamble_rows: list[list[Any]], col_map: dict[str, int]
+) -> bool:
+    """Yapı Kredi "VÖEN-siz ad-only" rejimini aşkarlayır.
+
+    Şərtlər: VÖEN sütunu YOX + ad sütunu VAR + IBAN/hesab sütunu (ref) VAR +
+    preamble-də "Qurum Adı". Yalnız Yapı Kredi fayllarını tutur; digər
+    banklarda (xüsusən VÖEN sütunlu) heç vaxt aktivləşmir.
+    """
+    if "voen" in col_map:
+        return False
+    if "name" not in col_map or "ref" not in col_map:
+        return False
+    normalized = " ".join(
+        normalize_text(_cell_text(cell))
+        for row in preamble_rows
+        for cell in row
+    )
+    return "qurumadi" in normalized
+
+
+def _extract_qurum_ad(preamble_rows: list[list[Any]]) -> str:
+    """Preamble-dən "Qurum Adı" (öz şirkət adı) dəyərini çıxarır."""
+    for row in preamble_rows:
+        cells = [_cell_text(c) for c in row]
+        for i, cell in enumerate(cells):
+            if "qurumadi" in normalize_text(cell):
+                for nxt in cells[i + 1:]:
+                    if nxt:
+                        return nxt
+    return ""
+
+
+def count_adonly_self_skips(raw: bytes, direction: str) -> tuple[int, float]:
+    """Adonly faylda öz şirkət köçürmələrinin (self-skip) sayı və cəmi.
+
+    Parse zamanı `continue` edilən self-skip sətirləri xaricə çıxmadığı üçün
+    eyni şərtlərlə ayrıca hesablanır (xülasə xəbərdarlığı üçün).
+    """
+    count = 0
+    total = 0.0
+    for rows in _load_rows(raw):
+        found = _detect_bank_header(rows)
+        if found is None:
+            continue
+        header_idx, col_map = found
+        preamble = rows[:header_idx]
+        if not _is_adonly_format(preamble, col_map):
+            return 0, 0.0
+        qurum_norm = _norm_ad(_extract_qurum_ad(preamble))
+        qurum_compact = _compact(qurum_norm)
+        if not qurum_norm:
+            return 0, 0.0
+        for row in rows[header_idx + 1 :]:
+            if direction == "credit":
+                if "credit" in col_map:
+                    amount = _to_float(_get(row, col_map, "credit"))
+                    if amount is None or amount <= 0:
+                        continue
+                elif "signed" in col_map:
+                    amount = _to_float(_get(row, col_map, "signed"))
+                    if amount is None or amount <= 0:
+                        continue
+                else:
+                    continue
+            elif "debit" in col_map:
+                amount = _to_float(_get(row, col_map, "debit"))
+                if amount is None or amount <= 0:
+                    continue
+            else:
+                amount = _to_float(_get(row, col_map, "signed"))
+                if amount is None or amount >= 0:
+                    continue
+                amount = abs(amount)
+            if not _cell_text(_get(row, col_map, "date")):
+                continue
+            name = _cell_text(_get(row, col_map, "name"))
+            if not name:
+                continue
+            name_norm = _norm_ad(name)
+            if name_norm == qurum_norm or _compact(name_norm) == qurum_compact:
+                count += 1
+                total += amount
+        return count, round(total, 4)
+    return count, round(total, 4)
 
 
 def _detect_self_voens(preamble_rows: list[list[Any]]) -> set[str]:
@@ -597,6 +732,28 @@ def parse_depozit(
     )
 
 
+def parse_depozit_names(raw: bytes) -> list[tuple[str, str]]:
+    """DEPOZİT-dən (ad, VÖEN) cütlərini oxuyur (ad lüğəti üçün; geriyə uyğun).
+
+    `parse_depozit` çıxışına toxunmur; ad sütunu olan sətirlərdən ad→VÖEN
+    lüğəti qurmaq üçün ayrıca oxuyur.
+    """
+    rows_list = _load_rows(raw)
+    pairs: list[tuple[str, str]] = []
+    for rows in rows_list:
+        found = _find_header(rows, _DEPOZIT_REQUIRED, _DEPOZIT_FIELDS)
+        if found is None:
+            continue
+        header_idx, col_map = found
+        for row in rows[header_idx + 1 :]:
+            voen = _voen_str(_get(row, col_map, "voen"))
+            ad = _cell_text(_get(row, col_map, "ad"))
+            if voen and ad:
+                pairs.append((ad, voen))
+        return pairs
+    return pairs
+
+
 def parse_bank_statement(
     raw: bytes, direction: str = "debit"
 ) -> list[dict[str, Any]]:
@@ -644,6 +801,10 @@ def parse_bank_statement(
         family = _detect_preamble_family(preamble)
         is_atb = family == "atb"
         is_ziraat = family == "ziraat"
+        # Yapı Kredi "VÖEN-siz ad-only" rejimi (yalnız bu formatda aktiv)
+        is_adonly = _is_adonly_format(preamble, col_map)
+        qurum_ad_norm = _norm_ad(_extract_qurum_ad(preamble)) if is_adonly else ""
+        qurum_ad_compact = _compact(qurum_ad_norm)
         result: list[dict[str, Any]] = []
         for row in rows[header_idx + 1 :]:
             name_cell = _get(row, col_map, "name")
@@ -688,6 +849,44 @@ def parse_bank_statement(
                 if amount is None or amount >= 0:
                     continue
                 amount = abs(amount)
+
+            if is_adonly:
+                # Yapı Kredi: VÖEN sütunu yox, qarşı tərəf yalnız ad + IBAN ilə.
+                # Desc-dən VÖEN fallback-ı SÖNDÜRÜLÜR (e-qaimə nömrəsi yanlış
+                # VÖEN verərdi).
+                ad = _cell_text(name_cell)
+                if ad:
+                    ad_norm = _norm_ad(ad)
+                    # Öz şirkət köçürmələri (ad üzrə self-skip; norm + compact)
+                    if qurum_ad_norm and (
+                        ad_norm == qurum_ad_norm
+                        or _compact(ad_norm) == qurum_ad_compact
+                    ):
+                        continue  # öz hesablar arası köçürmə → ödəniş deyil
+                    result.append(
+                        {
+                            "voen": None,
+                            "ad": ad,
+                            "tarix": _format_date(_get(row, col_map, "date")),
+                            "mebleg": amount,
+                            "ad_ile": True,
+                        }
+                    )
+                else:
+                    # Qarşı tərəf adı yox (ATM/kart/faiz/daxili) — sətir SAXLANILIR
+                    # (geriyə uyğunluq), desc ad kimi götürülür və "ad_yoxdur"
+                    # bayrağı ilə işarələnir: ad→VÖEN həllində və Uyğunsuz
+                    # sheet-də iştirak etmir.
+                    result.append(
+                        {
+                            "voen": None,
+                            "ad": re.sub(r"_x000D_", " ", desc_text).strip(),
+                            "tarix": _format_date(_get(row, col_map, "date")),
+                            "mebleg": amount,
+                            "ad_yoxdur": True,
+                        }
+                    )
+                continue
 
             voen, ad = _extract_voen_and_name(voen_cell, name_cell)
             if voen is None and is_ziraat:
@@ -771,6 +970,8 @@ def _parse_banks(
                     "cem": 0.0,
                     "uygunlasan": 0.0,
                     "uygunsuz": 0.0,
+                    "adsiz_say": 0,
+                    "adsiz_cem": 0.0,
                     "qeyd": "Dublikat, sayılmadı",
                 }
             )
@@ -782,6 +983,14 @@ def _parse_banks(
             rows = parse_bank_statement(raw, direction=direction)
         except ValueError as exc:
             raise ValueError(f"'{filename or label}' faylı oxunmadı: {exc}")
+
+        # Adonly faylda öz şirkət köçürmələrinin xülasə xəbərdarlığı
+        self_count, self_sum = count_adonly_self_skips(raw, direction)
+        if self_count:
+            warnings.append(
+                f"{label}: {self_count} öz köçürmə ({self_sum:.2f} AZN) "
+                f"ödəniş sayılmadı."
+            )
 
         total = 0.0
         for r in rows:
@@ -796,6 +1005,8 @@ def _parse_banks(
                 "cem": round(total, 4),
                 "uygunlasan": 0.0,
                 "uygunsuz": 0.0,
+                "adsiz_say": 0,
+                "adsiz_cem": 0.0,
                 "qeyd": "",
             }
         )
@@ -820,9 +1031,122 @@ def _finalize_bank_summary(
         label = u.get("bank", "")
         if label in by_label:
             by_label[label]["uygunsuz"] += u["mebleg"]
+    for a in matched.get("ad_yoxdur", []):
+        label = a.get("bank", "")
+        if label in by_label:
+            by_label[label]["adsiz_say"] += 1
+            by_label[label]["adsiz_cem"] += a["mebleg"]
     for r in summary:
         r["uygunlasan"] = round(r["uygunlasan"], 4)
         r["uygunsuz"] = round(r["uygunsuz"], 4)
+        r["adsiz_cem"] = round(r.get("adsiz_cem", 0.0), 4)
+
+
+def _build_name_voen_dict(
+    name_pairs: list[tuple[str, str]],
+) -> dict[str, set[str]]:
+    """(ad, VÖEN) cütlərindən normallaşdırılmış ad → {VÖEN} lüğəti qurur."""
+    name_to_voen: dict[str, set[str]] = {}
+    for ad, voen in name_pairs:
+        norm = _norm_ad(ad)
+        if norm and voen:
+            name_to_voen.setdefault(norm, set()).add(voen)
+    return name_to_voen
+
+
+def _resolve_voen_by_name(
+    norm: str, name_to_voen: dict[str, set[str]]
+) -> str | None:
+    """Normallaşdırılmış adı VÖEN-ə çevirir (pilləli; qeyri-müəyyəndə None).
+
+    Pillələr: (1) dəqiq norm ad; (2) token-sorted; (3) compact;
+    (4) mühafizəkar fuzzy (ratio ≥ 0.92, unikal ən yaxşı namizəd və
+    2-ci namizədlə fərq ≥ 0.05). Çox namizəd/qeyri-müəyyənlik → None.
+    """
+    if not norm:
+        return None
+    # 1) dəqiq
+    exact = name_to_voen.get(norm)
+    if exact and len(exact) == 1:
+        return next(iter(exact))
+    # 2) token-sorted
+    ts = _token_sorted(norm)
+    if ts != norm:
+        cand = {
+            v
+            for k, vs in name_to_voen.items()
+            if _token_sorted(k) == ts
+            for v in vs
+        }
+        if cand and len(cand) == 1:
+            return next(iter(cand))
+    # 3) compact
+    comp = _compact(norm)
+    cand_c = {
+        v
+        for k, vs in name_to_voen.items()
+        if _compact(k) == comp
+        for v in vs
+    }
+    if cand_c and len(cand_c) == 1:
+        return next(iter(cand_c))
+    # 4) mühafizəkar fuzzy
+    scored: list[tuple[float, str]] = []
+    for k, vs in name_to_voen.items():
+        ratio = difflib.SequenceMatcher(None, norm, k).ratio()
+        if ratio >= 0.92:
+            for v in vs:
+                scored.append((ratio, v))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    best_ratio, best_voen = scored[0]
+    second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+    best_voens = {v for r, v in scored if r == best_ratio}
+    if len(best_voens) == 1 and (best_ratio - second_ratio) >= 0.05:
+        return best_voen
+    return None
+
+
+def resolve_adonly_payments(
+    bank_rows: list[dict[str, Any]],
+    name_pairs: list[tuple[str, str]],
+) -> dict[str, tuple[int, float, int, float]]:
+    """`ad_ile` (VÖEN-siz, adlı) bank sətirlərini ad üzrə VÖEN-ə bağlayır.
+
+    Yalnız `rel["ad_ile"]` sətirlərə toxunur (VÖEN-li sətirlər dəyişmir).
+    `ad_yoxdur` (qarşı tərəfi olmayan) sətirlərə heç bir halda toxunulmur.
+    Qaytarır: bank etiketi → (uyğunlaşan say, cəm, uyğunlaşmayan say, cəm).
+    """
+    name_to_voen = _build_name_voen_dict(name_pairs)
+    stats: dict[str, list[int | float]] = {}
+
+    def _bump(label: str, ok: bool, amount: float) -> None:
+        if label not in stats:
+            stats[label] = [0, 0.0, 0, 0.0]
+        if ok:
+            stats[label][0] += 1
+            stats[label][1] += amount
+        else:
+            stats[label][2] += 1
+            stats[label][3] += amount
+
+    for r in bank_rows:
+        if not r.get("ad_ile") or r.get("ad_yoxdur"):
+            continue  # adsız sətirlər ad→VÖEN həllinə girmir
+        label = r.get("bank", "")
+        norm = _norm_ad(r.get("ad", ""))
+        matched = _resolve_voen_by_name(norm, name_to_voen)
+        if matched:
+            r["voen"] = matched
+            _bump(label, True, r["mebleg"])
+        else:
+            _bump(label, False, r["mebleg"])
+
+    return {
+        k: (int(v[0]), round(float(v[1]), 4), int(v[2]), round(float(v[3]), 4))
+        for k, v in stats.items()
+    }
 
 
 def match_by_voen(
@@ -846,9 +1170,17 @@ def match_by_voen(
         s["qaimeler"].append(g)
 
     unmatched: list[dict[str, Any]] = []
+    ad_yoxdur: list[dict[str, Any]] = []
     for b in bank_rows:
         # "bank" YALNIZ etiketdir — uyğunlaşdırma açarına qatılmır.
         bank_label = b.get("bank", "")
+        if b.get("ad_yoxdur"):
+            # Qarşı tərəfi olmayan (ATM/kart/faiz) sətir — Uyğunsuz sheet-ə
+            # YAZILMIR; yalnız xülasədə "Adsız" sütununda sayılır.
+            ad_yoxdur.append(
+                {"bank": bank_label, "mebleg": b["mebleg"]}
+            )
+            continue
         if b["voen"] and b["voen"] in suppliers:
             suppliers[b["voen"]]["odenis_esas"].append(
                 {"tarix": b["tarix"], "mebleg": b["mebleg"], "bank": bank_label}
@@ -897,7 +1229,11 @@ def match_by_voen(
 
     supplier_list.sort(key=lambda s: s["ad"].lower())
     unmatched.sort(key=lambda u: (u["menbe"], u["tarix"]))
-    return {"suppliers": supplier_list, "unmatched": unmatched}
+    return {
+        "suppliers": supplier_list,
+        "unmatched": unmatched,
+        "ad_yoxdur": ad_yoxdur,
+    }
 
 
 def sanitize_sheet_name(name: str) -> str:
@@ -1129,6 +1465,8 @@ def _build_bank_summary_sheet(
             "Ümumi məbləğ",
             "Uyğunlaşan",
             "Uyğunsuz",
+            "Adsız (qarşı tərəf yoxdur)",
+            "Adsız sayı",
             "Qeyd",
         ]
     )
@@ -1141,6 +1479,8 @@ def _build_bank_summary_sheet(
                 r["cem"],
                 r["uygunlasan"],
                 r["uygunsuz"],
+                r.get("adsiz_cem", 0.0),
+                r.get("adsiz_say", 0),
                 r.get("qeyd", ""),
             ]
         )
@@ -1150,7 +1490,7 @@ def _build_bank_summary_sheet(
     total_row = last_data + 1
     ws.cell(row=total_row, column=1, value="ÜMUMİ")
     if last_data >= first_data:
-        for col in (3, 4, 5, 6):
+        for col in (3, 4, 5, 6, 7, 8):
             letter = get_column_letter(col)
             ws[f"{letter}{total_row}"] = f"=SUM({letter}{first_data}:{letter}{last_data})"
 
@@ -1166,11 +1506,11 @@ def _build_bank_summary_sheet(
     a1.value = "Banklar üzrə xülasə"
     _set_link(a1, main_sheet_name + "!A1", display="Banklar üzrə xülasə")
 
-    _style_header_row(ws, 1, 7)
-    _style_money(ws, first_data, total_row, [4, 5, 6])
-    _apply_text_alignment(ws, first_data, total_row, [1, 2, 7])
-    _apply_borders(ws, 1, total_row, 1, 7)
-    _auto_fit_columns(ws, money_cols=(4, 5, 6))
+    _style_header_row(ws, 1, 9)
+    _style_money(ws, first_data, total_row, [4, 5, 6, 7])
+    _apply_text_alignment(ws, first_data, total_row, [1, 2, 9])
+    _apply_borders(ws, 1, total_row, 1, 9)
+    _auto_fit_columns(ws, money_cols=(4, 5, 6, 7))
 
 
 def build_workbook(
@@ -1254,6 +1594,15 @@ def generate_creditors_workbook(
     gelen_rows = parse_gelen(gelen_raw)
     depozit_rows = parse_depozit(depozit_raw, direction="expense")
     bank_rows, summary, warnings = _parse_banks(banks, direction="debit")
+    # Ad-only (VÖEN-siz) sətirləri ad üzrə VÖEN-ə bağla (match_by_voen-dən əvvəl)
+    name_pairs = [(r["ad"], r["voen"]) for r in gelen_rows]
+    name_pairs += parse_depozit_names(depozit_raw)
+    stat = resolve_adonly_payments(bank_rows, name_pairs)
+    for label, (ok, ok_sum, miss, miss_sum) in stat.items():
+        warnings.append(
+            f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "
+            f"{miss} əməliyyat uyğunlaşmadı."
+        )
     matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
     _finalize_bank_summary(summary, matched)
     return build_workbook(matched, bank_summary=summary, warnings=warnings)
@@ -1274,6 +1623,15 @@ def generate_debitors_workbook(
     geden_rows = parse_gelen(geden_raw)
     depozit_rows = parse_depozit(depozit_raw, direction="income")
     bank_rows, summary, warnings = _parse_banks(banks, direction="credit")
+    # Ad-only (VÖEN-siz) sətirləri ad üzrə VÖEN-ə bağla (match_by_voen-dən əvvəl)
+    name_pairs = [(r["ad"], r["voen"]) for r in geden_rows]
+    name_pairs += parse_depozit_names(depozit_raw)
+    stat = resolve_adonly_payments(bank_rows, name_pairs)
+    for label, (ok, ok_sum, miss, miss_sum) in stat.items():
+        warnings.append(
+            f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "
+            f"{miss} əməliyyat uyğunlaşmadı."
+        )
     matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
     _finalize_bank_summary(summary, matched)
     return build_workbook(
