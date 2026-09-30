@@ -2054,7 +2054,7 @@ def _unibank_xlsx(rows) -> bytes:
     return buf.read()
 
 
-def _unibank_row(tarix, medaxil, mexaric, teyinat, terefdas=None):
+def _unibank_row(tarix, medaxil, mexaric, teyinat, terefdas=None, trans_id=None):
     return [
         "1102475261",
         tarix,
@@ -2063,8 +2063,8 @@ def _unibank_row(tarix, medaxil, mexaric, teyinat, terefdas=None):
         "34395.58",
         terefdas,
         teyinat,
-        None,
-        "6768032680",
+        None,  # POS Transaction ID (boş)
+        trans_id if trans_id is not None else "6768032680",
     ]
 
 
@@ -3722,3 +3722,167 @@ def test_xml_consistency(raw):
     """Yaradılan çıxışda hər 3 sheet: sqref=A1, activeTab=0, tabSelected yalnız 1-ci sheet."""
     out, _, _ = categorize_statement_verbose(raw)
     _xml_assert(out, None)
+
+
+# ===== Unibank komissiya cütləri (Transaction ID üzrə) =====
+
+
+def test_unibank_komisiya_cut_eyni_id():
+    """Eyni ID-li Məxaric cüt: kiçik sətir KOMİSİYA, böyük öz kateqoriyasında."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 4000, "hesabin mohkemlendirilmesi", trans_id="1111111111"),
+            _unibank_row("05.01.2026", None, 50.37, "hesabin mohkemlendirilmesi", trans_id="1111111111"),
+        ]
+    )
+    _, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 50.37, "say": 1}
+    assert summary["Hesab Möhkəmlənməsi"] == {"cem": 4000.0, "say": 1}
+    assert unclassified == []
+
+
+def test_unibank_komisiya_farqli_id_toxunulmur():
+    """121-122 tipli: eyni tarix+təyinat, FƏRQLİ ID → heç biri komissiya deyil."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 70, "hesabdan karta", trans_id="1000000001"),
+            _unibank_row("05.01.2026", None, 23628.61, "hesabdan karta", trans_id="1000000002"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"]["say"] == 2
+
+
+def test_unibank_komisiya_beraber_mebleg_toxunulmur():
+    """Bərabər məbləğli cüt → qeyri-müəyyən, toxunulmur."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 100, "karta kocurme", trans_id="2000000001"),
+            _unibank_row("05.01.2026", None, 100, "karta kocurme", trans_id="2000000001"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0
+
+
+def test_unibank_komisiya_uc_setir_grubu_toxunulmur():
+    """3 sətirli qrup → toxunulmur."""
+    rows = [
+        _unibank_row("05.01.2026", None, a, "konvertasiya", trans_id="3000000001")
+        for a in (100, 1, 2)
+    ]
+    raw = _unibank_xlsx(rows)
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0
+    assert summary["Konvertasiya"]["say"] == 3
+
+
+def test_unibank_komisiya_medaxil_cut():
+    """Mədaxil cütü: kiçik mədaxil sətir KOMİSİYA olur (istiqamət eynidir)."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", 5000, None, "karta kocurme", trans_id="4000000001"),
+            _unibank_row("05.01.2026", 25, None, "karta kocurme", trans_id="4000000001"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 25.0, "say": 1}
+
+
+def test_unibank_komisiya_farqli_istiqamet_toxunulmur():
+    """Biri Mədaxil, biri Məxaric (eyni ID) → qeyri-müəyyən, toxunulmur."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", 5000, None, "konvertasiya", trans_id="5000000001"),
+            _unibank_row("05.01.2026", None, 25, "konvertasiya", trans_id="5000000001"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0
+
+
+def test_unibank_komisiya_bos_id_qruplasmir():
+    """Boş Transaction ID qruplaşmır."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 4000, "hesabin mohkemlendirilmesi", trans_id=""),
+            _unibank_row("05.01.2026", None, 50, "hesabin mohkemlendirilmesi", trans_id=""),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0
+    assert summary["Hesab Möhkəmlənməsi"]["say"] == 2
+
+
+def test_unibank_komisiya_10_150_faiz():
+    """10 AZN + 1.50 (15%) cütü komissiya tanınır (faiz eşiyi yoxdur)."""
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 10, "karta kocurme", trans_id="6000000001"),
+            _unibank_row("05.01.2026", None, 1.5, "karta kocurme", trans_id="6000000001"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"] == {"cem": 1.5, "say": 1}
+
+
+def test_unibank_komisiya_override_hormet():
+    """İstifadəçi əl ilə kateqoriya seçibsə avtomatik qayda üstündən yazmır.
+
+    (categorize mərhələsində sətir hələ kateqoriyasızdır; bu test qaydanın
+    kateqoriyasız cüt sətrini KOMİSİYA etdiyini, əsl sətrin toxunulmadığını
+    təsdiqləyir.)
+    """
+    raw = _unibank_xlsx(
+        [
+            _unibank_row("05.01.2026", None, 4000, "hesabin mohkemlendirilmesi", trans_id="7000000001"),
+            _unibank_row("05.01.2026", None, 50, "hesabin mohkemlendirilmesi", trans_id="7000000001"),
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    # Böyük sətir öz kateqoriyasında, kiçik KOMİSİYA
+    assert summary["Hesab Möhkəmlənməsi"]["say"] == 1
+    assert summary["KOMİSİYA"]["say"] == 1
+
+
+def test_unibank_komisiya_real_fixture():
+    """Real UNİBANK çıxarışı: gözlənilən kateqoriya cədvəli."""
+    from pathlib import Path
+
+    raw = (
+        Path(__file__).parent / "fixtures" / "UNİBANK ÇIXARIŞI.xlsx"
+    ).read_bytes()
+    _, summary, unclassified = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 31
+    assert round(summary["KOMİSİYA"]["cem"], 2) == 4553.25
+    assert summary["VERGİ MƏXARİC"]["say"] == 10
+    assert round(summary["VERGİ MƏXARİC"]["cem"], 2) == 9616.84
+    assert summary["Hesab Möhkəmlənməsi"]["say"] == 3
+    assert round(summary["Hesab Möhkəmlənməsi"]["cem"], 2) == 284989.63
+    assert summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"]["say"] == 45
+    assert round(summary["DİGƏR ŞİRKƏT ÖDƏNİŞLƏRİ"]["cem"], 2) == 532761.37
+    assert summary["Konvertasiya"]["say"] == 6
+    assert round(summary["Konvertasiya"]["cem"], 2) == 369440.97
+    assert summary["ƏDV ÖDƏNİŞİ"]["say"] == 1
+    assert round(summary["ƏDV ÖDƏNİŞİ"]["cem"], 2) == 14532.42
+    assert summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["say"] == 55
+    assert round(summary["DİGƏR ŞİRKƏT DAXİL OLMALAR"]["cem"], 2) == 712719.61
+    total_say = sum(int(e["say"]) for e in summary.values())
+    total_cem = round(sum(float(e["cem"]) for e in summary.values()), 2)
+    assert total_say == 151
+    assert total_cem == 1928614.09
+    assert unclassified == []
+
+
+def test_unibank_komisiya_diger_profilller_toxunulmur():
+    """Transaction ID olmayan profillerdə qayda işə düşmür (Kapital nümunəsi)."""
+    # Kapital sintetik: iki oxşar sətir, komissiya ayrılmamalıdır
+    raw = _kapital_xlsx(
+        [
+            [1, "2022-12-15", "x", "AZ / KAPITAL / 1", 100, "AZN", 100, 100, "mal"],
+            [2, "2022-12-15", "x", "AZ / KAPITAL / 1", 5, "AZN", 5, 5, "mal"],
+        ]
+    )
+    _, summary, _ = categorize_statement_verbose(raw)
+    assert summary["KOMİSİYA"]["say"] == 0

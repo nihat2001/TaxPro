@@ -1223,6 +1223,160 @@ def _last_column(ws) -> int:
     return max_col
 
 
+def _true_transaction_id_col(ws, header_row: int) -> int | None:
+    """Unibank başlığında həqiqi 'Transaction ID' sütununu tapır (0-əsaslı).
+
+    'POS Transaction ID' sütununu istisna edir (substring uyğunluğu səhvən
+    onu seçə bilər). Tapılmazsa None.
+    """
+    exact: int | None = None
+    for cell in ws[header_row]:
+        norm = normalize_text(_cell_text(cell.value))
+        if norm == "transactionid":
+            exact = cell.column - 1  # 0-əsaslı
+            break
+    return exact
+
+
+def _apply_unibank_commission_pairs(
+    ws,
+    header_row_idx: int,
+    col_map: dict[str, int],
+    cat_col: int,
+    amount_col: int,
+) -> list[tuple[int, float, str | None, str]]:
+    """Unibank: eyni Transaction ID-li KOMİSİYA cütlərini aşkarlayır.
+
+    Yalnız tam 2 sətirlik, eyni istiqamətli, eyni tarixli və fərqli məbləğli
+    qruplar cüt sayılır. Kiçik məbləğli sətir → "KOMİSİYA".
+    Qeyri-müəyyən (məbləğ bərabər, 3+ sətir, istiqamət/tarix fərqli) → toxunulmur.
+
+    Qaytarır: [(sətir_idx, kiçik_məbləğ, köhnə_kateqoriya, istiqamət)] —
+    çağıran tərəf summary-ni düzgün yeniləmək üçün istifadə edir.
+    """
+    # Həqiqi 'Transaction ID' sütunu (POS Transaction ID deyil)
+    trans_col = _true_transaction_id_col(ws, header_row_idx + 1)
+    if trans_col is None:
+        trans_col = col_map.get("emeliyyat_no")
+    medaxil_col = col_map.get("medaxil")
+    mexaric_col = col_map.get("mexaric")
+    tarix_col = col_map.get("emeliyyat_tarixi")
+    if trans_col is None:
+        return []
+
+    # TX ID üzrə qruplaşdırma (boş ID-lər sayılmır)
+    groups: dict[str, list[int]] = {}
+    for row in ws.iter_rows(min_row=header_row_idx + 2):
+        ridx = row[0].row
+        tid_raw = row[trans_col].value if trans_col < len(row) else None
+        tid = _cell_text(tid_raw)
+        if not tid:
+            continue
+        groups.setdefault(tid, []).append(ridx)
+
+    changes: list[tuple[int, float, str | None, str]] = []
+    for tid, row_idxs in groups.items():
+        if len(row_idxs) != 2:
+            continue  # yalnız tam 2 sətir
+        r1, r2 = row_idxs
+
+        def _cell(ridx, col):
+            return ws.cell(row=ridx, column=col + 1).value if col is not None else None
+
+        tarix1 = _cell_text(_cell(r1, tarix_col))
+        tarix2 = _cell_text(_cell(r2, tarix_col))
+        if tarix1 != tarix2:
+            continue  # eyni tarix tələbi
+
+        kredit1 = _cell(r1, medaxil_col)
+        kredit2 = _cell(r2, medaxil_col)
+        debit1 = _cell(r1, mexaric_col)
+        debit2 = _cell(r2, mexaric_col)
+        has_k1, has_k2 = _has_amount(kredit1), _has_amount(kredit2)
+        has_d1, has_d2 = _has_amount(debit1), _has_amount(debit2)
+
+        if has_d1 and has_d2:  # ikisi də Məxaric
+            a1, a2 = abs(_parse_amount(debit1)), abs(_parse_amount(debit2))
+            direction = "debit"
+        elif has_k1 and has_k2:  # ikisi də Mədaxil
+            a1, a2 = abs(_parse_amount(kredit1)), abs(_parse_amount(kredit2))
+            direction = "kredit"
+        else:
+            continue  # istiqamət fərqli → toxunulmur
+        if a1 is None or a2 is None or a1 == a2:
+            continue  # məbləğ bərabər/qeyri-müəyyən → toxunulmur
+
+        small_ridx = r1 if a1 < a2 else r2
+        small_amount = min(a1, a2)
+
+        # İstifadəçi artıq kateqoriya seçibsə ÜSTÜNDƏN YAZMA (categorize
+        # mərhələsində Kateqoriya hələ boş olur; finalize ayrıca qoruyur).
+        existing = ws.cell(row=small_ridx, column=cat_col).value
+        if existing not in (None, "", "KOMİSİYA"):
+            continue
+        changes.append((small_ridx, small_amount, existing, direction))
+
+    return changes
+
+
+def _apply_unibank_commission_pairs_rows(
+    rows: list[list],
+    header_row_idx: int,
+    col_map: dict[str, int],
+) -> dict[int, tuple[float, str]]:
+    """CSV üçün: `rows` üzərində komissiya cütlərini tapır.
+
+    Qaytarır: {1-əsaslı_sətir_idx: (kiçik_məbləğ, istiqamət)}.
+    """
+    # Həqiqi 'Transaction ID' sütunu (POS Transaction ID deyil)
+    trans_col = None
+    header_vals = rows[header_row_idx] if header_row_idx < len(rows) else []
+    for ci, v in enumerate(header_vals):
+        if normalize_text(_cell_text(v)) == "transactionid":
+            trans_col = ci
+            break
+    if trans_col is None:
+        trans_col = col_map.get("emeliyyat_no")
+    medaxil_col = col_map.get("medaxil")
+    mexaric_col = col_map.get("mexaric")
+    tarix_col = col_map.get("emeliyyat_tarixi")
+    if trans_col is None:
+        return {}
+
+    def _val(r_idx, col):
+        if col is None or r_idx >= len(rows) or col >= len(rows[r_idx]):
+            return None
+        return rows[r_idx][col]
+
+    groups: dict[str, list[int]] = {}
+    for r_idx in range(header_row_idx + 1, len(rows)):
+        tid = _cell_text(_val(r_idx, trans_col))
+        if not tid:
+            continue
+        groups.setdefault(tid, []).append(r_idx)
+
+    result: dict[int, tuple[float, str]] = {}
+    for tid, idxs in groups.items():
+        if len(idxs) != 2:
+            continue
+        r1, r2 = idxs
+        if _cell_text(_val(r1, tarix_col)) != _cell_text(_val(r2, tarix_col)):
+            continue
+        k1, k2 = _val(r1, medaxil_col), _val(r2, medaxil_col)
+        d1, d2 = _val(r1, mexaric_col), _val(r2, mexaric_col)
+        if _has_amount(d1) and _has_amount(d2):
+            a1, a2, direction = abs(_parse_amount(d1)), abs(_parse_amount(d2)), "debit"
+        elif _has_amount(k1) and _has_amount(k2):
+            a1, a2, direction = abs(_parse_amount(k1)), abs(_parse_amount(k2)), "kredit"
+        else:
+            continue
+        if a1 is None or a2 is None or a1 == a2:
+            continue
+        small_idx = r1 if a1 < a2 else r2
+        result[small_idx + 1] = (min(a1, a2), direction)
+    return result
+
+
 def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     wb = load_workbook(io.BytesIO(raw_bytes))
 
@@ -1332,6 +1486,16 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
     last_balance: float | None = None
     total_madaxil = 0.0
     total_mexaric = 0.0
+
+    # Unibank: komissiya cütlərini DÖVRƏ QƏDƏR aşkarla (sətir indeksi → məbləğ/
+    # istiqamət). Dövrdə həmin sətir birbaşa KOMİSİYA kimi kateqoriyalaşdırılır.
+    commission_rows: dict[int, tuple[float, str]] = {}
+    if profile == "unibank":
+        for ridx, amt, _old, direction in _apply_unibank_commission_pairs(
+            ws, header_row_idx, col_map, cat_col, amount_col
+        ):
+            commission_rows[ridx] = (amt, direction)
+
     for row in ws.iter_rows(min_row=header_row_idx + 2):
         if balans_col is not None:
             bal = _parse_amount(row[balans_col].value)
@@ -1443,6 +1607,20 @@ def _categorize_xlsx(raw_bytes: bytes) -> tuple[bytes, dict]:
             total_madaxil += abs(_parse_amount(kredit))
         if _has_amount(debit):
             total_mexaric += abs(_parse_amount(debit))
+        comm = commission_rows.get(row[0].row)
+        if comm is not None:
+            # Unibank komissiya cütünün kiçik sətri → birbaşa KOMİSİYA.
+            small_amount, direction = comm
+            category = "KOMİSİYA"
+            ws.cell(row=row[0].row, column=cat_col).value = "KOMİSİYA"
+            entry = summary["KOMİSİYA"]
+            entry["say"] = int(entry["say"]) + 1
+            entry["cem"] = float(entry["cem"]) + abs(small_amount)
+            ws.cell(row=row[0].row, column=amount_col).value = abs(small_amount)
+            categorized_rows.append(
+                ("KOMİSİYA", direction, abs(float(small_amount)))
+            )
+            continue
         category = _match_category(
             sender, detail, kredit, debit, profile, amount=_row_amount(debit, kredit)
         )
@@ -1610,6 +1788,12 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
     last_balance: float | None = None
     total_madaxil = 0.0
     total_mexaric = 0.0
+    # Unibank komissiya cütləri (CSV) — sətir indeksi → (məbləğ, istiqamət)
+    commission_rows: dict[int, tuple[float, str]] = {}
+    if profile == "unibank":
+        commission_rows = _apply_unibank_commission_pairs_rows(
+            rows, header_row_idx, col_map
+        )
     wb = Workbook()
     ws = wb.active
     ws.title = "Çıxarış"
@@ -1820,6 +2004,18 @@ def _categorize_csv(raw_bytes: bytes) -> tuple[bytes, dict]:
                 total_madaxil += abs(_parse_amount(kredit))
             if _has_amount(debit_value):
                 total_mexaric += abs(_parse_amount(debit_value))
+            comm = commission_rows.get(r_idx + 1)
+            if comm is not None:
+                small_amount, direction = comm
+                ws.cell(row=r_idx + 1, column=cat_col_1, value="KOMİSİYA")
+                entry = summary["KOMİSİYA"]
+                entry["say"] = int(entry["say"]) + 1
+                entry["cem"] = float(entry["cem"]) + abs(small_amount)
+                ws.cell(row=r_idx + 1, column=amount_col_1, value=abs(small_amount))
+                categorized_rows.append(
+                    ("KOMİSİYA", direction, abs(float(small_amount)))
+                )
+                continue
             category = _match_category(
                 sender, detail, kredit, debit_value, profile, amount=_row_amount(debit_value, kredit)
             )
