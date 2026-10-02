@@ -10,6 +10,8 @@ from openpyxl import Workbook, load_workbook
 from app.services.deterministic.creditors import (
     BANK_SUMMARY_SHEET_NAME,
     DEBITOR_MAIN_SHEET_NAME,
+    DOC_INVOICE,
+    DOC_PAYMENT,
     MAX_BANK_FILES,
     MAIN_SHEET_NAME,
     UNMATCHED_SHEET_NAME,
@@ -1716,6 +1718,80 @@ def test_odenilib_esas_bos_qalmir_real_bank():
         if isinstance(ws.cell(row=r, column=7).value, (int, float))
     )
     assert total == 5000.0  # Əsas sütunu BOŞ DEYİL
+
+
+def test_doc_type_ayriliq_gelen_invoice_bank_depozit_payment():
+    """GƏLƏN → INVOICE, Bank/DEPOZİT → PAYMENT sənəd tipi alır."""
+    gelen = parse_gelen((FIXTURES / "GƏLƏN.xlsx").read_bytes())
+    depozit = parse_depozit((FIXTURES / "DEPOZİT.xlsx").read_bytes())
+    bank = parse_bank_statement(
+        (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes(), direction="debit"
+    )
+    assert gelen and all(r.get("doc_type") == DOC_INVOICE for r in gelen)
+    assert depozit and all(r.get("doc_type") == DOC_PAYMENT for r in depozit)
+    assert bank and all(r.get("doc_type") == DOC_PAYMENT for r in bank)
+
+
+def test_gelen_melumatlari_odenilib_sutununa_sizmir():
+    """GƏLƏN (INVOICE) heç bir halda ödəniş sətri/Ödənilib məbləği yaratmır.
+
+    Qaimə altındaki ödəniş sətirləri yalnız Bank/DEPOZİT (PAYMENT) mənşəli olur;
+    Hesablanıb (E/F) yalnız qaimə sətrində, Ödənilib (G/H) yalnız ödənişdə.
+    """
+    import io as _io
+
+    gelen = parse_gelen((FIXTURES / "GƏLƏN.xlsx").read_bytes())
+    depozit = parse_depozit((FIXTURES / "DEPOZİT.xlsx").read_bytes())
+    bank = parse_bank_statement(
+        (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes(), direction="debit"
+    )
+    matched = match_by_voen(gelen, depozit, bank)
+    out = build_workbook(matched)
+    wb = load_workbook(_io.BytesIO(out))
+    special = {"KREDİTORLAR", UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
+               REMOVED_INVOICES_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    for nm in wb.sheetnames:
+        if nm in special:
+            continue
+        ws = wb[nm]
+        for r in range(6, ws.max_row):
+            ser = ws.cell(row=r, column=2).value
+            is_invoice = isinstance(ser, str) and ser.strip()
+            e = ws.cell(row=r, column=5).value
+            f = ws.cell(row=r, column=6).value
+            if is_invoice:
+                # Qaimə (INVOICE): Hesablanıb (E/F) sabit rəqəm, formula deyil
+                assert not (isinstance(e, str) and e.startswith("=")), (nm, r)
+                assert not (isinstance(f, str) and f.startswith("=")), (nm, r)
+            else:
+                # Ödəniş (PAYMENT): Hesablanıb sütunları BOŞ olmalıdır
+                if ws.cell(row=r, column=1).value == (
+                        "Qaimə ilə əlaqələndirilməyən ödənişlər"):
+                    continue
+                assert e in (None, ""), (nm, r, e)
+                assert f in (None, ""), (nm, r, f)
+
+
+def test_qaimeye_baqli_odenis_yalniz_payment_menbeli():
+    """`_allocate_supplier` qaimə massivinə sızmış PAYMENT sətrini ödəniş saymır."""
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1",
+        "ad": "X",
+        "qaimeler": [
+            {"doc_type": DOC_INVOICE, "tarix": "01.01.2026", "seriya": "MT2601",
+             "nomre": "11111111", "esas": 100.0, "edv": 18.0},
+            # Sürüşmüş PAYMENT sətri (yanlışlıqla qaimə massivinə düşsə belə)
+            {"doc_type": DOC_PAYMENT, "tarix": "05.01.2026", "seriya": "MT9999",
+             "nomre": "99999999", "esas": 555.0, "edv": 0.0},
+        ],
+        "odenis_esas": [],
+        "odenis_edv": [],
+    }
+    alloc = _allocate_supplier(s)
+    refs = [(g["q"]["seriya"], g["q"]["nomre"]) for g in alloc["groups"]]
+    assert refs == [("MT2601", "11111111")]  # PAYMENT sətri qaimə kimi götürülməyib
 
 
 def test_build_workbook_supplier_sheet_layout():

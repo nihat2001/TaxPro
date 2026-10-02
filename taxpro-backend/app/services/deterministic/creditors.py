@@ -45,6 +45,14 @@ _FAMILY_LABELS = {"vtb": "VTB", "atb": "ATB", "ziraat": "Ziraat"}
 UNMATCHED_SHEET_NAME = "Uyğunsuz ödənişlər"
 _ACIQLAMA = "Mal material satışı"
 
+# ===== Sənəd tipləri (Hesablanıb / Ödənilib sərt ayrılığı) =====
+# INVOICE — yalnız GƏLƏN (elektron qaimə): "Hesablanıb" (E/F) formalaşdırır.
+# PAYMENT — yalnız Bank çıxarışı + DEPOZİT: "Ödənilib" (G/H) formalaşdırır.
+# GƏLƏN heç bir halda birbaşa ödəniş sətri yaratmır; bank/depozit heç bir halda
+# Hesablanıb sütununa yazılmır.
+DOC_INVOICE = "INVOICE"
+DOC_PAYMENT = "PAYMENT"
+
 # Excel sheet adı qadağanları (spec: : \ / ? * [ ]) + formula/hiperlink
 # təhlükəsizliyi üçün əlavə " ' simvolları da atılır.
 _INVALID_SHEET_CHARS = set(':\\/?*[]\'"')
@@ -790,6 +798,7 @@ def parse_gelen(raw: bytes) -> list[dict[str, Any]]:
             tarix_raw = _get(row, col_map, "tarix")
             result.append(
                 {
+                    "doc_type": DOC_INVOICE,
                     "voen": voen,
                     "ad": ad,
                     "tarix": _format_date(tarix_raw),
@@ -903,7 +912,12 @@ def _allocate_supplier(
     }
     hər row: {tarix, tarix_dt, esas, edv, bank, qeyd}.
     """
-    qaimeler = list(s["qaimeler"])
+    # Sənəd tipi ayrılığı (müdafiə qatı): qaimələr INVOICE olmalıdır; qaimə
+    # massivinə PAYMENT sızsa da ödəniş kimi emal edilməsin.
+    qaimeler = [
+        q for q in s["qaimeler"]
+        if q.get("doc_type", DOC_INVOICE) == DOC_INVOICE
+    ]
     qaimeler.sort(
         key=lambda q: _date_sort_key(
             q.get("tarix_dt"), q.get("tarix", ""),
@@ -1198,6 +1212,7 @@ def parse_depozit(
             tarix_raw = _get(row, col_map, "tarix")
             result.append(
                 {
+                    "doc_type": DOC_PAYMENT,
                     "voen": voen,
                     "ad": _cell_text(_get(row, col_map, "ad")),
                     "tarix": _format_date(tarix_raw),
@@ -1348,6 +1363,7 @@ def parse_bank_statement(
                         continue  # öz hesablar arası köçürmə → ödəniş deyil
                     result.append(
                         {
+                            "doc_type": DOC_PAYMENT,
                             "voen": None,
                             "ad": ad,
                             "tarix": _format_date(_get(row, col_map, "date")),
@@ -1365,6 +1381,7 @@ def parse_bank_statement(
                     # yanlış VÖEN əmələ gətirə bilər).
                     result.append(
                         {
+                            "doc_type": DOC_PAYMENT,
                             "voen": None,
                             "ad": re.sub(r"_x000D_", " ", desc_text).strip(),
                             "tarix": _format_date(_get(row, col_map, "date")),
@@ -1395,6 +1412,7 @@ def parse_bank_statement(
                 ad = re.sub(r"_x000D_", " ", desc_text).strip()  # təyinatdan ad (Turan)
             result.append(
                 {
+                    "doc_type": DOC_PAYMENT,
                     "voen": voen,
                     "ad": ad,
                     "tarix": _format_date(_get(row, col_map, "date")),
