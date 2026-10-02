@@ -663,6 +663,26 @@ def test_extract_voen_from_text():
     assert _extract_voen_from_text("") is None
 
 
+def test_to_float_yapikredi_formatlari():
+    # Yapı Kredi məbləğləri: mənfi işarə "-", minlik nöqtəsi ".", qəpik vergülü ","
+    from app.services.deterministic.creditors import _to_float
+
+    assert _to_float("-4.000,00") == -4000.0
+    assert _to_float("718.650,83") == 718650.83
+    assert _to_float("-672.856,45") == -672856.45
+    assert _to_float("5.000,00") == 5000.0
+    assert _to_float("-180") == -180.0
+    assert _to_float("800") == 800.0
+    assert _to_float(800) == 800.0
+    assert _to_float(-3502.63) == -3502.63
+    assert _to_float("-") == 0.0  # boş xana markeri
+    assert _to_float("") is None
+    assert _to_float(None) is None
+    assert _to_float("AZN") is None
+    # abs() ilə mənfiliyin aradan qaldırılması
+    assert abs(_to_float("-4.000,00")) == 4000.0
+
+
 def test_parse_bank_statement_yapikredi():
     raw = (FIXTURES / "YAPIKREDİ BANK ÇIXARIŞI.xlsx").read_bytes()
     rows = parse_bank_statement(raw)
@@ -672,6 +692,8 @@ def test_parse_bank_statement_yapikredi():
     assert all(r["voen"] is None for r in rows)  # VÖEN yoxdur → uyğunsuz
     ads = {r["ad"] for r in rows}
     assert ads == {"HAFİZ ASLANLI", "BUBBLE GUM BAKU MMC"}
+    # Bütün məbləğlər müsbət float (mənfi işarə abs ilə aradan qaldırılıb)
+    assert all(isinstance(r["mebleg"], float) and r["mebleg"] > 0 for r in rows)
 
 
 def test_parse_bank_statement_rabitabank():
@@ -1595,6 +1617,100 @@ def test_allocate_dovr_xarici_qisme():
     assert "Dövr xarici" in alloc["unallocated"][0]["qeyd"]
 
 
+def test_odenilib_esas_interleaved_g_sutunu():
+    """Bank ödənişləri (odenis_esas) interleaved layoutda G sütununa yazılır."""
+    s = {
+        "voen": "1111111111",
+        "ad": "SUPPLIER A",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "00000001",
+             "esas": 1000.0, "edv": 180.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "10.01.2026", "mebleg": 1000.0, "text": "MT2601 00000001",
+             "bank": "KAPİTAL BANK ÇIXARIŞI"},
+        ],
+        "odenis_edv": [],
+        "hesablanib_esas": 1000.0, "hesablanib_edv": 180.0,
+        "odenilib_esas": 1000.0, "odenilib_edv": 0.0,
+        "qaliq_esas": 0.0, "qaliq_edv": 180.0,
+    }
+    out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER A"]
+    # qaimə sətri (6) + altındakı bank ödənişi (7) G sütununda (Ödənilib Əsas)
+    assert ws["G7"].value == 1000.0
+    assert ws["H7"].value in (None, "")
+    # H sütununda (Ödənilib ƏDV) bu ödəniş YOXDUR
+    assert ws["H6"].value in (None, "")
+    # SUM formulu Ödənilib Əsas (G) üzrə düzgündür
+    sum_row = ws.max_row
+    assert ws[f"G{sum_row}"].value == "=SUM(G6:G7)"
+    assert ws[f"E{sum_row}"].value == "=SUM(E6:E7)"
+
+
+def test_odenilib_esas_depozit_edv_ile_qarismir():
+    """Depozit ödənişləri (odenis_edv) H sütununa, bank (esas) G sütununa düşür."""
+    s = {
+        "voen": "2222222222",
+        "ad": "SUPPLIER B",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "00000002",
+             "esas": 2000.0, "edv": 360.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "05.01.2026", "mebleg": 2000.0, "text": "MT2601 00000002",
+             "bank": "PAŞA BANK ÇIXARIŞI"},
+        ],
+        "odenis_edv": [
+            {"tarix": "06.01.2026", "mebleg": 360.0, "text": "MT2601 00000002",
+             "bank": "Depozit (ƏDV)"},
+        ],
+        "hesablanib_esas": 2000.0, "hesablanib_edv": 360.0,
+        "odenilib_esas": 2000.0, "odenilib_edv": 360.0,
+        "qaliq_esas": 0.0, "qaliq_edv": 0.0,
+    }
+    out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER B"]
+    # G sütununda yalnız əsas (2000), H sütununda yalnız ƏDV (360)
+    g_vals = [ws.cell(row=r, column=7).value for r in range(6, ws.max_row + 1)]
+    h_vals = [ws.cell(row=r, column=8).value for r in range(6, ws.max_row + 1)]
+    g_nums = [v for v in g_vals if isinstance(v, (int, float))]
+    h_nums = [v for v in h_vals if isinstance(v, (int, float))]
+    assert 2000.0 in g_nums and 360.0 not in g_nums
+    assert 360.0 in h_nums and 2000.0 not in h_nums
+
+
+def test_odenilib_esas_bos_qalmir_real_bank():
+    """Real bank ödənişi olan vərəqdə Ödənilib Əsas (G) boş qalmır."""
+    s = {
+        "voen": "3333333333",
+        "ad": "SUPPLIER C",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "00000003",
+             "esas": 5000.0, "edv": 900.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "10.01.2026", "mebleg": 5000.0, "text": "MT2601 00000003",
+             "bank": "KAPİTAL BANK ÇIXARIŞI"},
+        ],
+        "odenis_edv": [],
+        "hesablanib_esas": 5000.0, "hesablanib_edv": 900.0,
+        "odenilib_esas": 5000.0, "odenilib_edv": 0.0,
+        "qaliq_esas": 0.0, "qaliq_edv": 900.0,
+    }
+    out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER C"]
+    total = sum(
+        ws.cell(row=r, column=7).value
+        for r in range(6, ws.max_row)
+        if isinstance(ws.cell(row=r, column=7).value, (int, float))
+    )
+    assert total == 5000.0  # Əsas sütunu BOŞ DEYİL
+
+
 def test_build_workbook_supplier_sheet_layout():
     out = build_workbook(_sample_match())
     wb = load_workbook(io.BytesIO(out))
@@ -2200,6 +2316,10 @@ def test_yeni_yapikredi_adsiz_bayraq():
     assert all(r["voen"] is None for r in adsiz)
     # desc mətni ad kimi götürülür, amma ad_yoxdur=True
     assert all(r.get("ad_yoxdur") for r in adsiz)
+    # FALLBACK: ad boş olduqda "Əməliyyat Detalları" mətni ad kimi yazılır
+    assert all(r["ad"] and r["ad"] == r.get("text", "") for r in adsiz)
+    # adboş sətirlər ad→VÖEN həllinə girmir (ad_ile bayrağı YOXDUR)
+    assert all(not r.get("ad_ile") for r in adsiz)
 
 
 def test_adonly_uygunsuz_sheet_adsiz_cixarilir():

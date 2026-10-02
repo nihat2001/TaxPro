@@ -1337,10 +1337,11 @@ def parse_bank_statement(
                         }
                     )
                 else:
-                    # Qarşı tərəf adı yox (ATM/kart/faiz/daxili) — sətir SAXLANILIR
-                    # (geriyə uyğunluq), desc ad kimi götürülür və "ad_yoxdur"
-                    # bayrağı ilə işarələnir: ad→VÖEN həllində və Uyğunsuz
-                    # sheet-də iştirak etmir.
+                    # Qarşı tərəf adı yox (ATM/kart/faiz/daxili) — FALLBACK olaraq
+                    # "Əməliyyat Detalları" (desc) mətni ad kimi yazılır. Lakin
+                    # "ad_yoxdur=True" bayrağı SAXLANILIR: bu sətir ad→VÖEN həllinə
+                    # və Uyğunsuz sheet-ə girmir (təyinatdaki e-qaimə nömrəsi
+                    # yanlış VÖEN əmələ gətirə bilər).
                     result.append(
                         {
                             "voen": None,
