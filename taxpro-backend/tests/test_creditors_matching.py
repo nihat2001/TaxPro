@@ -1641,8 +1641,15 @@ def test_odenilib_esas_interleaved_g_sutunu():
     # qaimə sətri (6) + altındakı bank ödənişi (7) G sütununda (Ödənilib Əsas)
     assert ws["G7"].value == 1000.0
     assert ws["H7"].value in (None, "")
-    # H sütununda (Ödənilib ƏDV) bu ödəniş YOXDUR
-    assert ws["H6"].value in (None, "")
+    # Qaimə sətrində G/H alt ödənişlərin SUM cəmidir
+    assert ws["G6"].value == "=SUM(G7:G7)"
+    assert ws["H6"].value == "=SUM(H7:H7)"
+    # Ödəniş sətrində Qalıq (I/J) BOŞDUR (mənfi qalıq görünməsin)
+    assert ws["I7"].value in (None, "")
+    assert ws["J7"].value in (None, "")
+    # Qaimə sətrində Qalıq düsturu G/H cəminə əsaslanır
+    assert ws["I6"].value == "=E6-G6"
+    assert ws["J6"].value == "=F6-H6"
     # SUM formulu Ödənilib Əsas (G) üzrə düzgündür
     sum_row = ws.max_row
     assert ws[f"G{sum_row}"].value == "=SUM(G6:G7)"

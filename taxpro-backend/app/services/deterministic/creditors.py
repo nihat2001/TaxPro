@@ -2180,22 +2180,46 @@ def _build_supplier_sheet(
             ws.cell(row=row, column=11, value=p["bank"])
         if p.get("qeyd"):
             ws.cell(row=row, column=12, value=p["qeyd"])
-        ws.cell(row=row, column=9, value=f"=E{row}-G{row}")
-        ws.cell(row=row, column=10, value=f"=F{row}-H{row}")
+        # Ödəniş sətirlərində Qalıq (I/J) BOŞ saxlanılır — mənfi qalıq görünməsin.
         row += 1
 
     for st in alloc["groups"]:
         q = st["q"]
+        invoice_row = row
         ws.cell(row=row, column=1, value=_date_cell_value(q))
         ws.cell(row=row, column=2, value=q.get("seriya", ""))
         ws.cell(row=row, column=3, value=q.get("nomre", ""))
         ws.cell(row=row, column=5, value=q.get("esas"))
         ws.cell(row=row, column=6, value=q.get("edv"))
-        ws.cell(row=row, column=9, value=f"=E{row}-G{row}")
-        ws.cell(row=row, column=10, value=f"=F{row}-H{row}")
         row += 1
+        first_pay = row
         for p in st["payments"]:
             _write_payment(p)
+        last_pay = row - 1
+        # Qaimə sətrində Ödənilib Əsas/ƏDV = alt ödəniş sətirlərinin cəmi.
+        if last_pay >= first_pay:
+            ws.cell(row=invoice_row, column=7,
+                    value=f"=SUM(G{first_pay}:G{last_pay})")
+            ws.cell(row=invoice_row, column=8,
+                    value=f"=SUM(H{first_pay}:H{last_pay})")
+        # Qalıq: I = E - G, J = F - H (qaimə sətrində)
+        ws.cell(row=invoice_row, column=9, value=f"=E{invoice_row}-G{invoice_row}")
+        ws.cell(row=invoice_row, column=10, value=f"=F{invoice_row}-H{invoice_row}")
+        # Artıq ödəmə qeydi qaimə sətrinin L sütununda
+        paid_esas = sum(
+            (p.get("esas") or 0.0) for p in st["payments"]
+        )
+        paid_edv = sum(
+            (p.get("edv") or 0.0) for p in st["payments"]
+        )
+        flags = []
+        if paid_esas - (q.get("esas") or 0.0) > 0.004:
+            flags.append("Əsas")
+        if paid_edv - (q.get("edv") or 0.0) > 0.004:
+            flags.append("ƏDV")
+        if flags:
+            ws.cell(row=invoice_row, column=12,
+                    value="Artıq ödəmə: " + ", ".join(flags))
 
     unallocated = [p for p in alloc.get("unallocated", []) if p.get("esas") or p.get("edv")]
     if unallocated:
