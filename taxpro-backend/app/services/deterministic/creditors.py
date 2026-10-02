@@ -380,12 +380,33 @@ def _find_header(
     return None
 
 
+# Eyni fayl (bayt məzmunu) bir generasiya ərzində bir neçə funksiya tərəfindən
+# oxunur (`_bank_source_label`, `parse_bank_statement`, `count_adonly_self_skips`,
+# `_apply_reversals`). `openpyxl` böyük fayllarda çox baha olduğu üçün nəticə
+# keşlənir. Keş açarı → SHA-256; qaytarılan struktur YALNIZ oxunur (mutasiya yox).
+_LOAD_ROWS_CACHE: dict[str, list[list[list[Any]]]] = {}
+
+
+def _clear_load_rows_cache() -> None:
+    """Testlər/generasiya arası keşi təmizləyir (yaddaş saxlamamaq üçün)."""
+    _LOAD_ROWS_CACHE.clear()
+
+
 def _load_rows(raw: bytes) -> list[list[list[Any]]]:
+    key = _sha256(raw)
+    cached = _LOAD_ROWS_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         wb = load_workbook(io.BytesIO(raw))
     except Exception as exc:
         raise ValueError(f"Fayl oxunmadı (Excel gözlənilir): {exc}")
-    return [[[cell.value for cell in row] for row in ws.iter_rows()] for ws in wb.worksheets]
+    result = [
+        [[cell.value for cell in row] for row in ws.iter_rows()]
+        for ws in wb.worksheets
+    ]
+    _LOAD_ROWS_CACHE[key] = result
+    return result
 
 
 def _sha256(raw: bytes) -> str:
@@ -2464,6 +2485,7 @@ def generate_creditors_workbook(
     gelen_raw: bytes, depozit_raw: bytes, banks: Any
 ) -> bytes:
     """Kreditorlar workbook-u. `banks` tək bayt və ya (ad, bayt) siyahısı."""
+    _clear_load_rows_cache()
     gelen_rows, removed_invoices, inv_warnings = _filter_invoices(parse_gelen(gelen_raw))
     removed_refs = frozenset(
         (str(r.get("seriya") or "").strip().upper(), str(r.get("nomre") or "").strip())
@@ -2523,6 +2545,7 @@ def generate_debitors_workbook(
     GEDƏN (göndərilən qaimələr) − [bank kredit + depozit mədaxil] = Qalıq.
     KREDİTORLAR ilə eyni infrastruktur, istiqamət tərsinə.
     """
+    _clear_load_rows_cache()
     geden_rows, removed_invoices, inv_warnings = _filter_invoices(parse_gelen(geden_raw))
     removed_refs = frozenset(
         (str(r.get("seriya") or "").strip().upper(), str(r.get("nomre") or "").strip())
