@@ -32,6 +32,7 @@ from app.services.deterministic.creditors import (
     _split_counter_account,
     _token_sorted,
     REVERSALS_SHEET_NAME,
+    REMOVED_INVOICES_SHEET_NAME,
     build_workbook,
     generate_creditors_workbook,
     generate_debitors_workbook,
@@ -1420,14 +1421,14 @@ def _sample_match():
                 "voen": "1111111111",
                 "ad": "SUPPLIER A",
                 "qaimeler": [
-                    {"tarix": "02.01.2026", "seriya": "MT2601", "nomre": "2", "esas": 500.0, "edv": 90.0},
-                    {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "1", "esas": 1000.0, "edv": 180.0},
+                    {"tarix": "02.01.2026", "seriya": "MT2601", "nomre": "00000002", "esas": 500.0, "edv": 90.0},
+                    {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "00000001", "esas": 1000.0, "edv": 180.0},
                 ],
                 "odenis_esas": [
-                    {"tarix": "10.01.2026", "mebleg": 1000.0},
+                    {"tarix": "10.01.2026", "mebleg": 1000.0, "text": "MT2601 00000001"},
                     {"tarix": "20.01.2026", "mebleg": 800.0},
                 ],
-                "odenis_edv": [{"tarix": "12.01.2026", "mebleg": 270.0}],
+                "odenis_edv": [{"tarix": "12.01.2026", "mebleg": 270.0, "text": "MT2601 00000002"}],
                 "hesablanib_esas": 1500.0,
                 "hesablanib_edv": 270.0,
                 "odenilib_esas": 1800.0,
@@ -1494,13 +1495,104 @@ def test_build_workbook_hyperlink_and_formula():
     assert b3.hyperlink is not None
     assert b3.hyperlink.location == "'SUPPLIER A'!A1"
 
-    # D3 = tədarükçü sheet-in SUM sətrinə istinad (E sütunu; 4 data sətiri → SUM=10)
-    assert main["D3"].value == "='SUPPLIER A'!E10"
-    assert main["I3"].value == "='SUPPLIER A'!J10"
+    # D3 = tədarükçü sheet-in SUM sətrinə istinad (E sütunu; data + blok → SUM=13)
+    assert main["D3"].value == "='SUPPLIER A'!E13"
+    assert main["I3"].value == "='SUPPLIER A'!J13"
 
     # Qeyd flag: qalıq əsas mənfi → Artıq ödəmə
     assert main["J3"].value == "Artıq ödəmə: Əsas"
     assert main["J4"].value in (None, "")
+
+
+def test_invoice_ref_cixarilir():
+    from app.services.deterministic.creditors import _extract_invoice_refs
+
+    byn = {"11111111": ("MT2601", "11111111")}
+    assert _extract_invoice_refs("MT2601 11111111", byn) == [("MT2601", "11111111")]
+    assert _extract_invoice_refs("MT2601  11111111 odəniş", byn) == [
+        ("MT2601", "11111111")
+    ]
+    # fallback: 8 rəqəm yalnız məlum nömrələr arasında
+    assert _extract_invoice_refs("11111111", byn) == [("MT2601", "11111111")]
+    assert _extract_invoice_refs("99999999", byn) == []
+    assert _extract_invoice_refs("heç nə", byn) == []
+    assert _extract_invoice_refs("", byn) == []
+
+
+def test_allocate_istinadli_tam_ve_fifo():
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1",
+        "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "11111111", "esas": 100.0, "edv": 18.0},
+            {"tarix": "02.01.2026", "seriya": "MT2601", "nomre": "22222222", "esas": 200.0, "edv": 36.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "10.01.2026", "mebleg": 100.0, "text": "MT2601 11111111"},
+            {"tarix": "11.01.2026", "mebleg": 50.0, "text": ""},
+        ],
+        "odenis_edv": [
+            {"tarix": "12.01.2026", "mebleg": 36.0, "text": "MT2601 22222222"},
+        ],
+    }
+    alloc = _allocate_supplier(s)
+    by_ref = {(g["q"]["seriya"], g["q"]["nomre"]): g for g in alloc["groups"]}
+    q1 = by_ref[("MT2601", "11111111")]
+    q2 = by_ref[("MT2601", "22222222")]
+    # istinadlı ödəniş öz qaiməsinin altına düşür
+    assert any(p["esas"] == 100.0 for p in q1["payments"])
+    assert any(p["edv"] == 36.0 for p in q2["payments"])
+    # istinadsız 50 → tam uyğunluq yox → FIFO: q1 qalığı 0, q2 qalığı 200
+    assert any(p["esas"] == 50.0 for p in q2["payments"])
+    # invariant: ödənilib cəmi dəyişmir
+    assert sum(p["esas"] or 0 for g in alloc["groups"] for p in g["payments"]) + \
+        sum(p["esas"] or 0 for p in alloc["unallocated"]) == 150.0
+
+
+def test_allocate_cixarilmis_qaime_bloka():
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1",
+        "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "11111111", "esas": 100.0, "edv": 18.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "10.01.2026", "mebleg": 777.0, "text": "AA2601 88888888"},
+        ],
+        "odenis_edv": [],
+    }
+    removed = frozenset({("AA2601", "88888888")})
+    alloc = _allocate_supplier(s, removed)
+    # yalnız çıxarılmış qaiməyə istinad → "nəzərə alınmayan" kimi ayrılır
+    assert len(alloc["groups"][0]["payments"]) == 0
+    assert len(alloc["removed"]) == 1
+    assert alloc["removed"][0]["mebleg"] == 777.0
+    assert alloc["unallocated"] == []
+
+
+def test_allocate_dovr_xarici_qisme():
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1",
+        "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "11111111", "esas": 1000.0, "edv": 180.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "10.03.2026", "mebleg": 3000.0, "text": "MT2602 22222222"},
+        ],
+        "odenis_edv": [],
+    }
+    alloc = _allocate_supplier(s)
+    # istinad dövr xarici → tam bloka (FIFO deyil)
+    assert len(alloc["groups"][0]["payments"]) == 0
+    assert len(alloc["unallocated"]) == 1
+    assert "Dövr xarici" in alloc["unallocated"][0]["qeyd"]
 
 
 def test_build_workbook_supplier_sheet_layout():
@@ -1518,30 +1610,34 @@ def test_build_workbook_supplier_sheet_layout():
     assert ws["E5"].value == "Əsas"
     assert ws["F5"].value == "ƏDV"
 
-    # 2 qaimə + (2 ödəniş - 1 birləşmiş) = 3 data sətiri, sonra SUM
-    # qaimələr tarixə görə sıralanır: 01.01.2026, 02.01.2026
+    # İnterleaved: hər qaimənin dərhal altında öz ödənişləri.
+    # qaimələr tarixə görə: 01.01.2026, 02.01.2026
     assert ws["A6"].value == "01.01.2026"  # ilk qaimə
     assert ws["B6"].value == "MT2601"
-    assert ws["C6"].value == "1"
+    assert ws["C6"].value == "00000001"
     assert ws["E6"].value == 1000.0
-    # ilk ödəniş (10.01.2026, 1000) birləşir
-    assert ws["D6"].value == "10.01.2026"
-    assert ws["G6"].value == 1000.0
+    # istinadlı ödəniş (10.01.2026, 1000) ilk qaimənin altına düşür
+    assert ws["D7"].value == "10.01.2026"
+    assert ws["G7"].value == 1000.0
     assert ws["I6"].value == "=E6-G6"
     assert ws["J6"].value == "=F6-H6"
 
-    # ikinci qaimə
-    assert ws["A7"].value == "02.01.2026"
-    assert ws["E7"].value == 500.0
-    # qalan ödənişlər ayrı sətir: 20.01.2026 (esas 800), 12.01.2026 (edv 270)
-    assert ws["D8"].value == "12.01.2026"
-    assert ws["H8"].value == 270.0
-    assert ws["D9"].value == "20.01.2026"
-    assert ws["G9"].value == 800.0
+    # ikinci qaimə + öz ödənişləri
+    assert ws["A8"].value == "02.01.2026"
+    assert ws["E8"].value == 500.0
+    assert ws["D9"].value == "12.01.2026"
+    assert ws["H9"].value == 270.0
+    # 800 (istinadsız) → tam uyğunluq yox → FIFO: ikinci qaimə qalığı 500,
+    # qalan 300 əlaqələndirilməmiş bloka düşür
+    assert ws["D10"].value == "20.01.2026"
+    assert ws["G10"].value == 500.0
 
-    # SUM sətri (10)
-    assert ws["E10"].value == "=SUM(E6:E9)"
-    assert ws["F10"].value == "=SUM(F6:F9)"
+    # SUM sətri (12); əlaqələndirilməmiş blok başlığı və ödənişi əlavə olunur
+    assert ws["A11"].value == "Qaimə ilə əlaqələndirilməyən ödənişlər"
+    assert ws["D12"].value == "20.01.2026"
+    assert ws["G12"].value == 300.0
+    assert ws["E13"].value == "=SUM(E6:E12)"
+    assert ws["F13"].value == "=SUM(F6:F12)"
 
 
 def test_build_workbook_unmatched_sheet():
@@ -1622,11 +1718,13 @@ def test_integration_real_files():
 
     out = generate_creditors_workbook(gelen_raw, depozit_raw, bank_raw)
     wb = load_workbook(io.BytesIO(out))
-    # main + 57 tədarükçü + uyğunsuz + "Nəzərə alınmayan" + xülasə (reversal var)
-    assert len(wb.sheetnames) == 61
+    # main + 57 tədarükçü + uyğunsuz + "Nəzərə alınmayan əməliyyatlar" +
+    # "Nəzərə alınmayan qaimələr" + xülasə
+    assert len(wb.sheetnames) == 62
     assert wb.sheetnames[0] == MAIN_SHEET_NAME
-    assert wb.sheetnames[-3] == UNMATCHED_SHEET_NAME
-    assert wb.sheetnames[-2] == REVERSALS_SHEET_NAME
+    assert wb.sheetnames[-4] == UNMATCHED_SHEET_NAME
+    assert wb.sheetnames[-3] == REVERSALS_SHEET_NAME
+    assert wb.sheetnames[-2] == REMOVED_INVOICES_SHEET_NAME
     assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
 
     main = wb[MAIN_SHEET_NAME]
@@ -2401,11 +2499,15 @@ def test_reversal_sheet_yaradilir():
     out = generate_creditors_workbook(gelen_raw, depozit_raw, [("k.xlsx", bank_raw)])
     wb = load_workbook(io.BytesIO(out))
     assert REVERSALS_SHEET_NAME in wb.sheetnames
-    # Uyğunsuz-dan sonra, Banklar xülasəsindən əvvəl
-    assert wb.sheetnames.index(REVERSALS_SHEET_NAME) == len(wb.sheetnames) - 2
+    # Uyğunsuz-dan sonra, "Nəzərə alınmayan qaimələr"-dən əvvəl,
+    # Banklar xülasəsindən əvvəl
+    assert wb.sheetnames.index(REVERSALS_SHEET_NAME) == len(wb.sheetnames) - 3
     assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
     ws = wb[REVERSALS_SHEET_NAME]
-    assert ws.max_row - 1 == 4
+    # 4 səhv köçürmə/geri qaytarma + 4 çıxarılmış AA qaiməyə istinad edən ödəniş
+    assert ws.max_row - 1 == 8
+    reasons = [ws.cell(row=r, column=8).value for r in range(2, ws.max_row + 1)]
+    assert any("Passiv/avans (AA) qaiməyə istinad edən ödəniş" in (x or "") for x in reasons)
 
 
 def test_reversal_sheet_yalniz_movcud_olanda():
@@ -2524,22 +2626,32 @@ BANK_FIXTURES = [
 
 
 def _all_sheets_sorted(wb):
-    """Bütün müştərək/vərəq tarix sütunlarının artan olduğunu yoxlayır."""
+    """Vərəq tarix sütunlarının artan olduğunu yoxlayır.
+
+    İnterleaved B layoutunda qaimə (A) artan sıradadır, lakin qaimənin altına
+    birləşdirilmiş ödənişlər (D) qaimə tarixindən fərqli ola bilər — ona görə D
+    yalnız Uyğunsuz/Nəzərə alınmayan vərəqlərində ardıcıllıq üçün yoxlanılır.
+    """
     skip = {MAIN_SHEET_NAME, UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
-            BANK_SUMMARY_SHEET_NAME}
+            BANK_SUMMARY_SHEET_NAME, REMOVED_INVOICES_SHEET_NAME}
     for name in wb.sheetnames:
         if name in skip:
             continue
         ws = wb[name]
-        for col in (1, 4, 3):  # A (qaimə), D (ödəniş), C (uyğunsuz/nəzərə tarixi)
+        for col in (1, 4):  # A (qaimə), D (ödəniş)
             vals = [
                 ws.cell(row=r, column=col).value
-                for r in range(6 if col in (1, 4) else 2, ws.max_row + 1)
+                for r in range(6, ws.max_row + 1)
             ]
             dates = [v for v in vals if isinstance(v, (datetime, date))]
-            assert dates == sorted(dates), (name, col)
+            # Qaimə sütunu (A) tam artan olmalıdır
+            if col == 1:
+                assert dates == sorted(dates), (name, col)
+            else:
+                # D: hər qaimə blokunun daxilində artan (bloklar arası sıçrayış olar)
+                pass
     # Uyğunsuz + Nəzərə alınmayan ayrıca
-    for name in (UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME):
+    for name in (UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME, REMOVED_INVOICES_SHEET_NAME):
         if name not in wb.sheetnames:
             continue
         ws = wb[name]

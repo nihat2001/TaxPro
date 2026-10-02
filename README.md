@@ -176,9 +176,23 @@ Yalnız adonly rejimi aktiv olan banklara tətbiq olunur — digər bankların d
 Bank of Baku 54 · Bank Respublika 43 · Kapital 50 · PAŞA 43 · Rabitə 53 · Turan 11 · Unibank 74 ·
 VTB 32 · Yapı Kredi 3 · Yelo 31 · Ziraat 43.
 
+**Qaimə süzgəci (A):** `_filter_invoices` passiv və avans (`AA` seriyalı) qaimələri hesablamadan
+çıxarır; çıxarılanlar **"Nəzərə alınmayan qaimələr"** sheet-inə (VÖEN·Ad·Tarix·Seriya·Nömrə·Növ·
+Vəziyyət·ƏDV-siz·ƏDV·Səbəb) düşür (yalnız ≥1 sətir olduqda). "Təsdiq gözləyən" vəziyyətli qaimələr
+saxlanılır, lakin xəbərdarlıq yazılır; naməlum seriya (MT/AA-dan başqa) da xəbərdarlıq verir.
+Çıxarılmış qaiməyə istinad edən ödənişlər da "Nəzərə alınmayan əməliyyatlar"-a keçir.
+
+**Ödəniş bölüşdürməsi (B):** hər təchizatçı sheet-ində **interleaved** layout — hər qaimənin dərhal
+altında ona aid ödənişlər, sonda əlaqələndirilməyən ödənişlər bloku (başlıq sətri ilə). Ödənişlərin
+qaiməyə bağlanma sırası: (1) istinadlı (təyinatdaki `MT/AA + 4 + 8` nömrə; fallback 8 rəqəm yalnız
+həmin VÖEN-in qaimələri arasında) → (2a) istinadsızda tam məbləğ uyğunluğu → (2b) FIFO (ən köhnə) →
+(2c) əlaqələndirilməmiş blok. İnvariant: qaimə altı "Ödənilib" + blok = əvvəlki cəm. Dövr-xarici /
+natamam istinadlar bloka düşür və "Qeyd" (L) sütununda izah olunur. Yeni **L "Qeyd"** sütunu.
+
 **Nəticə workbook:** master sheet (**KREDİTORLAR** / **DEBİTORLAR**) + hər tərəf üçün ayrı sheet
 (hiperlink + SUM formulları, geri-link `← KREDİTORLAR` / `← DEBİTORLAR`) + "Uyğunsuz ödənişlər" sheet
-+ (varsa) **"Nəzərə alınmayan əməliyyatlar"** sheet + **"Banklar üzrə xülasə"** sheet (həmişə, ən sonda).
++ (varsa) **"Nəzərə alınmayan əməliyyatlar"** sheet + (varsa) **"Nəzərə alınmayan qaimələr"** sheet
++ **"Banklar üzrə xülasə"** sheet (həmişə, ən sonda).
 B sütununun görünən mətni həmişə əsl addır; hyperlink hədəfi arxada saxlanılır.
 
 **Xronoloji sıra:** hər vərəqdə qaimə bloku və ödəniş-yalnız bloku, həmçinin "Uyğunsuz ödənişlər" və
