@@ -2185,8 +2185,12 @@ def _build_supplier_sheet(
         alloc = _allocate_supplier(s)
 
     row = 6
+    # Cəm sətri üçün G/H istinadları: yalnız ANA qaimə sətirləri (onların G/H
+    # artıq alt ödənişlərin =SUM cəmidir) + qaiməyə bağlanmayan sərbəst
+    # ödəniş sətirləri. Beləcə alt ödənişlər İKİQAT sayılmır.
+    paid_ref_rows: list[int] = []
 
-    def _write_payment(p: dict[str, Any]) -> None:
+    def _write_payment(p: dict[str, Any], count_for_total: bool = False) -> None:
         nonlocal row
         if p.get("tarix_dt") is not None or p.get("tarix"):
             ws.cell(row=row, column=4, value=_date_cell_value(p))
@@ -2199,6 +2203,8 @@ def _build_supplier_sheet(
         if p.get("qeyd"):
             ws.cell(row=row, column=12, value=p["qeyd"])
         # Ödəniş sətirlərində Qalıq (I/J) BOŞ saxlanılır — mənfi qalıq görünməsin.
+        if count_for_total:
+            paid_ref_rows.append(row)
         row += 1
 
     for st in alloc["groups"]:
@@ -2209,6 +2215,8 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=3, value=q.get("nomre", ""))
         ws.cell(row=row, column=5, value=q.get("esas"))
         ws.cell(row=row, column=6, value=q.get("edv"))
+        # Ana qaimə sətri G/H üzrə Cəm-ə daxildir (alt ödənişləri özü toplayır)
+        paid_ref_rows.append(invoice_row)
         row += 1
         first_pay = row
         for p in st["payments"]:
@@ -2246,15 +2254,24 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=1).font = _HEADER_FONT
         row += 1
         for p in unallocated:
-            _write_payment(p)
+            # Sərbəst ödənişin ana sətri yoxdur → Cəm-ə birbaşa daxil edilir.
+            _write_payment(p, count_for_total=True)
 
     last = row - 1
     sum_row = row
+    # G/H: yalnız ana qaimə sətirləri + sərbəst ödənişlər (ikiqat sayılmır).
+    series = ",".join(f"{{col}}{r}" for r in sorted(paid_ref_rows))
+    for col in "GH":
+        if series:
+            ws[f"{col}{sum_row}"] = "=SUM(" + series.replace("{col}", col) + ")"
+        else:
+            ws[f"{col}{sum_row}"] = 0
+    # E/F/I/J: tam diapazon (ana sətirdə E/F sabit, I/J düstur; alt sətirlər boş)
     if last >= 6:
-        for col in "EFGHIJ":
+        for col in "EFIJ":
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}{last})"
     else:
-        for col in "EFGHIJ":
+        for col in "EFIJ":
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}6)"
 
     _style_header_row(ws, 4, 12)

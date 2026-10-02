@@ -1652,10 +1652,79 @@ def test_odenilib_esas_interleaved_g_sutunu():
     # Qaimə sətrində Qalıq düsturu G/H cəminə əsaslanır
     assert ws["I6"].value == "=E6-G6"
     assert ws["J6"].value == "=F6-H6"
-    # SUM formulu Ödənilib Əsas (G) üzrə düzgündür
+    # Cəm sətri G/H üzrə YALNIZ ana qaimə sətrini toplayır (alt ödənişi
+    # ana sətir öz =SUM-u ilə sayır) → ikiqat sayılma yoxdur.
     sum_row = ws.max_row
-    assert ws[f"G{sum_row}"].value == "=SUM(G6:G7)"
+    assert ws[f"G{sum_row}"].value == "=SUM(G6)"
+    assert ws[f"H{sum_row}"].value == "=SUM(H6)"
+    assert ws[f"G{sum_row}"].value != "=SUM(G6:G7)"
+    # E/F/I/J tam diapazon olaraq qalır
     assert ws[f"E{sum_row}"].value == "=SUM(E6:E7)"
+
+
+def test_cem_setri_ikiqat_saymir():
+    """Cəm sətri alt ödənişləri İKİQAT saymır (2-ci variant reqressiyası).
+
+    Ana qaimə sətri G/H = alt ödənişlərin =SUM cəmi; Cəm isə yalnız ana
+    sətirləri toplayır. Nəticə: Cəm G = faktiki ödəniş cəmi (1000), 2000 yox.
+    """
+    s = {
+        "voen": "1", "ad": "X",
+        "qaimeler": [
+            {"doc_type": "INVOICE", "tarix": "01.01.2026", "seriya": "MT2601",
+             "nomre": "11111111", "esas": 1000.0, "edv": 180.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "05.01.2026", "mebleg": 1000.0, "text": "MT2601 11111111",
+             "bank": "KAPITAL"},
+        ],
+        "odenis_edv": [
+            {"tarix": "06.01.2026", "mebleg": 180.0, "text": "MT2601 11111111",
+             "bank": "Depozit (ƏDV)"},
+        ],
+        "hesablanib_esas": 1000.0, "hesablanib_edv": 180.0,
+        "odenilib_esas": 1000.0, "odenilib_edv": 180.0,
+        "qaliq_esas": 0.0, "qaliq_edv": 0.0,
+    }
+    out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["X"]
+    sum_row = ws.max_row
+    # Cəm G/H yalnız ana sətirə istinad edir (alt sətirlər ikiqat sayılmır)
+    assert ws[f"G{sum_row}"].value == "=SUM(G6)"
+    assert ws[f"H{sum_row}"].value == "=SUM(H6)"
+    # Alt ödəniş sətirləri Cəm düsturuna BİRBAŞA daxil edilməyib
+    assert "G7" not in str(ws[f"G{sum_row}"].value)
+    assert "G8" not in str(ws[f"G{sum_row}"].value)
+    assert "H7" not in str(ws[f"H{sum_row}"].value)
+
+
+def test_cem_setri_serbest_odenisi_birdefe_sayir():
+    """Qaiməyə bağlanmayan sərbəst ödəniş Cəm-ə BİRBAŞA və bir dəfə daxil edilir."""
+    s = {
+        "voen": "1", "ad": "Y",
+        "qaimeler": [
+            {"doc_type": "INVOICE", "tarix": "01.01.2026", "seriya": "MT2601",
+             "nomre": "11111111", "esas": 100.0, "edv": 18.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "05.01.2026", "mebleg": 500.0, "text": "MT9999 99999999",
+             "bank": "KAPITAL"},
+        ],
+        "odenis_edv": [],
+        "hesablanib_esas": 100.0, "hesablanib_edv": 18.0,
+        "odenilib_esas": 500.0, "odenilib_edv": 0.0,
+        "qaliq_esas": -400.0, "qaliq_edv": 18.0,
+    }
+    out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["Y"]
+    sum_row = ws.max_row
+    # Sərbəst ödəniş sətri (blok) Cəm G düsturunda BİRBAŞA istinad olunur
+    g_formula = str(ws[f"G{sum_row}"].value)
+    # ana qaimə sətri (6) + blok ödəniş sətri → =SUM(G6,G...)
+    assert g_formula.startswith("=SUM(G6,")
+    assert g_formula.count(",") == 1  # yalnız bir əlavə istinad
 
 
 def test_odenilib_esas_depozit_edv_ile_qarismir():
