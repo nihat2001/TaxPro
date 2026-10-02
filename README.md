@@ -178,8 +178,23 @@ VTB 32 · Yapı Kredi 3 · Yelo 31 · Ziraat 43.
 
 **Nəticə workbook:** master sheet (**KREDİTORLAR** / **DEBİTORLAR**) + hər tərəf üçün ayrı sheet
 (hiperlink + SUM formulları, geri-link `← KREDİTORLAR` / `← DEBİTORLAR`) + "Uyğunsuz ödənişlər" sheet
-+ **"Banklar üzrə xülasə"** sheet (həmişə, ən sonda). B sütununun görünən mətni həmişə əsl addır;
-hyperlink hədəfi arxada saxlanılır.
++ (varsa) **"Nəzərə alınmayan əməliyyatlar"** sheet + **"Banklar üzrə xülasə"** sheet (həmişə, ən sonda).
+B sütununun görünən mətni həmişə əsl addır; hyperlink hədəfi arxada saxlanılır.
+
+**Xronoloji sıra:** hər vərəqdə qaimə bloku və ödəniş-yalnız bloku, həmçinin "Uyğunsuz ödənişlər" və
+"Nəzərə alınmayan əməliyyatlar" **tarixə görə ARTAN** düzülür (`tarix_dt` — real `date`; `_parse_date`).
+Tarixsiz sətirlər blokun sonuna düşür. Tarix xanaları real Excel tarixidir (`number_format="DD.MM.YYYY"`),
+beləcə Excel-də filter/sort düzgün işləyir. Eyni gündə sabit sıra: qaimə üçün seriya+nömrə, ödəniş üçün
+(mənbə, məbləğ). Köhnə mətn `tarix` sahəsi saxlanılır (geriyə uyğunluq), lakin sıralamada istifadə olunmur.
+
+**Səhv köçürmə / geri qaytarma ləğvi:** təyinatda (`_SEHV_ACARLARI_GUCLU` = "sehv"/"yanlis";
+`_SEHV_ACARLARI_ZEIF` = "geriqaytar"/"iade"; compact normallaşdırma, "ƏDVgeri" bitişik yazılış da
+tutulur) işarəli sətirlər aşkarlanır. Eyni VÖEN, əks istiqamət, məbləğ ±0.01 olan cüt qarşılıqlı
+ləğv olunur (hər iki sətir ödəniş sayılmır). ZƏİF flag yalnız cüt tapılanda ləğv olunur; GÜCLÜ flag
+cüt tapılmasa da hədəf sətir ödənişdən çıxarılır (xəbərdarlıqla). Ləğv olunan/ləğv olunmayan flag-lı
+sətirlər "Nəzərə alınmayan əməliyyatlar"-da səbəbi ilə göstərilir. Baş verən ləğv sayı "Banklar üzrə
+xülasə" xəbərdarlığında yazılır. Hər iki mənbəyə tətbiq olunur (KREDİTORLAR: bank DEBIT + depozit
+MƏXARİC; DEBİTORLAR: bank KREDİT + depozit MƏDAXİL).
 
 **Çoxlu bank çıxarışı:** hər iki kart bir neçə bank faylını (fərqli banklar/hesablar/dövrlər) qəbul edir.
 Hər fayl ayrı-ayrı parse olunur, sonra birləşdirilir (hesablama düsturu dəyişmir). Hər ödənişə mənbə

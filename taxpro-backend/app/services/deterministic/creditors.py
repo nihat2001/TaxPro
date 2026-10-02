@@ -33,6 +33,7 @@ from app.services.deterministic.excel_parser import normalize_text
 
 # ===== Sheet / sütun sabitləri =====
 MAIN_SHEET_NAME = "KREDİTORLAR"
+REVERSALS_SHEET_NAME = "Nəzərə alınmayan əməliyyatlar"
 BANK_SUMMARY_SHEET_NAME = "Banklar üzrə xülasə"
 # Çoxlu bank çıxarışı: maksimum fayl sayı (endpoint səviyyəsində yoxlanılır)
 MAX_BANK_FILES = 20
@@ -52,6 +53,7 @@ _SHEET_NAME_MAX = 31
 _HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 _HEADER_FONT = Font(bold=True)
 _MONEY_FORMAT = "#,##0.00"
+_DATE_NUMBER_FORMAT = "DD.MM.YYYY"
 _MONEY_ALIGNMENT = Alignment(horizontal="right", vertical="center")
 _CENTER_ALIGNMENT = Alignment(horizontal="center", vertical="center")
 _TEXT_ALIGNMENT = Alignment(horizontal="left", vertical="center")
@@ -88,8 +90,15 @@ _DEPOZIT_FIELDS = {
     "emeliyyattarixi": "tarix",
     "medaxil": "medaxil",
     "mexaric": "mexaric",
+    "emeliyyatinteyinati": "teyinat",
 }
 _DEPOZIT_REQUIRED = ("voen", "mexaric")
+
+# Səhv köçürmə / geri qaytarma açar sözləri (compact normallaşdırma ilə).
+# GÜCLÜ: cüt tapılmasa da hədəf sətir ödənişdən çıxarılır.
+# ZƏİF: yalnız cüt tapılanda ləğv olunur (təkbaşına "qaytar" YOX).
+_SEHV_ACARLARI_GUCLU = ("sehv", "yanlis")
+_SEHV_ACARLARI_ZEIF = ("geriqaytar", "iade")
 
 # BANK ÇIXARIŞI — çoxbanklı dinamik aşkarlanma (alias əsaslı).
 # Kapital: başlıq 13-cü sətirdə (Tarix, Əks hesabın nömrəsi/adı/vöen-i,
@@ -258,6 +267,62 @@ def _format_date(value: Any) -> str:
     except Exception:
         pass
     return _cell_text(value)
+
+
+_DATE_INPUT_FORMATS = ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y")
+
+
+def _parse_date(value: Any) -> date | None:
+    """Tarixi `datetime.date`-a çevirir (xronoloji sıralama/yazma üçün).
+
+    `datetime`/`date` birbaşa; mətn üçün bir neçə format sınanır. Oxunmayan
+    və ya boş dəyər → None (xəta atmır; belə sətirlər sıralamada sona düşür).
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        if isinstance(value, float) and value != value:
+            return None
+    except Exception:
+        pass
+    text = _cell_text(value)
+    if not text:
+        return None
+    for fmt in _DATE_INPUT_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+# Tarixsiz sətirləri sıralamada SONA atmaq üçün "maksimum" tarix açarı.
+_DATE_MAX = date.max
+
+
+def _date_sort_key(value_dt: date | None, fallback: Any, fb_key: Any):
+    """(tarix_dt, ...) açarı.
+
+    `tarix_dt` varsa onunla; yoxdursa `fallback` mətn tarixi parse olunur
+    (köhnə `_sample_match` kimi testlər yalnız mətn verir). Yenə yoxdursa
+    sətir blokun sonuna düşür.
+    """
+    if value_dt is not None:
+        return (value_dt, fb_key)
+    parsed = _parse_date(fallback)
+    if parsed is not None:
+        return (parsed, fb_key)
+    return (_DATE_MAX, fb_key)
+
+
+def _date_cell_value(entry: dict[str, Any]) -> Any:
+    """Workbook xanasına yazılan dəyər: real tarix varsa `date`, yoxsa mətn."""
+    dt = entry.get("tarix_dt")
+    return dt if dt is not None else entry.get("tarix", "")
 
 
 def _get(row: list[Any], col_map: dict[str, int], field: str) -> Any:
@@ -677,11 +742,13 @@ def parse_gelen(raw: bytes) -> list[dict[str, Any]]:
             ad = _cell_text(_get(row, col_map, "ad"))
             if not ad:
                 continue
+            tarix_raw = _get(row, col_map, "tarix")
             result.append(
                 {
                     "voen": voen,
                     "ad": ad,
-                    "tarix": _format_date(_get(row, col_map, "tarix")),
+                    "tarix": _format_date(tarix_raw),
+                    "tarix_dt": _parse_date(tarix_raw),
                     "seriya": _cell_text(_get(row, col_map, "seriya")),
                     "nomre": _cell_text(_get(row, col_map, "nomre")),
                     "esas": _to_float(_get(row, col_map, "esas")) or 0.0,
@@ -718,12 +785,15 @@ def parse_depozit(
             amount = _to_float(_get(row, col_map, column)) or 0.0
             if amount <= 0:
                 continue
+            tarix_raw = _get(row, col_map, "tarix")
             result.append(
                 {
                     "voen": voen,
                     "ad": _cell_text(_get(row, col_map, "ad")),
-                    "tarix": _format_date(_get(row, col_map, "tarix")),
+                    "tarix": _format_date(tarix_raw),
+                    "tarix_dt": _parse_date(tarix_raw),
                     "mexaric": amount,
+                    "teyinat": _cell_text(_get(row, col_map, "teyinat")),
                 }
             )
         return result
@@ -868,6 +938,7 @@ def parse_bank_statement(
                             "voen": None,
                             "ad": ad,
                             "tarix": _format_date(_get(row, col_map, "date")),
+                            "tarix_dt": _parse_date(_get(row, col_map, "date")),
                             "mebleg": amount,
                             "ad_ile": True,
                         }
@@ -882,6 +953,7 @@ def parse_bank_statement(
                             "voen": None,
                             "ad": re.sub(r"_x000D_", " ", desc_text).strip(),
                             "tarix": _format_date(_get(row, col_map, "date")),
+                            "tarix_dt": _parse_date(_get(row, col_map, "date")),
                             "mebleg": amount,
                             "ad_yoxdur": True,
                         }
@@ -910,6 +982,7 @@ def parse_bank_statement(
                     "voen": voen,
                     "ad": ad,
                     "tarix": _format_date(_get(row, col_map, "date")),
+                    "tarix_dt": _parse_date(_get(row, col_map, "date")),
                     "mebleg": amount,
                 }
             )
@@ -918,6 +991,240 @@ def parse_bank_statement(
         "Bank çıxarışında başlıq sətri tapılmadı "
         "(VÖEN + Tarix + Məbləğ/Məxaric sütunları gözlənilir)."
     )
+
+
+def _desc_flag_level(detail: Any) -> str | None:
+    """Təyinat mətnində səhv/geri-qaytarma açar sözünü aşkarlayır.
+
+    Compact normallaşdırma (diakritiksiz, boşluqsuz) ilə: "səhv"→"sehv",
+    "ƏDVgeri"→"edvgeri". Qaytarır: "guclu" | "zeif" | None.
+    """
+    compact = _compact(_norm_ad(_cell_text(detail)))
+    if any(k in compact for k in _SEHV_ACARLARI_GUCLU):
+        return "guclu"
+    if any(k in compact for k in _SEHV_ACARLARI_ZEIF):
+        return "zeif"
+    return None
+
+
+def _entry_direction(entry: dict[str, Any]) -> str | None:
+    return entry.get("_istiqamet")
+
+
+def _entry_amount(entry: dict[str, Any], direction: str) -> float | None:
+    """Sətirin verilmiş istiqamətdəki məbləği (hər iki açar adını dəstəkləyir)."""
+    for key in (
+        ("_mexaric", "mexaric") if direction == "mexaric" else ("_medaxil", "medaxil")
+    ):
+        if entry.get(key) is not None:
+            return entry[key]
+    return None
+
+
+def _cancel_reversals(
+    entries: list[dict[str, Any]], target_direction: str
+) -> dict[str, Any]:
+    """Səhv köçürmə/geri qaytarma cütlərini ləğv edir.
+
+    `entries`: HƏR İKİ istiqamətli sətirlər (`_istiqamet` = "medaxil"|"mexaric",
+    `_menbe`, `_mexaric`/`_medaxil` məbləğ). `target_direction` — ödəniş sayılan
+    istiqamət (kreditorlar: "mexaric"; debitorlar: "medaxil").
+
+    Qaytarır: {"legvedilen": set(id(entry)), "nezere_alinmayan": [record]}.
+    """
+    opp = "medaxil" if target_direction == "mexaric" else "mexaric"
+    used: set[int] = set()
+    cancelled: set[int] = set()
+    uncounted: list[dict[str, Any]] = []
+
+    # Flag-lı sətirlər
+    flagged = [e for e in entries if _desc_flag_level(e.get("teyinat"))]
+
+    # Əvvəlcə cütləri tap (güclü+zəif): eyni VÖEN, əks istiqamət, bərabər məbləğ
+    for flag in flagged:
+        if id(flag) in used:
+            continue
+        voen = flag.get("voen")
+        if not voen:
+            # VÖEN-siz (ad-only) — təxmin etmə
+            continue
+        flag_dir = flag["_istiqamet"]
+        flag_amt = _entry_amount(flag, flag_dir)
+        if flag_amt is None:
+            continue
+        # Əks istiqamətli namizəd (mütləq flag-ın əksində)
+        candidates = [
+            e for e in entries
+            if id(e) not in used
+            and id(e) != id(flag)
+            and e.get("voen") == voen
+            and e["_istiqamet"] != flag_dir
+        ]
+        best = None
+        best_key = None
+        for e in candidates:
+            amt = _entry_amount(e, e["_istiqamet"])
+            if amt is None or abs(amt - flag_amt) > 0.01:
+                continue
+            # Flag tarixinə ən yaxın (əvvəlki üstün)
+            fd = flag.get("tarix_dt")
+            ed = e.get("tarix_dt")
+            if fd is not None and ed is not None:
+                delta = (ed - fd).days
+                key = delta if delta <= 0 else delta + 1000  # əvvəlkilər üstün
+            else:
+                key = 999999
+            if best_key is None or key < best_key:
+                best_key, best = key, e
+        if best is not None:
+            used.add(id(flag))
+            used.add(id(best))
+            cancelled.add(id(flag))
+            cancelled.add(id(best))
+            # Cütün HƏR İKİ sətri "Nəzərə alınmayan"da göstərilir.
+            for e in (flag, best):
+                e_dir = e["_istiqamet"]
+                uncounted.append(
+                    {
+                        "voen": voen,
+                        "ad": e.get("ad", ""),
+                        "tarix": e.get("tarix", ""),
+                        "tarix_dt": e.get("tarix_dt"),
+                        "menbe": e.get("_menbe", ""),
+                        "istiqamet": "Mədaxil" if e_dir == "medaxil" else "Məxaric",
+                        "mebleg": _entry_amount(e, e_dir),
+                        "teyinat": e.get("teyinat", ""),
+                        "sebeb": "Səhv köçürmə — qarşılıqlı ləğv olundu",
+                    }
+                )
+
+    # Cüt tapılmayan GÜCLÜ flag-lı hədəf sətirləri → ödənişdən çıxar
+    for flag in flagged:
+        if id(flag) in used:
+            continue
+        level = _desc_flag_level(flag.get("teyinat"))
+        flag_dir = flag["_istiqamet"]
+        if flag_dir != target_direction and level != "guclu":
+            # əks istiqamətli zəif flag → yalnız xəbərdarlıq (ödəniş sayılmır,
+            # çünki hədəf deyil; sadəcə qeyd)
+            continue
+        amt = _entry_amount(flag, flag_dir)
+        if level == "guclu":
+            # Hədəf istiqamətindəsə ödənişdən çıxar; əks istiqamətdədirsə toxunma
+            if flag_dir == target_direction:
+                cancelled.add(id(flag))
+                uncounted.append(
+                    {
+                        "voen": flag.get("voen") or "",
+                        "ad": flag.get("ad", ""),
+                        "tarix": flag.get("tarix", ""),
+                        "tarix_dt": flag.get("tarix_dt"),
+                        "menbe": flag.get("_menbe", ""),
+                        "istiqamet": "Mədaxil" if flag_dir == "medaxil" else "Məxaric",
+                        "mebleg": amt,
+                        "teyinat": flag.get("teyinat", ""),
+                        "sebeb": "Səhv/geri qaytarma — cüt tapılmadı (yoxlayın)",
+                    }
+                )
+
+    return {"legvedilen": cancelled, "nezere_alinmayan": uncounted}
+
+
+def parse_depozit_all(raw: bytes) -> list[dict[str, Any]]:
+    """DEPOZİT-dən HƏR İKİ istiqamətli sətirləri oxuyur (yalnız ləğv axtarışı).
+
+    Nəticə cəmlərə/uğunlaşmaya düşmür; `_istiqamet` sahəsi ilə işarələnir.
+    """
+    rows_list = _load_rows(raw)
+    for rows in rows_list:
+        found = _find_header(rows, _DEPOZIT_REQUIRED, _DEPOZIT_FIELDS)
+        if found is None:
+            continue
+        header_idx, col_map = found
+        out: list[dict[str, Any]] = []
+        for row in rows[header_idx + 1 :]:
+            voen = _voen_str(_get(row, col_map, "voen"))
+            if not voen:
+                continue
+            tarix_raw = _get(row, col_map, "tarix")
+            medaxil = _to_float(_get(row, col_map, "medaxil")) or 0.0
+            mexaric = _to_float(_get(row, col_map, "mexaric")) or 0.0
+            direction = "mexaric" if mexaric > 0 else ("medaxil" if medaxil > 0 else None)
+            if direction is None:
+                continue
+            out.append(
+                {
+                    "voen": voen,
+                    "ad": _cell_text(_get(row, col_map, "ad")),
+                    "tarix": _format_date(tarix_raw),
+                    "tarix_dt": _parse_date(tarix_raw),
+                    "medaxil": medaxil,
+                    "mexaric": mexaric,
+                    "teyinat": _cell_text(_get(row, col_map, "teyinat")),
+                    "_istiqamet": direction,
+                    "_menbe": "Depozit",
+                }
+            )
+        return out
+    return []
+
+
+def _apply_reversals(
+    depozit_target_rows: list[dict[str, Any]],
+    bank_target_rows: list[dict[str, Any]],
+    depozit_raw: bytes,
+    banks: Any,
+    target_direction: str,
+) -> list[dict[str, Any]]:
+    """Səhv köçürmə/geri qaytarma cütlərini ləğv edir və nəticəni qaytarır.
+
+    `depozit_target_rows`/`bank_target_rows` — hədəf istiqamətli (ödəniş sayılan)
+    siyahılar; funksiya ləğv olunan sətirləri onlardan SİLİR (qarşılıqlı ləğv).
+    Əks istiqamətli sətirlər yalnız ləğv axtarışı üçün ayrıca oxunur.
+    Qaytarır: "Nəzərə alınmayan əməliyyatlar" üçün rekord siyahısı.
+    """
+    depozit_all = parse_depozit_all(depozit_raw)
+    bank_all = _parse_banks_all(banks, direction=("debit" if target_direction == "mexaric" else "credit"))
+
+    uncounted: list[dict[str, Any]] = []
+    cancelled_ids: set[int] = set()
+
+    for pool_all, target_rows in (
+        (depozit_all, depozit_target_rows),
+        (bank_all, bank_target_rows),
+    ):
+        res = _cancel_reversals(pool_all, target_direction)
+        cancelled_ids |= res["legvedilen"]
+        uncounted.extend(res["nezere_alinmayan"])
+        # Hədəf siyahıdan ləğv olunanları çıxar (id-lə deyil, məzmunla uyğunlaşdır)
+        removed = [e for e in pool_all if id(e) in res["legvedilen"]]
+        to_drop = _match_entries(target_rows, removed)
+        for r in sorted(to_drop, reverse=True):
+            del target_rows[r]
+
+    return uncounted
+
+
+def _match_entries(
+    target_rows: list[dict[str, Any]], removed: list[dict[str, Any]]
+) -> list[int]:
+    """`removed` sətirlərinə uyğun `target_rows` indekslərini qaytarır."""
+    drops: list[int] = []
+    used: set[int] = set()
+    for rem in removed:
+        for i, t in enumerate(target_rows):
+            if i in used:
+                continue
+            if (
+                t.get("voen") == rem.get("voen")
+                and t.get("tarix") == rem.get("tarix")
+                and abs((t.get("mebleg") or t.get("mexaric") or 0.0)
+                        - (rem.get("mexaric") or rem.get("medaxil") or 0.0)) <= 0.01
+            ):
+                drops.append(i)
+                used.add(i)
+                break
+    return drops
 
 
 def _normalize_banks(
@@ -995,6 +1302,8 @@ def _parse_banks(
         total = 0.0
         for r in rows:
             r["bank"] = label
+            r["_istiqamet"] = "mexaric" if direction == "debit" else "medaxil"
+            r["_menbe"] = "Bank"
             combined.append(r)
             total += r["mebleg"]
         summary.append(
@@ -1012,6 +1321,41 @@ def _parse_banks(
         )
 
     return combined, summary, warnings
+
+
+def _parse_banks_all(
+    banks: Any, direction: str
+) -> list[dict[str, Any]]:
+    """Bank fayllarını hər iki istiqamətdə oxuyur (yalnız ləğv axtarışı üçün).
+
+    Hədəf `direction` sətirləri + əks istiqamət sətirləri birlikdə qaytarılır,
+    `_istiqamet`/`_menbe` sahası ilə işarələnir. Cəmlərə/uğunlaşmaya düşmür.
+    SHA-256 dublikat qaydası qorunur.
+    """
+    normalized = _normalize_banks(banks)
+    if not normalized:
+        return []
+    opp = "credit" if direction == "debit" else "debit"
+    used_labels: set[str] = set()
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for filename, raw in normalized:
+        digest = _sha256(raw)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        label = _bank_source_label(filename, raw, used_labels)
+        for d in (direction, opp):
+            try:
+                rows = parse_bank_statement(raw, direction=d)
+            except ValueError:
+                rows = []
+            for r in rows:
+                r["bank"] = label
+                r["_istiqamet"] = "mexaric" if d == "debit" else "medaxil"
+                r["_menbe"] = "Bank"
+                out.append(r)
+    return out
 
 
 def _finalize_bank_summary(
@@ -1183,7 +1527,12 @@ def match_by_voen(
             continue
         if b["voen"] and b["voen"] in suppliers:
             suppliers[b["voen"]]["odenis_esas"].append(
-                {"tarix": b["tarix"], "mebleg": b["mebleg"], "bank": bank_label}
+                {
+                    "tarix": b["tarix"],
+                    "tarix_dt": b.get("tarix_dt"),
+                    "mebleg": b["mebleg"],
+                    "bank": bank_label,
+                }
             )
         else:
             unmatched.append(
@@ -1191,6 +1540,7 @@ def match_by_voen(
                     "voen": b["voen"] or "",
                     "ad": b["ad"],
                     "tarix": b["tarix"],
+                    "tarix_dt": b.get("tarix_dt"),
                     "menbe": "Bank",
                     "mebleg": b["mebleg"],
                     "bank": bank_label,
@@ -1199,7 +1549,12 @@ def match_by_voen(
     for d in depozit_rows:
         if d["voen"] and d["voen"] in suppliers:
             suppliers[d["voen"]]["odenis_edv"].append(
-                {"tarix": d["tarix"], "mebleg": d["mexaric"], "bank": DEPOZIT_BANK_LABEL}
+                {
+                    "tarix": d["tarix"],
+                    "tarix_dt": d.get("tarix_dt"),
+                    "mebleg": d["mexaric"],
+                    "bank": DEPOZIT_BANK_LABEL,
+                }
             )
         else:
             unmatched.append(
@@ -1207,6 +1562,7 @@ def match_by_voen(
                     "voen": d["voen"] or "",
                     "ad": d["ad"],
                     "tarix": d["tarix"],
+                    "tarix_dt": d.get("tarix_dt"),
                     "menbe": "Depozit",
                     "mebleg": d["mexaric"],
                     "bank": DEPOZIT_BANK_LABEL,
@@ -1228,7 +1584,11 @@ def match_by_voen(
         supplier_list.append(s)
 
     supplier_list.sort(key=lambda s: s["ad"].lower())
-    unmatched.sort(key=lambda u: (u["menbe"], u["tarix"]))
+    unmatched.sort(
+        key=lambda u: _date_sort_key(
+            u.get("tarix_dt"), u.get("tarix", ""), (u.get("menbe", ""),)
+        )
+    )
     return {
         "suppliers": supplier_list,
         "unmatched": unmatched,
@@ -1286,6 +1646,15 @@ def _style_money(ws, start_row: int, end_row: int, cols: list[int]) -> None:
             cell = ws.cell(row=row, column=col)
             cell.number_format = _MONEY_FORMAT
             cell.alignment = _MONEY_ALIGNMENT
+
+
+def _style_dates(ws, start_row: int, end_row: int, cols: list[int]) -> None:
+    """Tarix sütunlarını real Excel tarixi formatı ilə göstərir."""
+    for col in cols:
+        for row in range(start_row, end_row + 1):
+            cell = ws.cell(row=row, column=col)
+            cell.number_format = _DATE_NUMBER_FORMAT
+            cell.alignment = _TEXT_ALIGNMENT
 
 
 def _set_link(cell, location: str, display: str | None = None) -> None:
@@ -1369,24 +1738,36 @@ def _build_supplier_sheet(
     for rng in ("A4:A5", "B4:C5", "D4:D5", "E4:F4", "G4:H4", "I4:J4", "K4:K5"):
         ws.merge_cells(rng)
 
-    qaimeler = sorted(s["qaimeler"], key=lambda q: q["tarix"])
-    # Sıralama sabit (stable): eyni tarixdə əvvəl əsas, sonra ƏDV ödənişləri
+    # Xronoloji sıralama YALNIZ tarix_dt ilə (mətn deyil). Eyni gündə sabit
+    # sıra: qaimə üçün seriya+nömrə; tarixsiz sətirlər blokun sonuna.
+    qaimeler = sorted(
+        s["qaimeler"],
+        key=lambda q: _date_sort_key(
+            q.get("tarix_dt"),
+            q["tarix"],
+            (q.get("seriya", ""), q.get("nomre", "")),
+        ),
+    )
     events = [
-        (p["tarix"], p["mebleg"], 0.0, p.get("bank", "")) for p in s["odenis_esas"]
+        (p.get("tarix_dt"), p["tarix"], p["mebleg"], 0.0, p.get("bank", ""))
+        for p in s["odenis_esas"]
     ] + [
-        (p["tarix"], 0.0, p["mebleg"], p.get("bank", "")) for p in s["odenis_edv"]
+        (p.get("tarix_dt"), p["tarix"], 0.0, p["mebleg"], p.get("bank", ""))
+        for p in s["odenis_edv"]
     ]
-    events.sort(key=lambda e: e[0])
+    events.sort(
+        key=lambda e: _date_sort_key(e[0], e[1], (e[4], e[2] + e[3]))
+    )
 
     row = 6
     for i, q in enumerate(qaimeler):
-        ws.cell(row=row, column=1, value=q["tarix"])
+        ws.cell(row=row, column=1, value=_date_cell_value(q))
         ws.cell(row=row, column=2, value=q["seriya"])
         ws.cell(row=row, column=3, value=q["nomre"])
         ws.cell(row=row, column=5, value=q["esas"])
         ws.cell(row=row, column=6, value=q["edv"])
         if i == 0 and events:
-            tarix, esas, edv, bank = events.pop(0)
+            _dt, tarix, esas, edv, bank = events.pop(0)
             ws.cell(row=row, column=4, value=tarix)
             if esas:
                 ws.cell(row=row, column=7, value=esas)
@@ -1398,7 +1779,7 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=10, value=f"=F{row}-H{row}")
         row += 1
 
-    for tarix, esas, edv, bank in events:
+    for _dt, tarix, esas, edv, bank in events:
         ws.cell(row=row, column=4, value=tarix)
         if esas:
             ws.cell(row=row, column=7, value=esas)
@@ -1422,7 +1803,8 @@ def _build_supplier_sheet(
     _style_header_row(ws, 4, 11)
     _style_header_row(ws, 5, 11)
     _style_money(ws, 6, sum_row, [5, 6, 7, 8, 9, 10])
-    _apply_text_alignment(ws, 6, sum_row, [1, 2, 3, 4, 11])
+    _style_dates(ws, 6, sum_row, [1, 4])
+    _apply_text_alignment(ws, 6, sum_row, [2, 3, 11])
     _apply_borders(ws, 4, sum_row, 1, 11)
     _auto_fit_columns(ws, money_cols=(5, 6, 7, 8, 9, 10))
     return sum_row
@@ -1431,12 +1813,19 @@ def _build_supplier_sheet(
 def _build_unmatched_sheet(wb: Workbook, unmatched: list[dict[str, Any]]) -> None:
     ws = wb.create_sheet(UNMATCHED_SHEET_NAME)
     ws.append(["VÖEN", "Ad", "Tarix", "Mənbə", "Məbləğ", "Bank"])
-    for u in unmatched:
+    # Xronoloji sıralama (tarix_dt); tarixsizlər sona.
+    ordered = sorted(
+        unmatched,
+        key=lambda u: _date_sort_key(
+            u.get("tarix_dt"), u.get("tarix", ""), (u.get("menbe", ""),)
+        ),
+    )
+    for u in ordered:
         ws.append(
             [
                 u["voen"],
                 u["ad"],
-                u["tarix"],
+                u.get("tarix_dt") if u.get("tarix_dt") is not None else u["tarix"],
                 u["menbe"],
                 u["mebleg"],
                 u.get("bank", ""),
@@ -1444,9 +1833,45 @@ def _build_unmatched_sheet(wb: Workbook, unmatched: list[dict[str, Any]]) -> Non
         )
     _style_header_row(ws, 1, 6)
     _style_money(ws, 2, max(ws.max_row, 2), [5])
-    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 3, 4, 6])
+    _style_dates(ws, 2, max(ws.max_row, 2), [3])
+    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 4, 6])
     _apply_borders(ws, 1, max(ws.max_row, 2), 1, 6)
     _auto_fit_columns(ws, money_cols=(5,))
+
+
+def _build_reversals_sheet(
+    wb: Workbook, reversals: list[dict[str, Any]]
+) -> None:
+    """'Nəzərə alınmayan əməliyyatlar' — yalnız ≥1 sətir olduqda yaradılır."""
+    ws = wb.create_sheet(REVERSALS_SHEET_NAME)
+    ws.append(
+        ["VÖEN", "Ad", "Tarix", "Mənbə", "İstiqamət", "Məbləğ", "Təyinat", "Səbəb"]
+    )
+    ordered = sorted(
+        reversals,
+        key=lambda u: _date_sort_key(
+            u.get("tarix_dt"), u.get("tarix", ""), (u.get("menbe", ""),)
+        ),
+    )
+    for u in ordered:
+        ws.append(
+            [
+                u.get("voen", ""),
+                u.get("ad", ""),
+                u.get("tarix_dt") if u.get("tarix_dt") is not None else u.get("tarix", ""),
+                u.get("menbe", ""),
+                u.get("istiqamet", ""),
+                u.get("mebleg", 0.0),
+                u.get("teyinat", ""),
+                u.get("sebeb", ""),
+            ]
+        )
+    _style_header_row(ws, 1, 8)
+    _style_money(ws, 2, max(ws.max_row, 2), [6])
+    _style_dates(ws, 2, max(ws.max_row, 2), [3])
+    _apply_text_alignment(ws, 2, max(ws.max_row, 2), [1, 2, 4, 5, 7, 8])
+    _apply_borders(ws, 1, max(ws.max_row, 2), 1, 8)
+    _auto_fit_columns(ws, money_cols=(6,))
 
 
 def _build_bank_summary_sheet(
@@ -1520,6 +1945,7 @@ def build_workbook(
     aciqlama: str = _ACIQLAMA,
     bank_summary: list[dict[str, Any]] | None = None,
     warnings: list[str] | None = None,
+    reversals: list[dict[str, Any]] | None = None,
 ) -> bytes:
     wb = Workbook()
     main = wb.active
@@ -1542,7 +1968,11 @@ def build_workbook(
         main.merge_cells(rng)
 
     # Qorunan sheet adları: təchizatçı adı bunlarla üst-üstə düşməsin
-    used: set[str] = {UNMATCHED_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    used: set[str] = {
+        UNMATCHED_SHEET_NAME,
+        BANK_SUMMARY_SHEET_NAME,
+        REVERSALS_SHEET_NAME,
+    }
     row = 3
     for i, s in enumerate(match_result["suppliers"], start=1):
         sheet_name = unique_sheet_name(s["ad"], s["voen"], used)
@@ -1576,6 +2006,10 @@ def build_workbook(
     _auto_fit_columns(main, money_cols=(4, 5, 6, 7, 8, 9))
 
     _build_unmatched_sheet(wb, match_result["unmatched"])
+    # "Nəzərə alınmayan əməliyyatlar" Uyğunsuz-dan sonra, xülasədən əvvəl;
+    # yalnız ≥1 sətir olduqda yaradılır.
+    if reversals:
+        _build_reversals_sheet(wb, reversals)
     # "Banklar üzrə xülasə" ən SONA (index-ə bağlı köhnə testlər pozulmasın)
     _build_bank_summary_sheet(
         wb, bank_summary or [], sheet_title, warnings or []
@@ -1603,9 +2037,19 @@ def generate_creditors_workbook(
             f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "
             f"{miss} əməliyyat uyğunlaşmadı."
         )
+    # Səhv köçürmə / geri qaytarma ləğvi (uyğunlaşmadan ƏVVƏL).
+    # Kreditorlarda ödəniş sayılan istiqamət MƏXARİC-dir.
+    reversals = _apply_reversals(
+        depozit_rows, bank_rows, depozit_raw, banks, target_direction="mexaric"
+    )
+    warnings.append(
+        f"{len(reversals)} əməliyyat nəzərə alınmadı (səhv köçürmə/geri qaytarma)."
+    )
     matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
     _finalize_bank_summary(summary, matched)
-    return build_workbook(matched, bank_summary=summary, warnings=warnings)
+    return build_workbook(
+        matched, bank_summary=summary, warnings=warnings, reversals=reversals
+    )
 
 
 DEBITOR_MAIN_SHEET_NAME = "DEBİTORLAR"
@@ -1632,6 +2076,13 @@ def generate_debitors_workbook(
             f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "
             f"{miss} əməliyyat uyğunlaşmadı."
         )
+    # Səhv köçürmə / geri qaytarma ləğvi (simmetrik; ödəniş = MƏDAXİL).
+    reversals = _apply_reversals(
+        depozit_rows, bank_rows, depozit_raw, banks, target_direction="medaxil"
+    )
+    warnings.append(
+        f"{len(reversals)} əməliyyat nəzərə alınmadı (səhv köçürmə/geri qaytarma)."
+    )
     matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
     _finalize_bank_summary(summary, matched)
     return build_workbook(
@@ -1641,4 +2092,5 @@ def generate_debitors_workbook(
         aciqlama=_DEBITOR_ACIQLAMA,
         bank_summary=summary,
         warnings=warnings,
+        reversals=reversals,
     )

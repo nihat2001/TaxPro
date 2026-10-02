@@ -1,7 +1,7 @@
 import io
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -20,18 +20,25 @@ from app.services.deterministic.creditors import (
     _extract_voen_and_name,
     _compact,
     _extract_voen_from_text,
+    _cancel_reversals,
+    _cell_text,
+    _desc_flag_level,
+    _get,
     _is_adonly_format,
     _is_summary_row,
     _load_rows,
     _norm_ad,
+    _parse_date,
     _split_counter_account,
     _token_sorted,
+    REVERSALS_SHEET_NAME,
     build_workbook,
     generate_creditors_workbook,
     generate_debitors_workbook,
     match_by_voen,
     parse_bank_statement,
     parse_depozit,
+    parse_depozit_all,
     parse_gelen,
     resolve_adonly_payments,
     sanitize_sheet_name,
@@ -1615,9 +1622,11 @@ def test_integration_real_files():
 
     out = generate_creditors_workbook(gelen_raw, depozit_raw, bank_raw)
     wb = load_workbook(io.BytesIO(out))
-    assert len(wb.sheetnames) == 60  # main + 57 tədarükçü + uyğunsuz + xülasə
+    # main + 57 tədarükçü + uyğunsuz + "Nəzərə alınmayan" + xülasə (reversal var)
+    assert len(wb.sheetnames) == 61
     assert wb.sheetnames[0] == MAIN_SHEET_NAME
-    assert wb.sheetnames[-2] == UNMATCHED_SHEET_NAME
+    assert wb.sheetnames[-3] == UNMATCHED_SHEET_NAME
+    assert wb.sheetnames[-2] == REVERSALS_SHEET_NAME
     assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
 
     main = wb[MAIN_SHEET_NAME]
@@ -2170,3 +2179,429 @@ def test_adonly_debitorlar_credit():
         list(credit), [("Nar Transport Services MMC", "1300000001")]
     )
     assert isinstance(stat, dict)
+
+
+# ===== Problem 1: xronoloji tarix sıralaması =====
+
+
+def _supplier_sheet_dates(match):
+    """SUPPLIER A vərəqinin A (qaimə) və D (ödəniş) tarix dəyərlərini qaytarır."""
+    out = build_workbook(match)
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER A"]
+    col_a, col_d = [], []
+    for r in range(6, ws.max_row + 1):
+        av = ws.cell(row=r, column=1).value
+        if isinstance(av, (datetime, date)):
+            col_a.append(av)
+        dv = ws.cell(row=r, column=4).value
+        if isinstance(dv, (datetime, date)):
+            col_d.append(dv)
+    return ws, col_a, col_d
+
+
+def test_qaimeler_xronoloji_siralanir():
+    # gün-əvvəl mətn tələsi: gg.aa mətn sırası ilə 05.12 < 01.01 səhv olar
+    tarixler = ["05.12.2025", "01.01.2026", "03.02.2025", "20.11.2025", "01.09.2025"]
+    qaimeler = [
+        {"tarix": t, "tarix_dt": _parse_date(t), "seriya": "MT", "nomre": str(i),
+         "esas": 100.0, "edv": 0.0}
+        for i, t in enumerate(tarixler)
+    ]
+    match = {
+        "suppliers": [{
+            "voen": "1111111111", "ad": "SUPPLIER A",
+            "qaimeler": qaimeler, "odenis_esas": [], "odenis_edv": [],
+            "hesablanib_esas": 500.0, "hesablanib_edv": 0.0,
+            "odenilib_esas": 0.0, "odenilib_edv": 0.0,
+            "qaliq_esas": 500.0, "qaliq_edv": 0.0,
+        }],
+        "unmatched": [],
+    }
+    ws, col_a, _ = _supplier_sheet_dates(match)
+    got = [d.strftime("%d.%m.%Y") for d in col_a]
+    assert got == ["03.02.2025", "01.09.2025", "20.11.2025", "05.12.2025", "01.01.2026"]
+
+
+def test_eyni_gun_qaimeler_nomre_ile_sabit():
+    qaimeler = [
+        {"tarix": "01.01.2026", "tarix_dt": _parse_date("01.01.2026"),
+         "seriya": "MT", "nomre": "9", "esas": 10.0, "edv": 0.0},
+        {"tarix": "01.01.2026", "tarix_dt": _parse_date("01.01.2026"),
+         "seriya": "MT", "nomre": "2", "esas": 20.0, "edv": 0.0},
+        {"tarix": "01.01.2026", "tarix_dt": _parse_date("01.01.2026"),
+         "seriya": "MT", "nomre": "5", "esas": 30.0, "edv": 0.0},
+    ]
+    match = {
+        "suppliers": [{
+            "voen": "1111111111", "ad": "SUPPLIER A",
+            "qaimeler": qaimeler, "odenis_esas": [], "odenis_edv": [],
+            "hesablanib_esas": 60.0, "hesablanib_edv": 0.0,
+            "odenilib_esas": 0.0, "odenilib_edv": 0.0,
+            "qaliq_esas": 60.0, "qaliq_edv": 0.0,
+        }],
+        "unmatched": [],
+    }
+    _, _, _ = _supplier_sheet_dates(match)
+    out = build_workbook(match)
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER A"]
+    nomreler = [ws.cell(row=r, column=3).value for r in range(6, 9)]
+    assert nomreler == ["2", "5", "9"]
+
+
+def test_tarix_xanasi_date_tipi_ve_format():
+    match = {
+        "suppliers": [{
+            "voen": "1111111111", "ad": "SUPPLIER A",
+            "qaimeler": [{"tarix": "15.04.2026", "tarix_dt": _parse_date("15.04.2026"),
+                          "seriya": "MT", "nomre": "1", "esas": 10.0, "edv": 0.0}],
+            "odenis_esas": [{"tarix": "20.05.2026", "tarix_dt": _parse_date("20.05.2026"),
+                             "mebleg": 5.0}],
+            "odenis_edv": [],
+            "hesablanib_esas": 10.0, "hesablanib_edv": 0.0,
+            "odenilib_esas": 5.0, "odenilib_edv": 0.0,
+            "qaliq_esas": 5.0, "qaliq_edv": 0.0,
+        }],
+        "unmatched": [],
+    }
+    out = build_workbook(match)
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb["SUPPLIER A"]
+    assert isinstance(ws["A6"].value, (datetime, date))
+    assert ws["A6"].number_format == "DD.MM.YYYY"
+    # D6-da birləşən ödəniş tarixi
+    assert ws["D6"].number_format == "DD.MM.YYYY"
+
+
+def test_uygunsuz_ve_blok_tarixe_gore_artan():
+    tarixler = ["20.11.2025", "01.03.2026", "05.12.2025"]
+    match = {
+        "suppliers": [],
+        "unmatched": [
+            {"voen": str(i), "ad": "X", "tarix": t, "tarix_dt": _parse_date(t),
+             "menbe": "Bank", "mebleg": 1.0, "bank": "B"} for i, t in enumerate(tarixler)
+        ],
+    }
+    out = build_workbook(match)
+    wb = load_workbook(io.BytesIO(out))
+    ws = wb[UNMATCHED_SHEET_NAME]
+    dates = [ws.cell(row=r, column=3).value for r in range(2, 5)]
+    assert [d.strftime("%d.%m.%Y") for d in dates] == ["20.11.2025", "05.12.2025", "01.03.2026"]
+
+
+def test_real_azbuild_xronoloji():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    from tests.test_creditors_matching import _bank_fixture
+    bank_raw = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    az_name = next(n for n in wb.sheetnames if n.startswith("AZ BUILD"))
+    ws = wb[az_name]
+    qaimeler = []
+    for r in range(6, ws.max_row + 1):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, (datetime, date)):
+            qaimeler.append(v)
+    assert qaimeler == sorted(qaimeler)
+
+
+def test_debitorlar_xronoloji():
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    from tests.test_creditors_matching import _bank_fixture
+    bank_raw = _bank_fixture("KAPİTAL BANK ÇIXARIŞI.xlsx")
+    out = generate_debitors_workbook(geden_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    # Hər tərəf vərəqində qaimə tarixləri artan
+    for name in wb.sheetnames[1:]:
+        if name in (UNMATCHED_SHEET_NAME, BANK_SUMMARY_SHEET_NAME,
+                    "Nəzərə alınmayan əməliyyatlar"):
+            continue
+        ws = wb[name]
+        q = [ws.cell(row=r, column=1).value for r in range(6, ws.max_row + 1)
+             if isinstance(ws.cell(row=r, column=1).value, (datetime, date))]
+        assert q == sorted(q), name
+
+
+def test_siralama_kodda_yalniz_tarix_dt_istifade_olunur():
+    """`tarix` mətn sahəsi sorted/sort açarlarında istifadə olunmamalıdır."""
+    import re as _re
+    src = Path(__file__).resolve().parent.parent / "app" / "services" / "deterministic" / "creditors.py"
+    text = src.read_text(encoding="utf-8")
+    # sort/sorted açarlarında birbaşa q["tarix"] / e[0] mətn sahəsi olmamalı
+    assert 'key=lambda q: q["tarix"]' not in text
+    assert 'key=lambda e: e[0]' not in text
+    assert 'key=lambda u: (u["menbe"], u["tarix"])' not in text
+
+
+# ===== Problem 2: səhv köçürmə / geri qaytarma ləğvi =====
+
+
+def _depozit_all():
+    return parse_depozit_all((FIXTURES / "DEPOZİT.xlsx").read_bytes())
+
+
+def test_desc_flag_seviyyeleri():
+    # GÜCLÜ
+    assert _desc_flag_level("Səhvən ödənilmiş ƏDV geri qaytarılır") == "guclu"
+    assert _desc_flag_level("yanlış köçürmə") == "guclu"
+    # ZƏİF (bitişik yazılış da tutulur)
+    assert _desc_flag_level("səhvən göndərilən ƏDVgeri qaytarılması") == "guclu"
+    assert _desc_flag_level("geri qaytarılır") == "zeif"
+    assert _desc_flag_level("iadə edilir") == "zeif"
+    # TƏKBAŞINA "qaytar" YOX; adi sözlər tutulmur
+    assert _desc_flag_level("qaytarılmış mal") is None
+    assert _desc_flag_level("ƏDV köçürməsi avans") is None
+    assert _desc_flag_level("qismen ƏDV köçürməsi") is None
+
+
+def test_reversal_real_caucasian_alince():
+    depozit = _depozit_all()
+    res = _cancel_reversals(depozit, target_direction="mexaric")
+    # 2 cüt (A: CAUCASIAN, B: ƏLİNCƏ QALA) → 4 sətir
+    assert len(res["nezere_alinmayan"]) == 4
+    pairs = sorted((u["voen"], u["mebleg"]) for u in res["nezere_alinmayan"])
+    assert pairs == [
+        ("2006687041", 2089.0),
+        ("2006687041", 2089.0),
+        ("6001731321", 550.0),
+        ("6001731321", 550.0),
+    ]
+    assert all(u["sebeb"] == "Səhv köçürmə — qarşılıqlı ləğv olundu" for u in res["nezere_alinmayan"])
+
+
+def test_reversal_caucasian_odenisten_chixir():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    nm = next(n for n in wb.sheetnames if n.startswith("CAUCASIAN"))
+    ws = wb[nm]
+    # 2089 sətiri ödənişlərdən çıxmalıdır
+    assert all(ws.cell(row=r, column=8).value != 2089 for r in range(6, ws.max_row))
+
+
+def test_reversal_alince_uygunsuzdan_chixir():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    unm = wb[UNMATCHED_SHEET_NAME]
+    assert all(str(unm.cell(row=r, column=1).value) != "6001731321" for r in range(2, unm.max_row + 1))
+
+
+def test_reversal_sheet_yaradilir():
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    assert REVERSALS_SHEET_NAME in wb.sheetnames
+    # Uyğunsuz-dan sonra, Banklar xülasəsindən əvvəl
+    assert wb.sheetnames.index(REVERSALS_SHEET_NAME) == len(wb.sheetnames) - 2
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+    ws = wb[REVERSALS_SHEET_NAME]
+    assert ws.max_row - 1 == 4
+
+
+def test_reversal_sheet_yalniz_movcud_olanda():
+    # Reversal yoxdursa sheet yaradılmır
+    match = {"suppliers": [], "unmatched": []}
+    out = build_workbook(match)
+    wb = load_workbook(io.BytesIO(out))
+    assert REVERSALS_SHEET_NAME not in wb.sheetnames
+
+
+def test_reversal_cut_tapilmir_hadef_chixir():
+    # GÜCLÜ flag, cüt yox → ödənişdən çıxar, xəbərdarlıq səbəbi ilə
+    entries = [
+        {"voen": "1111111111", "ad": "X MMC", "tarix": "01.01.2026",
+         "tarix_dt": _parse_date("01.01.2026"), "mexaric": 500.0, "medaxil": 0.0,
+         "teyinat": "səhvən köçürülüb", "_istiqamet": "mexaric", "_menbe": "Depozit"},
+    ]
+    res = _cancel_reversals(entries, target_direction="mexaric")
+    assert len(res["legvedilen"]) == 1
+    assert len(res["nezere_alinmayan"]) == 1
+    assert res["nezere_alinmayan"][0]["sebeb"] == "Səhv/geri qaytarma — cüt tapılmadı (yoxlayın)"
+
+
+def test_reversal_zeif_flag_cut_yox_qalir():
+    # ZƏİF flag ("geri qaytar"), cüt yox → ödəniş OLARAQ QALIR
+    entries = [
+        {"voen": "1111111111", "ad": "X MMC", "tarix": "01.01.2026",
+         "tarix_dt": _parse_date("01.01.2026"), "mexaric": 500.0, "medaxil": 0.0,
+         "teyinat": "geri qaytarılır", "_istiqamet": "mexaric", "_menbe": "Depozit"},
+    ]
+    res = _cancel_reversals(entries, target_direction="mexaric")
+    assert len(res["legvedilen"]) == 0
+    assert len(res["nezere_alinmayan"]) == 0
+
+
+def test_reversal_flag_yox_legv_olunmur():
+    # Eyni VÖEN, eyni məbləğ, əks istiqamət, amma FLAG YOX → ləğv olunmur
+    entries = [
+        {"voen": "1111111111", "ad": "X", "tarix": "01.01.2026",
+         "tarix_dt": _parse_date("01.01.2026"), "mexaric": 500.0, "medaxil": 0.0,
+         "teyinat": "adi ödəniş", "_istiqamet": "mexaric", "_menbe": "Depozit"},
+        {"voen": "1111111111", "ad": "X", "tarix": "02.01.2026",
+         "tarix_dt": _parse_date("02.01.2026"), "mexaric": 0.0, "medaxil": 500.0,
+         "teyinat": "adi mədaxil", "_istiqamet": "medaxil", "_menbe": "Depozit"},
+    ]
+    res = _cancel_reversals(entries, target_direction="mexaric")
+    assert len(res["legvedilen"]) == 0
+
+
+def test_reversal_beraber_mebleg_legv_olunmur():
+    # ZƏİF flag var, amma məbləğ bərabər deyil → ləğv olunmur (sətir ödəniş qalır)
+    entries = [
+        {"voen": "1111111111", "ad": "X", "tarix": "01.01.2026",
+         "tarix_dt": _parse_date("01.01.2026"), "mexaric": 500.0, "medaxil": 0.0,
+         "teyinat": "geri qaytarılır", "_istiqamet": "mexaric", "_menbe": "Depozit"},
+        {"voen": "1111111111", "ad": "X", "tarix": "02.01.2026",
+         "tarix_dt": _parse_date("02.01.2026"), "mexaric": 0.0, "medaxil": 499.0,
+         "teyinat": "geri qaytarılır", "_istiqamet": "medaxil", "_menbe": "Depozit"},
+    ]
+    res = _cancel_reversals(entries, target_direction="mexaric")
+    assert len(res["legvedilen"]) == 0
+
+
+def test_reversal_bank_sintetik():
+    # Bank mənbəyi: Məxaric (ödəniş) + Mədaxil (geri qaytarma) cütü
+    entries = [
+        {"voen": "1111111111", "ad": "BANK MMC", "tarix": "05.01.2026",
+         "tarix_dt": _parse_date("05.01.2026"), "mexaric": 1000.0, "medaxil": 0.0,
+         "teyinat": "səhvən köçürülmüş", "_istiqamet": "mexaric", "_menbe": "Bank"},
+        {"voen": "1111111111", "ad": "BANK MMC", "tarix": "06.01.2026",
+         "tarix_dt": _parse_date("06.01.2026"), "mexaric": 0.0, "medaxil": 1000.0,
+         "teyinat": "geri qaytarılır", "_istiqamet": "medaxil", "_menbe": "Bank"},
+    ]
+    res = _cancel_reversals(entries, target_direction="mexaric")
+    assert len(res["legvedilen"]) == 2
+    assert len(res["nezere_alinmayan"]) == 2
+
+
+def test_reversal_debitorlar_simmetrik():
+    # DEBİTORLAR: ödəniş = MƏDAXİL; Mədaxil (flag) + Məxaric (geri) cütü
+    entries = [
+        {"voen": "1111111111", "ad": "MÜŞTƏRİ", "tarix": "05.01.2026",
+         "tarix_dt": _parse_date("05.01.2026"), "medaxil": 700.0, "mexaric": 0.0,
+         "teyinat": "səhvən ödənilib", "_istiqamet": "medaxil", "_menbe": "Depozit"},
+        {"voen": "1111111111", "ad": "MÜŞTƏRİ", "tarix": "06.01.2026",
+         "tarix_dt": _parse_date("06.01.2026"), "medaxil": 0.0, "mexaric": 700.0,
+         "teyinat": "geri qaytarılır", "_istiqamet": "mexaric", "_menbe": "Depozit"},
+    ]
+    res = _cancel_reversals(entries, target_direction="medaxil")
+    assert len(res["legvedilen"]) == 2
+
+
+def test_reversal_debitorlar_workbook():
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()
+    out = generate_debitors_workbook(geden_raw, depozit_raw, [("k.xlsx", bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    # Kreditorlarda ləğv olunan 2089 depozit MƏXARİC sətridir; debitorlarda hədəf
+    # MƏDAXİL olduğu üçün bu cüt tətbiq olunmur (simmetriya).
+    assert wb.sheetnames[0] == DEBITOR_MAIN_SHEET_NAME
+    assert wb.sheetnames[-1] == BANK_SUMMARY_SHEET_NAME
+
+
+# ===== Bütün banklar: sıralama + təyinat/təqvim yoxlaması =====
+
+BANK_FIXTURES = [
+    "ABB ÇIXARIŞI.xlsx", "ACCES BANK ÇIXARIŞI.xlsx", "ATB BANK ÇIXARIŞI.xlsx",
+    "BANK OF BAKU ÇIXARIŞI.xlsx", "BANK RESPUBLİKA ÇIXARIŞI.xlsx",
+    "KAPİTAL BANK ÇIXARIŞI.xlsx", "PAŞA BANK ÇIXARIŞI.xlsx",
+    "RABİTƏ BANK ÇIXARIŞI.xlsx", "TURAN BANK ÇIXARIŞI.xlsx",
+    "UNİBANK ÇIXARIŞI.xlsx", "VTB BANK ÇIXARIŞI.xlsx",
+    "YAPIKREDİ BANK ÇIXARIŞI.xlsx", "YAPI KREDİ (YENİ).xlsx",
+    "YELO BANK ÇIXARIŞI.xlsx", "ZİRAAT BANK ÇIXARIŞI.xlsx",
+]
+
+
+def _all_sheets_sorted(wb):
+    """Bütün müştərək/vərəq tarix sütunlarının artan olduğunu yoxlayır."""
+    skip = {MAIN_SHEET_NAME, UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
+            BANK_SUMMARY_SHEET_NAME}
+    for name in wb.sheetnames:
+        if name in skip:
+            continue
+        ws = wb[name]
+        for col in (1, 4, 3):  # A (qaimə), D (ödəniş), C (uyğunsuz/nəzərə tarixi)
+            vals = [
+                ws.cell(row=r, column=col).value
+                for r in range(6 if col in (1, 4) else 2, ws.max_row + 1)
+            ]
+            dates = [v for v in vals if isinstance(v, (datetime, date))]
+            assert dates == sorted(dates), (name, col)
+    # Uyğunsuz + Nəzərə alınmayan ayrıca
+    for name in (UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME):
+        if name not in wb.sheetnames:
+            continue
+        ws = wb[name]
+        dates = [
+            ws.cell(row=r, column=3).value
+            for r in range(2, ws.max_row + 1)
+            if isinstance(ws.cell(row=r, column=3).value, (datetime, date))
+        ]
+        assert dates == sorted(dates), name
+
+
+@pytest.mark.parametrize("bank_name", BANK_FIXTURES)
+def test_butun_banklar_siralama_kreditorlar(bank_name):
+    gelen_raw = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / bank_name).read_bytes()
+    out = generate_creditors_workbook(gelen_raw, depozit_raw, [(bank_name, bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    _all_sheets_sorted(wb)
+    # Tarix xanaları real datetime və format
+    for name in wb.sheetnames[1:]:
+        if name in (UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME, BANK_SUMMARY_SHEET_NAME):
+            continue
+        ws = wb[name]
+        for r in range(6, ws.max_row):
+            for col in (1, 4):
+                v = ws.cell(row=r, column=col).value
+                if isinstance(v, (datetime, date)):
+                    assert ws.cell(row=r, column=col).number_format == "DD.MM.YYYY"
+
+
+@pytest.mark.parametrize("bank_name", BANK_FIXTURES)
+def test_butun_banklar_siralama_debitorlar(bank_name):
+    geden_raw = (FIXTURES / "GEDƏN.xlsx").read_bytes()
+    depozit_raw = (FIXTURES / "DEPOZİT.xlsx").read_bytes()
+    bank_raw = (FIXTURES / bank_name).read_bytes()
+    out = generate_debitors_workbook(geden_raw, depozit_raw, [(bank_name, bank_raw)])
+    wb = load_workbook(io.BytesIO(out))
+    _all_sheets_sorted(wb)
+
+
+def test_tum_banklarda_desc_sutunu_ve_flag_tarama():
+    """14 bank profili: desc sütunu aşkarlanması + flag-lı sətir sayı."""
+    from app.services.deterministic.excel_parser import normalize_text as _nt
+    results = {}
+    for name in BANK_FIXTURES:
+        raw = (FIXTURES / name).read_bytes()
+        rows = _load_rows(raw)[0]
+        found = _detect_bank_header(rows)
+        assert found is not None, name
+        hi, cm = found
+        has_desc = "desc" in cm
+        flag_count = 0
+        if has_desc:
+            for i, row in enumerate(rows[hi + 1:], start=hi + 2):
+                if _desc_flag_level(_cell_text(_get(row, cm, "desc"))) is not None:
+                    flag_count += 1
+        results[name] = (has_desc, flag_count)
+    # Bütün banklarda desc var
+    assert all(v[0] for v in results.values()), results
+    # Yalnız Yapı Kredi (YENİ) faylında 1 flag-lı sətir (ALINCA QALA, kredit)
+    assert results["YAPI KREDİ (YENİ).xlsx"] == (True, 1)
+    for name in BANK_FIXTURES:
+        if name != "YAPI KREDİ (YENİ).xlsx":
+            assert results[name][1] == 0, (name, results[name])
