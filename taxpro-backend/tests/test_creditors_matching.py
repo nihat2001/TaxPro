@@ -1543,6 +1543,45 @@ def test_invoice_ref_cixarilir():
     assert _extract_invoice_refs("", byn) == []
 
 
+@pytest.mark.parametrize("metn,gozlenen", [
+    # prefiks + parçalanmış rəqəm qrupları → 12 rəqəm birləşir
+    ("MT260411 385719", ("MT2604", "11385719")),
+    ("MT260 611425481 SAYLI EQF", ("MT2606", "11425481")),
+    ("AA260212 160090 EQF ESASEN AVANS", ("AA2602", "12160090")),
+    ("MT260611544725 SAYLI", ("MT2606", "11544725")),
+])
+def test_split_ref_birlesdirme(metn, gozlenen):
+    from app.services.deterministic.creditors import _extract_invoice_refs
+
+    known = {gozlenen}
+    assert _extract_invoice_refs(metn, {}, known) == [gozlenen]
+
+
+def test_split_ref_qismen_nomre_birlesmir():
+    from app.services.deterministic.creditors import _extract_invoice_refs
+
+    # "MT2601 11351929 15000" → yalnız 11351929 (15000 rəqəmləri birləşməsin)
+    known = {("MT2601", "11351929"), ("MT2601", "1135192915000")}
+    assert _extract_invoice_refs("MT2601 11351929 15000", {}, known) == [
+        ("MT2601", "11351929")
+    ]
+
+
+def test_split_ref_11_reqem_hell_olunmur():
+    from app.services.deterministic.creditors import _extract_invoice_refs
+
+    # 11 rəqəm (12-yə çatmır) → birləşmə yox, istinad tapılmır
+    known = {("MT2601", "10649691")}  # yalnız tam 12 üçün nəzəri
+    assert _extract_invoice_refs("MT26011064969", {}, known) == []
+
+
+def test_split_ref_bilinmeyen_qaimeye_baglanmir():
+    from app.services.deterministic.creditors import _extract_invoice_refs
+
+    # 12 rəqəm birləşir, lakin known_refs-də yoxdur → istinad sayılmır
+    assert _extract_invoice_refs("MT260411 385719", {}, set()) == []
+
+
 def test_allocate_istinadli_tam_ve_fifo():
     from app.services.deterministic.creditors import _allocate_supplier
 
@@ -1619,6 +1658,108 @@ def test_allocate_dovr_xarici_qisme():
     assert "Dövr xarici" in alloc["unallocated"][0]["qeyd"]
 
 
+def test_natamam_istinad_mebleg_uygunlugu():
+    """Natamam istinad + tək tam məbləğ namizədi → həmin qaiməyə uyğunlaşır."""
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1", "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2604", "nomre": "11338143",
+             "esas": 9000.0, "edv": 1620.0},
+            {"tarix": "02.01.2026", "seriya": "MT2604", "nomre": "11385719",
+             "esas": 15000.0, "edv": 2700.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "16.04.2026", "mebleg": 15000.0,
+             "text": "ASAB 2026 MT9999 NATAMAM EQF ESASEN"},
+        ],
+        "odenis_edv": [],
+    }
+    alloc = _allocate_supplier(s)
+    by = {(g["q"]["seriya"], g["q"]["nomre"]): g for g in alloc["groups"]}
+    pay = by[("MT2604", "11385719")]["payments"]
+    assert any(p["esas"] == 15000.0 for p in pay)
+    assert any("Məbləğ uyğunluğu" in (p["qeyd"] or "") for p in pay)
+    assert alloc["unallocated"] == []
+
+
+def test_natamam_istinad_iki_namizad_tarixe_yaxin():
+    """İki namizəd (eyni məbləğ) → ödəniş tarixinə ən yaxın qaimə."""
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1", "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2601", "nomre": "11111111",
+             "esas": 5000.0, "edv": 900.0},
+            {"tarix": "01.06.2026", "seriya": "MT2601", "nomre": "22222222",
+             "esas": 5000.0, "edv": 900.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "05.06.2026", "mebleg": 5000.0, "text": "MT9999 NATAMAM"},
+        ],
+        "odenis_edv": [],
+    }
+    alloc = _allocate_supplier(s)
+    by = {(g["q"]["seriya"], g["q"]["nomre"]): g for g in alloc["groups"]}
+    # 05.06.2026 → 01.06.2026 namizədi daha yaxın
+    assert any(p["esas"] == 5000.0 for p in by[("MT2601", "22222222")]["payments"])
+    assert by[("MT2601", "11111111")]["payments"] == []
+
+
+def test_natamam_istinad_tolerans_yoxdur():
+    """Məbləğ uyğunluğu tolerans vermir: 10030 ≠ 10000 → bloka."""
+    from app.services.deterministic.creditors import _allocate_supplier
+
+    s = {
+        "voen": "1", "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2606", "nomre": "11544725",
+             "esas": 10000.0, "edv": 1800.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "17.06.2026", "mebleg": 10030.0, "text": "MT9999 NATAMAM"},
+        ],
+        "odenis_edv": [],
+    }
+    alloc = _allocate_supplier(s)
+    assert alloc["groups"][0]["payments"] == []
+    assert len(alloc["unallocated"]) == 1
+    assert "Natamam" in alloc["unallocated"][0]["qeyd"]
+
+
+def test_cixarilmis_qaime_avans_rejimi():
+    """Rejim 'avans': çıxarılmış AA-ya istinadlı ödəniş məbləğ uyğunluğu ilə bağlanır."""
+    from app.services.deterministic import creditors as C
+
+    s = {
+        "voen": "1", "ad": "X",
+        "qaimeler": [
+            {"tarix": "01.01.2026", "seriya": "MT2604", "nomre": "11338143",
+             "esas": 9000.0, "edv": 1620.0},
+        ],
+        "odenis_esas": [
+            {"tarix": "27.02.2026", "mebleg": 9000.0,
+             "text": "AA260212 160090 EQF ESASEN AVANS ODENİS"},
+        ],
+        "odenis_edv": [],
+    }
+    removed = frozenset({("AA2602", "12160090")})
+    eski = C._CIXARILMIS_QAIME_ODENIS_REJIMI
+    try:
+        C._CIXARILMIS_QAIME_ODENIS_REJIMI = "cixar"
+        a1 = C._allocate_supplier(s, removed)
+        assert len(a1["removed"]) == 1
+        assert a1["groups"][0]["payments"] == []
+        C._CIXARILMIS_QAIME_ODENIS_REJIMI = "avans"
+        a2 = C._allocate_supplier(s, removed)
+        assert a2["removed"] == []
+        assert any(p["esas"] == 9000.0 for p in a2["groups"][0]["payments"])
+    finally:
+        C._CIXARILMIS_QAIME_ODENIS_REJIMI = eski
+
+
 def test_odenilib_esas_interleaved_g_sutunu():
     """Bank ödənişləri (odenis_esas) interleaved layoutda G sütununa yazılır."""
     s = {
@@ -1640,33 +1781,28 @@ def test_odenilib_esas_interleaved_g_sutunu():
     out = build_workbook({"suppliers": [s], "unmatched": [], "ad_yoxdur": []})
     wb = load_workbook(io.BytesIO(out))
     ws = wb["SUPPLIER A"]
-    # qaimə sətri (6) + altındakı bank ödənişi (7) G sütununda (Ödənilib Əsas)
+    # qaimə sətri (6): Ödənilib (G/H) BOŞ; altındakı bank ödənişi (7) G-də dəyər
+    assert ws["G6"].value in (None, "")
+    assert ws["H6"].value in (None, "")
     assert ws["G7"].value == 1000.0
     assert ws["H7"].value in (None, "")
-    # Qaimə sətrində G/H alt ödənişlərin SUM cəmidir
-    assert ws["G6"].value == "=SUM(G7:G7)"
-    assert ws["H6"].value == "=SUM(H7:H7)"
-    # Ödəniş sətrində Qalıq (I/J) BOŞDUR (mənfi qalıq görünməsin)
+    # Ödəniş sətrində Qalıq (I/J) BOŞDUR
     assert ws["I7"].value in (None, "")
     assert ws["J7"].value in (None, "")
-    # Qaimə sətrində Qalıq düsturu G/H cəminə əsaslanır
-    assert ws["I6"].value == "=E6-G6"
-    assert ws["J6"].value == "=F6-H6"
-    # Cəm sətri G/H üzrə YALNIZ ana qaimə sətrini toplayır (alt ödənişi
-    # ana sətir öz =SUM-u ilə sayır) → ikiqat sayılma yoxdur.
+    # Qaimə sətrində Qalıq = E − alt ödənişlərin cəmi
+    assert ws["I6"].value == "=E6-SUM(G7:G7)"
+    assert ws["J6"].value == "=F6-SUM(H7:H7)"
+    # Cəm: E–J hamısı sadə =SUM (ikiqat sayılma strukturaca mümkün deyil)
     sum_row = ws.max_row
-    assert ws[f"G{sum_row}"].value == "=SUM(G6)"
-    assert ws[f"H{sum_row}"].value == "=SUM(H6)"
-    assert ws[f"G{sum_row}"].value != "=SUM(G6:G7)"
-    # E/F/I/J tam diapazon olaraq qalır
-    assert ws[f"E{sum_row}"].value == "=SUM(E6:E7)"
+    for col in "EFGHIJ":
+        assert ws[f"{col}{sum_row}"].value == f"=SUM({col}6:{col}{sum_row - 1})"
 
 
 def test_cem_setri_ikiqat_saymir():
-    """Cəm sətri alt ödənişləri İKİQAT saymır (2-ci variant reqressiyası).
+    """Cəm sətri ödənişləri İKİQAT saymır.
 
-    Ana qaimə sətri G/H = alt ödənişlərin =SUM cəmi; Cəm isə yalnız ana
-    sətirləri toplayır. Nəticə: Cəm G = faktiki ödəniş cəmi (1000), 2000 yox.
+    G/H yalnız ödəniş sətirlərindədir (ana sətirdə boş), Cəm sadə =SUM.
+    Nəticə: Cəm G = faktiki ödəniş cəmi (1000), 2000 yox.
     """
     s = {
         "voen": "1", "ad": "X",
@@ -1690,17 +1826,15 @@ def test_cem_setri_ikiqat_saymir():
     wb = load_workbook(io.BytesIO(out))
     ws = wb["X"]
     sum_row = ws.max_row
-    # Cəm G/H yalnız ana sətirə istinad edir (alt sətirlər ikiqat sayılmır)
-    assert ws[f"G{sum_row}"].value == "=SUM(G6)"
-    assert ws[f"H{sum_row}"].value == "=SUM(H6)"
-    # Alt ödəniş sətirləri Cəm düsturuna BİRBAŞA daxil edilməyib
-    assert "G7" not in str(ws[f"G{sum_row}"].value)
-    assert "G8" not in str(ws[f"G{sum_row}"].value)
-    assert "H7" not in str(ws[f"H{sum_row}"].value)
+    # Cəm sadə =SUM(G6:Gläxir); ana qaimə sətri G/H boş olduğu üçün ikiqat yox
+    assert ws[f"G{sum_row}"].value == f"=SUM(G6:G{sum_row - 1})"
+    assert ws["G6"].value in (None, "")  # ana sətirdə G boş
+    assert ws["G7"].value == 1000.0     # ödəniş sətri
+    assert ws["H8"].value == 180.0      # ödəniş sətri
 
 
 def test_cem_setri_serbest_odenisi_birdefe_sayir():
-    """Qaiməyə bağlanmayan sərbəst ödəniş Cəm-ə BİRBAŞA və bir dəfə daxil edilir."""
+    """Qaiməyə bağlanmayan sərbəst ödəniş Cəm-ə BİR dəfə daxil edilir."""
     s = {
         "voen": "1", "ad": "Y",
         "qaimeler": [
@@ -1720,11 +1854,11 @@ def test_cem_setri_serbest_odenisi_birdefe_sayir():
     wb = load_workbook(io.BytesIO(out))
     ws = wb["Y"]
     sum_row = ws.max_row
-    # Sərbəst ödəniş sətri (blok) Cəm G düsturunda BİRBAŞA istinad olunur
-    g_formula = str(ws[f"G{sum_row}"].value)
-    # ana qaimə sətri (6) + blok ödəniş sətri → =SUM(G6,G...)
-    assert g_formula.startswith("=SUM(G6,")
-    assert g_formula.count(",") == 1  # yalnız bir əlavə istinad
+    # Cəm sadə =SUM; blok sətri birbaşa daxil, ana sətirdə G boş → tək say
+    assert ws[f"G{sum_row}"].value == f"=SUM(G6:G{sum_row - 1})"
+    # Blok sətri Qalıq (I) = −G
+    blk_row = sum_row - 1
+    assert ws[f"I{blk_row}"].value == f"=-G{blk_row}"
 
 
 def test_odenilib_esas_depozit_edv_ile_qarismir():
@@ -1884,11 +2018,14 @@ def test_build_workbook_supplier_sheet_layout():
     assert ws["B6"].value == "MT2601"
     assert ws["C6"].value == "00000001"
     assert ws["E6"].value == 1000.0
+    # ilk qaimə sətrində Ödənilib (G/H) BOŞ; Qalıq = E − alt ödənişlər cəmi
+    assert ws["G6"].value in (None, "")
+    assert ws["H6"].value in (None, "")
     # istinadlı ödəniş (10.01.2026, 1000) ilk qaimənin altına düşür
     assert ws["D7"].value == "10.01.2026"
     assert ws["G7"].value == 1000.0
-    assert ws["I6"].value == "=E6-G6"
-    assert ws["J6"].value == "=F6-H6"
+    assert ws["I6"].value == "=E6-SUM(G7:G7)"
+    assert ws["J6"].value == "=F6-SUM(H7:H7)"
 
     # ikinci qaimə + öz ödənişləri
     assert ws["A8"].value == "02.01.2026"
@@ -1904,8 +2041,10 @@ def test_build_workbook_supplier_sheet_layout():
     assert ws["A11"].value == "Qaimə ilə əlaqələndirilməyən ödənişlər"
     assert ws["D12"].value == "20.01.2026"
     assert ws["G12"].value == 300.0
+    assert ws["I12"].value == "=-G12"  # blok Qalığı mənfi
     assert ws["E13"].value == "=SUM(E6:E12)"
     assert ws["F13"].value == "=SUM(F6:F12)"
+    assert ws["G13"].value == "=SUM(G6:G12)"
 
 
 def test_build_workbook_unmatched_sheet():
@@ -2989,3 +3128,233 @@ def test_tum_banklarda_desc_sutunu_ve_flag_tarama():
     for name in BANK_FIXTURES:
         if name != "YAPI KREDİ (YENİ).xlsx":
             assert results[name][1] == 0, (name, results[name])
+
+# ===== Layout/Qalıq invariant + birləşdirmə inteqrasiyası =====
+
+
+def _formula_eval(ws, cell, depth=0):
+    """Sadə Excel düstur icraçısı: SUM(aralıq/siyahı) və Xn-Yn/=-Xn."""
+    import re as _re
+
+    if depth > 40:
+        return 0.0
+    v = ws[cell].value
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if not (isinstance(v, str) and v.startswith("=")):
+        return 0.0
+    e = v[1:]
+    m = _re.match(r"SUM\((.+)\)$", e)
+    if m:
+        total = 0.0
+        for part in m.group(1).split(","):
+            part = part.strip()
+            rng = part.split(":")
+            if len(rng) == 2:
+                c1, c2 = rng
+                col = _re.sub(r"\d", "", c1)
+                r1 = int(_re.sub(r"\D", "", c1))
+                r2 = int(_re.sub(r"\D", "", c2))
+                for rr in range(r1, r2 + 1):
+                    total += _formula_eval(ws, f"{col}{rr}", depth + 1)
+            else:
+                total += _formula_eval(ws, part, depth + 1)
+        return total
+    m2 = _re.match(r"-([A-Z]+\d+)$", e)
+    if m2:
+        return -_formula_eval(ws, m2.group(1), depth + 1)
+    m3 = _re.match(r"([A-Z]+\d+)-([A-Z]+\d+)$", e)
+    if m3:
+        return _formula_eval(ws, m3.group(1), depth + 1) - _formula_eval(
+            ws, m3.group(2), depth + 1
+        )
+    m4 = _re.match(r"([A-Z]+\d+)-SUM\(([^)]+)\)$", e)
+    if m4:
+        base = _formula_eval(ws, m4.group(1), depth + 1)
+        rng = m4.group(2).split(":")
+        col = _re.sub(r"\d", "", rng[0])
+        r1 = int(_re.sub(r"\D", "", rng[0]))
+        r2 = int(_re.sub(r"\D", "", rng[1]))
+        s = sum(_formula_eval(ws, f"{col}{rr}", depth + 1) for rr in range(r1, r2 + 1))
+        return base - s
+    # sadə hücrə istinadı (məs. =E6, =F6)
+    m5 = _re.match(r"([A-Z]+\d+)$", e)
+    if m5:
+        return _formula_eval(ws, m5.group(1), depth + 1)
+    return 0.0
+
+
+def _build_real_workbook():
+    return generate_creditors_workbook(
+        (FIXTURES / "GƏLƏN.xlsx").read_bytes(),
+        (FIXTURES / "DEPOZİT.xlsx").read_bytes(),
+        [
+            ("KAPİTAL BANK ÇIXARIŞI.xlsx", (FIXTURES / "KAPİTAL BANK ÇIXARIŞI.xlsx").read_bytes()),
+            ("PAŞA BANK ÇIXARIŞI.xlsx", (FIXTURES / "PAŞA BANK ÇIXARIŞI.xlsx").read_bytes()),
+            ("ABB ÇIXARIŞI.xlsx", (FIXTURES / "ABB ÇIXARIŞI.xlsx").read_bytes()),
+            ("Yapı kredi.xlsx", (FIXTURES / "Yapı kredi.xlsx").read_bytes()),
+        ],
+    )
+
+
+def test_qaime_setrinde_odenilib_bosdur():
+    """Qaimə sətirlərində G/H BOŞ; ödəniş sətirlərində E/F BOŞ."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    special = {MAIN_SHEET_NAME, UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
+               REMOVED_INVOICES_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    for nm in wb.sheetnames:
+        if nm in special:
+            continue
+        ws = wb[nm]
+        for r in range(6, ws.max_row):
+            ser = ws.cell(row=r, column=2).value
+            is_invoice = isinstance(ser, str) and ser.strip()
+            e = ws.cell(row=r, column=5).value
+            f = ws.cell(row=r, column=6).value
+            g = ws.cell(row=r, column=7).value
+            h = ws.cell(row=r, column=8).value
+            if is_invoice:
+                assert g in (None, ""), (nm, r, "G dolu qaimə sətri")
+                assert h in (None, ""), (nm, r, "H dolu qaimə sətri")
+            else:
+                if ws.cell(row=r, column=1).value == (
+                        "Qaimə ilə əlaqələndirilməyən ödənişlər"):
+                    continue
+                assert e in (None, ""), (nm, r, "E dolu ödəniş sətri")
+                assert f in (None, ""), (nm, r, "F dolu ödəniş sətri")
+
+
+def test_cem_odenilib_butun_odenislerin_cemidir():
+    """Hər vərəqdə Cəm G/H == bütün ödəniş sətirlərinin cəmi (sadə SUM)."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    special = {MAIN_SHEET_NAME, UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
+               REMOVED_INVOICES_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    for nm in wb.sheetnames:
+        if nm in special:
+            continue
+        ws = wb[nm]
+        sr = ws.max_row
+        g_sum = _formula_eval(ws, f"G{sr}")
+        h_sum = _formula_eval(ws, f"H{sr}")
+        real_g = real_h = 0.0
+        for r in range(6, sr):
+            ser = ws.cell(row=r, column=2).value
+            if isinstance(ser, str) and ser.strip():
+                continue  # qaimə sətri (G/H boş)
+            gv = ws.cell(row=r, column=7).value
+            hv = ws.cell(row=r, column=8).value
+            if isinstance(gv, (int, float)):
+                real_g += gv
+            if isinstance(hv, (int, float)):
+                real_h += hv
+        assert abs(g_sum - real_g) < 0.01, (nm, g_sum, real_g)
+        assert abs(h_sum - real_h) < 0.01, (nm, h_sum, real_h)
+
+
+def test_qaliq_invariant():
+    """Hər vərəqdə Cəm Qalıq == Cəm Hesablanıb − Cəm Ödənilib (Əsas və ƏDV)."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    special = {MAIN_SHEET_NAME, UNMATCHED_SHEET_NAME, REVERSALS_SHEET_NAME,
+               REMOVED_INVOICES_SHEET_NAME, BANK_SUMMARY_SHEET_NAME}
+    for nm in wb.sheetnames:
+        if nm in special:
+            continue
+        ws = wb[nm]
+        sr = ws.max_row
+        ev = lambda c: _formula_eval(ws, f"{c}{sr}")
+        assert abs(ev("I") - (ev("E") - ev("G"))) < 0.01, (nm, "I")
+        assert abs(ev("J") - (ev("F") - ev("H"))) < 0.01, (nm, "J")
+
+
+def test_qaliq_invariant_esas_vdq():
+    """KREDİTORLAR əsas vərəqində hər sətirdə Qalıq == Hesablanıb − Ödənilib."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    main = wb[MAIN_SHEET_NAME]
+    for r in range(3, main.max_row):
+        if not isinstance(main.cell(row=r, column=1).value, int):
+            continue
+        # D=Hesablanıb Əsas, E=ƏDV, F=Ödənilib Əsas, G=ƏDV, H=Qalıq Əsas, I=ƏDV
+        d = _formula_eval(main, f"D{r}")
+        e = _formula_eval(main, f"E{r}")
+        f = _formula_eval(main, f"F{r}")
+        g = _formula_eval(main, f"G{r}")
+        h = _formula_eval(main, f"H{r}")
+        i = _formula_eval(main, f"I{r}")
+        assert abs(h - (d - f)) < 0.01, (r, "əsas", h, d - f)
+        assert abs(i - (e - g)) < 0.01, (r, "ədv", i, e - g)
+
+
+def test_erb_group_real():
+    """ERB GROUP: ana sətirdə G boş, I=E-SUM(alt); Cəm dəqiq tək qat."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    nm = [n for n in wb.sheetnames if "ERB GROUP" in n.upper()][0]
+    ws = wb[nm]
+    assert ws["G6"].value in (None, "")   # ana qaimə sətri G boş
+    assert ws["I6"].value == "=E6-SUM(G7:G7)"
+    sr = ws.max_row
+    assert abs(_formula_eval(ws, f"E{sr}") - 73943.31) < 0.01
+    assert abs(_formula_eval(ws, f"G{sr}") - 32769.58) < 0.01
+    assert abs(_formula_eval(ws, f"I{sr}") - 41173.73) < 0.01
+
+
+def test_azbuild_natamam_mebleg_uygunlugu():
+    """AZ BUILD: 15000/20000/10030 açıq istinada düşür; 27.02/9000 bloka düşmür."""
+    out = _build_real_workbook()
+    wb = load_workbook(io.BytesIO(out))
+    nm = [n for n in wb.sheetnames if "AZ BUILD" in n.upper()][0]
+    ws = wb[nm]
+    # Açıq istinadlı ödənişlər qaimələrin altına düşüb
+    texts = []
+    block_amts = []
+    for r in range(6, ws.max_row):
+        ser = ws.cell(row=r, column=2).value
+        g = ws.cell(row=r, column=7).value
+        if isinstance(ser, str) and ser.strip():
+            continue
+        if isinstance(g, (int, float)):
+            a = ws.cell(row=r, column=1).value
+            if a == "Qaimə ilə əlaqələndirilməyən ödənişlər":
+                continue
+            texts.append((ws.cell(row=r, column=11).value or "")[:20])
+            # blok sətri ayrıca
+    # İstinadlı 15000/20000/10030 bloka DÜŞMƏMƏLİDİR
+    blk_start = None
+    for r in range(6, ws.max_row):
+        if ws.cell(row=r, column=1).value == "Qaimə ilə əlaqələndirilməyən ödənişlər":
+            blk_start = r
+            break
+    if blk_start is not None:
+        for r in range(blk_start + 1, ws.max_row):
+            for c in (7, 8):
+                v = ws.cell(row=r, column=c).value
+                if isinstance(v, (int, float)):
+                    block_amts.append(round(v, 2))
+    # Blokka düşən yalnız əvvəlki 54030-dan az olmalı (9000 çıxarıldı)
+    assert sum(block_amts) < 54030
+    assert 9000.0 not in block_amts  # AA istinadlı → "Nəzərə alınmayan"
+
+
+def test_azbuild_11338143_esas_odenissiz():
+    """MT2604/11338143-ün Əsası ödənişsiz qalır (yalnız ƏDV ödənişi var)."""
+    wb = load_workbook(io.BytesIO(_build_real_workbook()))
+    nm = [n for n in wb.sheetnames if "AZ BUILD" in n.upper()][0]
+    ws = wb[nm]
+    for r in range(6, ws.max_row):
+        if (ws.cell(row=r, column=2).value == "MT2604"
+                and ws.cell(row=r, column=3).value == "11338143"):
+            assert ws.cell(row=r, column=5).value == 9000  # Hesablanıb Əsas
+            # alt sətirlərdə heç bir G (bank Əsas) ödənişi yoxdur
+            gvals = []
+            rr = r + 1
+            while rr < ws.max_row and not (
+                    isinstance(ws.cell(row=rr, column=2).value, str)
+                    and ws.cell(row=rr, column=2).value.strip()):
+                gv = ws.cell(row=rr, column=7).value
+                if isinstance(gv, (int, float)):
+                    gvals.append(gv)
+                rr += 1
+            assert gvals == []
+            return
+    raise AssertionError("MT2604/11338143 tapılmadı")

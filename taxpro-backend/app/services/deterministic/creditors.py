@@ -1,4 +1,4 @@
-"""Kreditorlar/Debitorlar — "Gələn" (Kreditorlar) modulu.
+﻿"""Kreditorlar/Debitorlar — "Gələn" (Kreditorlar) modulu.
 
 3 mənbə faylı (GƏLƏN.xlsx, DEPOZİT.xlsx, BANK ÇIXARIŞI.xlsx) deterministik
 alqoritmlə VÖEN üzrə uzlaşdırılır və TƏK nəticə workbook-u yaranır:
@@ -52,6 +52,12 @@ _ACIQLAMA = "Mal material satışı"
 # Hesablanıb sütununa yazılmır.
 DOC_INVOICE = "INVOICE"
 DOC_PAYMENT = "PAYMENT"
+
+# Çıxarılmış (passiv/AA) qaiməyə istinad edən ödənişin rejimi:
+#   "cixar" (default) — hesabdan çıxarılır, "Nəzərə alınmayan əməliyyatlar"-da.
+#   "avans" — istinadsız avans kimi işlənir (tam məbləğ → FIFO → blok), Qeyd-də
+#             "Avans (AA qaiməyə istinad)" yazılır.
+_CIXARILMIS_QAIME_ODENIS_REJIMI = "cixar"
 
 # Excel sheet adı qadağanları (spec: : \ / ? * [ ]) + formula/hiperlink
 # təhlükəsizliyi üçün əlavə " ' simvolları da atılır.
@@ -881,20 +887,64 @@ def _norm_refs_text(text: str) -> str:
     return re.sub(r"\s+", " ", _cell_text(text)).strip()
 
 
+# Parçalanmış istinad: prefiks (MT/AA) + aralarında tək boşluq/tab olan rəqəm
+# qrupları. Hər qrup bütöv götürülür; cəm TAM 12 rəqəm toplayanda (seriya 4 +
+# nömrə 8) namizəd ref yaranır.
+_SPLIT_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9])(MT|AA)((?:\s?\d+)+)"
+)
+
+
+def _collapse_split_refs(
+    norm: str,
+    known_refs: set[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Prefiksdən sonra parçalanmış rəqəm qruplarını 12 rəqəmə birləşdirir.
+
+    Dar qayda: "MT"/"AA" prefiksindən sonra gələn rəqəm qrupları (qruplar arası
+    TƏK boşluq/tab) bütöv götürülərək 12 rəqəm toplanana qədər birləşdirilir.
+    Cəm TAM 12 olmalıdır; qrup 12-ni aşırsa → istinad sayılmır. Nəticə YALNIZ
+    `known_refs` (həmin VÖEN-in qüvvədə/çıxarılmış qaimə seriya+nömrəsi) ilə TAM
+    uyğun gələrsə qəbul olunur.
+    """
+    out: list[tuple[str, str]] = []
+    for m in _SPLIT_REF_RE.finditer(norm):
+        prefix = m.group(1)
+        digits = re.findall(r"\d+", m.group(2))
+        buf = ""
+        for grp in digits:
+            if len(buf) + len(grp) > 12:
+                break  # 12-ni aşır → istinad sayılmır
+            buf += grp
+            if len(buf) == 12:
+                seriya = prefix + buf[:4]
+                nomre = buf[4:]
+                if (seriya, nomre) in known_refs:
+                    out.append((seriya, nomre))
+                break  # hər prefiks üçün yalnız ilk 12 rəqəmli birləşmə
+    return out
+
+
 def _extract_invoice_refs(
-    text: str, qaime_by_nomre: dict[str, tuple[str, str]]
+    text: str,
+    qaime_by_nomre: dict[str, tuple[str, str]],
+    known_refs: set[tuple[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
     """Ödəniş mətnindən (seriya, nömrə) qaimə istinadlarını çıxarır.
 
-    Əsas regex `MT/AA + 4 + 8 rəqəm`; tapılmasa fallback — yalnız həmin VÖEN-in
-    məlum qaimə nömrələri arasından 8 rəqəmli uyğunluq.
+    Sıra: (B1) əsas regex `MT/AA + 4 + 8 rəqəm`; (B1) parçalanmış yazılış
+    `_collapse_split_refs`; fallback — yalnız həmin VÖEN-in məlum qaimə
+    nömrələri arasından 8 rəqəmli uyğunluq.
     """
     norm = _norm_refs_text(text)
     if not norm:
         return []
     refs = [(g1 + g2, g3) for g1, g2, g3 in _INVOICE_REF_RE.findall(norm)]
+    if known_refs:
+        refs += _collapse_split_refs(norm, known_refs)
+    refs = list(dict.fromkeys(refs))
     if refs:
-        return list(dict.fromkeys(refs))
+        return refs
     bare = _BARE_INVOICE_NO_RE.findall(norm)
     matched = [qaime_by_nomre[n] for n in bare if n in qaime_by_nomre]
     return list(dict.fromkeys(matched))
@@ -963,6 +1013,35 @@ def _allocate_supplier(
             "bank": bank, "qeyd": qeyd,
         }
 
+    def _pick_by_amount(comp: str, amt: float, pdt: Any) -> dict[str, Any] | None:
+        """Tam məbləğ uyğunluğu: qalığı ±0.01 bərabər qaimələrdən tarixə ən yaxın.
+
+        Yalnız TƏK namizəd varsa da qaytarır (tarix seçimi ilə). Tolerans vermir.
+        """
+        cands = [
+            st for st in state
+            if abs(max(st[comp], 0.0) - amt) <= 0.01 and st[comp] > 0
+        ]
+        if not cands:
+            return None
+        if pdt is not None and len(cands) > 1:
+            pdt_parsed = pdt if isinstance(pdt, date) else _parse_date(pdt)
+            if pdt_parsed is not None:
+                def _dist(st):
+                    qd = st["q"].get("tarix_dt") or _parse_date(
+                        st["q"].get("tarix", "")
+                    )
+                    if qd is None:
+                        return 10**6
+                    return abs((qd - pdt_parsed).days)
+                return min(cands, key=_dist)
+        cands.sort(
+            key=lambda st: _date_sort_key(
+                st["q"].get("tarix_dt"), st["q"].get("tarix", ""), None
+            )
+        )
+        return cands[0]
+
     pays: list[dict[str, Any]] = []
     for p in s.get("odenis_esas", []):
         pays.append({
@@ -978,24 +1057,33 @@ def _allocate_supplier(
         })
     pays.sort(key=lambda p: _date_sort_key(p["tarix_dt"], p["tarix"], (p["component"],)))
 
+    # Birləşdirmə üçün məlum ref-lər: qüvvədə olan + çıxarılmış (həmin VÖEN).
+    known_refs: set[tuple[str, str]] = set(idx_by_ref) | set(removed_refs)
+
     for p in pays:
         comp = p["component"]
         amt = p["mebleg"]
-        refs = _extract_invoice_refs(p.get("text", ""), qaime_by_nomre)
+        refs = _extract_invoice_refs(p.get("text", ""), qaime_by_nomre, known_refs)
         removed_hit = [r for r in refs if r in removed_refs]
         resolved = [r for r in refs if r in idx_by_ref]
         unresolved = [r for r in refs if r not in idx_by_ref and r not in removed_refs]
         norm_text = _norm_refs_text(p.get("text", ""))
         if removed_hit and not resolved:
-            removed_rows.append({
-                "voen": s.get("voen", ""), "ad": s.get("ad", ""),
-                "tarix": p["tarix"], "tarix_dt": p.get("tarix_dt"),
-                "menbe": p.get("bank", ""),
-                "istiqamet": "Məxaric" if comp == "esas" else "Mədaxil",
-                "mebleg": amt, "teyinat": p.get("text", ""),
-                "sebeb": "Passiv/avans (AA) qaiməyə istinad edən ödəniş",
-            })
-            continue
+            if _CIXARILMIS_QAIME_ODENIS_REJIMI == "avans":
+                # Avans rejimi: istinadsız avans kimi işlənir → məbləğ/FIFO/blok.
+                # refs təmizlənir ki, çıxarılmış qaimə istinad sayılmasın.
+                refs = []
+                norm_text_for_hint = ""
+            else:
+                removed_rows.append({
+                    "voen": s.get("voen", ""), "ad": s.get("ad", ""),
+                    "tarix": p["tarix"], "tarix_dt": p.get("tarix_dt"),
+                    "menbe": p.get("bank", ""),
+                    "istiqamet": "Məxaric" if comp == "esas" else "Mədaxil",
+                    "mebleg": amt, "teyinat": p.get("text", ""),
+                    "sebeb": "Passiv/avans (AA) qaiməyə istinad edən ödəniş",
+                })
+                continue
         if resolved:
             # resolved-ləri tarixə artan sırala
             resolved_sorted = sorted(
@@ -1050,22 +1138,26 @@ def _allocate_supplier(
                 ))
             continue
         if unresolved:
-            if _INVOICE_HINT_RE.search(norm_text) and all(
-                r[1] == "" for r in unresolved
-            ):
-                reason = "Natamam qaimə istinadı"
-            else:
-                reason = "Dövr xarici/həll olunmayan qaimə: " + ", ".join(
-                    f"{r[0]}/{r[1]}" for r in unresolved
-                )
+            # Həll olunmayan ref varsa: yalnız dövr xarici → bloka (birləşdirmə/
+            # məbləğ tətbiq olunmur).
             unallocated.append(_row(
                 p["tarix"], p.get("tarix_dt"),
                 amt if comp == "esas" else None,
                 amt if comp == "edv" else None,
-                p.get("bank", ""), reason,
+                p.get("bank", ""),
+                "Dövr xarici/həll olunmayan qaimə: " + ", ".join(
+                    f"{r[0]}/{r[1]}" for r in unresolved
+                ),
             ))
             continue
         if _INVOICE_HINT_RE.search(norm_text):
+            # Natamam istinad nişanəsi: bloka atmazdan ƏVVƏL (ii) tam məbləğ
+            # uyğunluğu — qalığı ödəniş məbləğinə bərabər TƏK qaimə.
+            picked = _pick_by_amount(comp, amt, p.get("tarix_dt") or p.get("tarix"))
+            if picked is not None:
+                picked[comp] = round(picked[comp] - amt, 4)
+                _emit(picked, p, amt, "Məbləğ uyğunluğu")
+                continue
             unallocated.append(_row(
                 p["tarix"], p.get("tarix_dt"),
                 amt if comp == "esas" else None,
@@ -1074,26 +1166,8 @@ def _allocate_supplier(
             ))
             continue
         # İstinadsız: (2a) tam məbləğ uyğunluğu
-        cands = [
-            st for st in state
-            if abs(max(st[comp], 0.0) - amt) <= 0.01 and st[comp] > 0
-        ]
-        if cands:
-            cands.sort(
-                key=lambda st: _date_sort_key(
-                    st["q"].get("tarix_dt"), st["q"].get("tarix", ""), None
-                )
-            )
-            # ödəniş tarixinə ən yaxın (eyni gün üstün)
-            pdt = p.get("tarix_dt")
-            best = cands[0]
-            if pdt is not None and len(cands) > 1:
-                def _dist(st):
-                    qd = st["q"].get("tarix_dt")
-                    if qd is None:
-                        return 10**6
-                    return abs((qd - pdt).days)
-                best = min(cands, key=_dist)
+        best = _pick_by_amount(comp, amt, p.get("tarix_dt") or p.get("tarix"))
+        if best is not None:
             best[comp] = round(best[comp] - amt, 4)
             _emit(best, p, amt, "")
             continue
@@ -2185,26 +2259,27 @@ def _build_supplier_sheet(
         alloc = _allocate_supplier(s)
 
     row = 6
-    # Cəm sətri üçün G/H istinadları: yalnız ANA qaimə sətirləri (onların G/H
-    # artıq alt ödənişlərin =SUM cəmidir) + qaiməyə bağlanmayan sərbəst
-    # ödəniş sətirləri. Beləcə alt ödənişlər İKİQAT sayılmır.
-    paid_ref_rows: list[int] = []
 
-    def _write_payment(p: dict[str, Any], count_for_total: bool = False) -> None:
+    def _write_payment(p: dict[str, Any], negate_settle: bool = False) -> None:
         nonlocal row
         if p.get("tarix_dt") is not None or p.get("tarix"):
             ws.cell(row=row, column=4, value=_date_cell_value(p))
-        if p.get("esas"):
+        has_g = bool(p.get("esas"))
+        has_h = bool(p.get("edv"))
+        if has_g:
             ws.cell(row=row, column=7, value=p["esas"])
-        if p.get("edv"):
+        if has_h:
             ws.cell(row=row, column=8, value=p["edv"])
         if p.get("bank"):
             ws.cell(row=row, column=11, value=p["bank"])
         if p.get("qeyd"):
             ws.cell(row=row, column=12, value=p["qeyd"])
-        # Ödəniş sətirlərində Qalıq (I/J) BOŞ saxlanılır — mənfi qalıq görünməsin.
-        if count_for_total:
-            paid_ref_rows.append(row)
+        # Blok sətri: Qalıq = −Ödənilib (mənfi, ödəniş çıxılır).
+        if negate_settle:
+            if has_g:
+                ws.cell(row=row, column=9, value=f"=-G{row}")
+            if has_h:
+                ws.cell(row=row, column=10, value=f"=-H{row}")
         row += 1
 
     for st in alloc["groups"]:
@@ -2215,29 +2290,24 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=3, value=q.get("nomre", ""))
         ws.cell(row=row, column=5, value=q.get("esas"))
         ws.cell(row=row, column=6, value=q.get("edv"))
-        # Ana qaimə sətri G/H üzrə Cəm-ə daxildir (alt ödənişləri özü toplayır)
-        paid_ref_rows.append(invoice_row)
         row += 1
         first_pay = row
         for p in st["payments"]:
             _write_payment(p)
         last_pay = row - 1
-        # Qaimə sətrində Ödənilib Əsas/ƏDV = alt ödəniş sətirlərinin cəmi.
+        # Ana qaimə sətrində Ödənilib (G/H) BOŞ qalır. Qalıq = Hesablanıb −
+        # alt ödənişlərin cəmi (ödənişsiz qaimədə I=E, J=F).
         if last_pay >= first_pay:
-            ws.cell(row=invoice_row, column=7,
-                    value=f"=SUM(G{first_pay}:G{last_pay})")
-            ws.cell(row=invoice_row, column=8,
-                    value=f"=SUM(H{first_pay}:H{last_pay})")
-        # Qalıq: I = E - G, J = F - H (qaimə sətrində)
-        ws.cell(row=invoice_row, column=9, value=f"=E{invoice_row}-G{invoice_row}")
-        ws.cell(row=invoice_row, column=10, value=f"=F{invoice_row}-H{invoice_row}")
+            ws.cell(row=invoice_row, column=9,
+                    value=f"=E{invoice_row}-SUM(G{first_pay}:G{last_pay})")
+            ws.cell(row=invoice_row, column=10,
+                    value=f"=F{invoice_row}-SUM(H{first_pay}:H{last_pay})")
+        else:
+            ws.cell(row=invoice_row, column=9, value=f"=E{invoice_row}")
+            ws.cell(row=invoice_row, column=10, value=f"=F{invoice_row}")
         # Artıq ödəmə qeydi qaimə sətrinin L sütununda
-        paid_esas = sum(
-            (p.get("esas") or 0.0) for p in st["payments"]
-        )
-        paid_edv = sum(
-            (p.get("edv") or 0.0) for p in st["payments"]
-        )
+        paid_esas = sum((p.get("esas") or 0.0) for p in st["payments"])
+        paid_edv = sum((p.get("edv") or 0.0) for p in st["payments"])
         flags = []
         if paid_esas - (q.get("esas") or 0.0) > 0.004:
             flags.append("Əsas")
@@ -2254,24 +2324,17 @@ def _build_supplier_sheet(
         ws.cell(row=row, column=1).font = _HEADER_FONT
         row += 1
         for p in unallocated:
-            # Sərbəst ödənişin ana sətri yoxdur → Cəm-ə birbaşa daxil edilir.
-            _write_payment(p, count_for_total=True)
+            _write_payment(p, negate_settle=True)
 
     last = row - 1
     sum_row = row
-    # G/H: yalnız ana qaimə sətirləri + sərbəst ödənişlər (ikiqat sayılmır).
-    series = ",".join(f"{{col}}{r}" for r in sorted(paid_ref_rows))
-    for col in "GH":
-        if series:
-            ws[f"{col}{sum_row}"] = "=SUM(" + series.replace("{col}", col) + ")"
-        else:
-            ws[f"{col}{sum_row}"] = 0
-    # E/F/I/J: tam diapazon (ana sətirdə E/F sabit, I/J düstur; alt sətirlər boş)
+    # Cəm: E–J hamısı sadə =SUM (G/H yalnız ödəniş/blok sətirlərindədir → ikiqat
+    # sayılma strukturaca mümkün deyil).
     if last >= 6:
-        for col in "EFIJ":
+        for col in "EFGHIJ":
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}{last})"
     else:
-        for col in "EFIJ":
+        for col in "EFGHIJ":
             ws[f"{col}{sum_row}"] = f"=SUM({col}6:{col}6)"
 
     _style_header_row(ws, 4, 12)
