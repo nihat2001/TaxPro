@@ -13,7 +13,7 @@ TaxPro portal girişlərində vaxt itkisini aradan qaldırır və mühasibatlıq
 - 📊 **Kreditor və Debitor Uzlaşdırması:** Satınalma/satış qaimələrini, bank çıxarışlarını və depozit ödənişlərini VÖEN üzrə avtomatik üst-üstə salır, qalıqları hesablayır.
 
 ---
-
+ 
 ## ✨ Əsas Xüsusiyyətlər
 
 | Modul | Təsvir |
