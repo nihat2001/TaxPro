@@ -45,6 +45,8 @@ graph TD
     D -->|Profil & Portal Məlumatı| B
     B -->|Formaları Doldur| G[🌐 Dövlət / Bank Portalları]
 
+
+
 📂 Layihə Strukturu
 
 TaxPro/
