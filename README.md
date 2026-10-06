@@ -2,7 +2,7 @@
 
 > **Azərbaycanın dövlət və bank portalları üçün ağıllı Chrome uzantısı və avtomatlaşdırılmış maliyyə/mühasibat platforması.**
 
----
+--- 
 
 ## 💡 Nə edir?
  
