@@ -5,7 +5,7 @@
 ---
 
 ## 💡 Nə edir?
-
+ 
 TaxPro portal girişlərində vaxt itkisini aradan qaldırır və mühasibatlıq/maliyyə hesablaşmalarını tam deterministik (AI/ML olmadan, 100% dəqiq) şəkildə avtomatlaşdırır.
 
 - ⚡ **Avto-Doldurma:** Dövlət və bank portallarında *Telefon* və *Asan ID* məlumatlarını tək kliklə doldurur.
