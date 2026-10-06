@@ -44,11 +44,13 @@ graph TD
     F -->|Yekun .xlsx İcmal Faylı| B
     D -->|Profil & Portal Məlumatı| B
     B -->|Formaları Doldur| G[🌐 Dövlət / Bank Portalları]
+```
 
+---
 
+## 📂 Layihə Strukturu
 
-📂 Layihə Strukturu
-
+```text
 TaxPro/
 ├── 🧠 taxpro-backend/         # FastAPI REST API & Deterministik Emal Mühərriki
 │   ├── 📁 app/
@@ -62,19 +64,23 @@ TaxPro/
     ├── 📁 popup/              # Side Panel UI & Tablar
     ├── 📁 content-scripts/    # Portallara auto-fill inject edən skriptlər
     └── 📁 background.js       # Background Service Worker
+```
 
-🛠️️ Texnologiya Steki
+---
 
-1. Backend: Python, FastAPI, Pydantic v2, SQLAlchemy v2 (Async)
+## 🛠️ Texnologiya Steki
 
-2. Data & Excel: pandas, openpyxl
+- **Backend:** Python, FastAPI, Pydantic v2, SQLAlchemy v2 (Async)
+- **Data & Excel:** pandas, openpyxl
+- **Database:** PostgreSQL, Alembic
+- **Extension:** JavaScript (ES6+), Manifest V3, Chrome Side Panel API
+- **DevOps:** Docker, Docker Compose
 
-3. Database: PostgreSQL, Alembic
+---
 
-4. Extension: JavaScript (ES6+), Manifest V3, Chrome Side Panel API
+## ⚡ İşi Salmaq (Quick Start)
 
-5. DevOps: Docker, Docker Compose
-
+```bash
 # 1. Repozitoriyanı klonlayın
 git clone [https://github.com/nihat2001/TaxPro.git](https://github.com/nihat2001/TaxPro.git)
 cd TaxPro/taxpro-backend
@@ -84,3 +90,4 @@ docker compose up -d --build backend
 
 # 3. Chrome uzantısını yükləyin
 # chrome://extensions -> Developer mode -> Load unpacked -> 'taxpro-extension' qovluğunu seçin
+```
