@@ -68,6 +68,12 @@ _AVANS_ZENCIRI_AKTIV = {"debitor": True, "kreditor": False}
 # AA tarixinin ±N günündədirsə istinad kimi qəbul olunur.
 _AVANS_TARIX_PENCERESI_GUN = 7
 
+# Transliterasiya ad-həlli (Bölmə 2): Yapı Kredi ad-only sətirlərində ad ASCII
+# transliterasiya ilə gəlir ("FAMN MAHDUD MASULIYYATLI CAMIYYATI"); AZ hərfli
+# formalarla uyğunlaşdırmaq üçün ayrıca qatlama. İstiqamət üzrə açar:
+# DEBİTORLAR aktiv, KREDİTORLAR default BAĞLI (reqressiya qorunur).
+_TRANSLIT_AD_HELLI_AKTIV = {"debitor": True, "kreditor": False}
+
 # Excel sheet adı qadağanları (spec: : \ / ? * [ ]) + formula/hiperlink
 # təhlükəsizliyi üçün əlavə " ' simvolları da atılır.
 _INVALID_SHEET_CHARS = set(':\\/?*[]\'"')
@@ -560,6 +566,71 @@ def _norm_ad(text: str) -> str:
     cleaned = re.sub(r"[^a-z0-9 ]", " ", ascii_like)
     tokens = [t for t in cleaned.split() if t and t not in _LEGAL_STOPWORDS]
     return " ".join(tokens)
+
+
+# Transliterasiya qatlaması: ə həm "a" həm "e" kimi gələ bilər (MAHDUD vs
+# MEHDUD); hər iki variant ayrı-ayrı hesablanır və ad-həllində hər ikisi sınanır.
+_TRANSLIT_CHAR_MAP = {
+    "ı": "i", "İ": "i", "I": "i",
+    "ö": "o", "Ö": "o",
+    "ü": "u", "Ü": "u",
+    "ş": "s", "Ş": "s",
+    "ç": "c", "Ç": "c",
+    "ğ": "g", "Ğ": "g",
+}
+# Hüquqi stopword-ların transliterasiya variantları.
+_LEGAL_STOPWORDS_TRANSLIT = {
+    "mmc", "llc", "asc", "qsc", "ojsc", "cjsc", "ltd", "jsc",
+    "mehdud", "mahdud",
+    "mesuliyyetli", "masuliyyatli", "masuliyyetli",
+    "cemiyyeti", "camiyyati", "camiyyeti",
+    "sirketi", "sirket", "association",
+}
+# Kəsilmiş son token: hüquqi stopword-ün ≥3 simvollu prefiksidirsə və ad
+# kifayət qədər uzundursa atılır (məs. "CAMIY", "MASUL").
+_TRANSLIT_TRUNC_MIN_TOKEN = 3
+_TRANSLIT_TRUNC_MIN_AD = 30
+
+
+def _norm_ad_translit_variants(text: str) -> list[str]:
+    """Ad üçün transliterasiya-uyğun normallaşdırılmış variant(lar) qaytarır.
+
+    AZ hərfləri latına çevrilir (ə → "a" və "e" variantları), hüquqi
+    stopword-lar və onların ≥3 simvollu kəsilmiş prefiksləri (ad uzundursa)
+    atılır. Müqayisə üçün TƏK namizəd tələb olunur; çağıran tərəf bütün
+    variantları sınayıb unikal VÖEN seçir.
+    """
+    if not text:
+        return []
+    variants: list[str] = []
+    for e_repl in ("a", "e"):
+        cmap = dict(_TRANSLIT_CHAR_MAP)
+        cmap["ə"] = e_repl
+        cmap["Ə"] = e_repl
+        replaced = "".join(cmap.get(ch, ch) for ch in text)
+        decomposed = unicodedata.normalize("NFKD", replaced)
+        ascii_like = "".join(
+            ch for ch in decomposed if not unicodedata.combining(ch)
+        ).lower()
+        cleaned = re.sub(r"[^a-z0-9 ]", " ", ascii_like)
+        tokens = [
+            t for t in cleaned.split() if t and t not in _LEGAL_STOPWORDS_TRANSLIT
+        ]
+        if len(cleaned) >= _TRANSLIT_TRUNC_MIN_AD and tokens:
+            last = tokens[-1]
+            if (
+                len(last) >= _TRANSLIT_TRUNC_MIN_TOKEN
+                and last not in _LEGAL_STOPWORDS_TRANSLIT
+                and any(
+                    s.startswith(last) and len(s) > len(last)
+                    for s in _LEGAL_STOPWORDS_TRANSLIT
+                )
+            ):
+                tokens = tokens[:-1]
+        norm = " ".join(tokens)
+        if norm and norm not in variants:
+            variants.append(norm)
+    return variants
 
 
 def _compact(s: str) -> str:
@@ -2139,13 +2210,25 @@ def _finalize_bank_summary(
 
 def _build_name_voen_dict(
     name_pairs: list[tuple[str, str]],
+    translit: bool = False,
 ) -> dict[str, set[str]]:
-    """(ad, VÖEN) cütlərindən normallaşdırılmış ad → {VÖEN} lüğəti qurur."""
+    """(ad, VÖEN) cütlərindən normallaşdırılmış ad → {VÖEN} lüğəti qurur.
+
+    `translit=True` olduqda ad transliterasiya variantları ilə də açarlanır
+    (bank ad-only sətirlərinin ASCII adları ilə uyğunlaşma üçün).
+    """
     name_to_voen: dict[str, set[str]] = {}
     for ad, voen in name_pairs:
-        norm = _norm_ad(ad)
-        if norm and voen:
-            name_to_voen.setdefault(norm, set()).add(voen)
+        if not voen:
+            continue
+        if translit:
+            norms = _norm_ad_translit_variants(ad)
+        else:
+            norm = _norm_ad(ad)
+            norms = [norm] if norm else []
+        for norm in norms:
+            if norm:
+                name_to_voen.setdefault(norm, set()).add(voen)
     return name_to_voen
 
 
@@ -2203,17 +2286,35 @@ def _resolve_voen_by_name(
     return None
 
 
+def _resolve_voen_by_name_translit(
+    text: str, name_to_voen: dict[str, set[str]]
+) -> str | None:
+    """Transliterasiya variantları ilə ad→VÖEN həlli (unikal nəticə tələbi).
+
+    Bütün variantlar sınanır; yalnız TƏK unikal VÖEN çıxarsa qaytarılır,
+    əks halda None (çox namizəd / heç biri → Uyğunsuz).
+    """
+    resolved: set[str] = set()
+    for norm in _norm_ad_translit_variants(text):
+        v = _resolve_voen_by_name(norm, name_to_voen)
+        if v:
+            resolved.add(v)
+    return next(iter(resolved)) if len(resolved) == 1 else None
+
+
 def resolve_adonly_payments(
     bank_rows: list[dict[str, Any]],
     name_pairs: list[tuple[str, str]],
+    translit: bool = False,
 ) -> dict[str, tuple[int, float, int, float]]:
     """`ad_ile` (VÖEN-siz, adlı) bank sətirlərini ad üzrə VÖEN-ə bağlayır.
 
     Yalnız `rel["ad_ile"]` sətirlərə toxunur (VÖEN-li sətirlər dəyişmir).
     `ad_yoxdur` (qarşı tərəfi olmayan) sətirlərə heç bir halda toxunulmur.
+    `translit=True` olduqda transliterasiya ad-həlli tətbiq olunur (DEBİTORLAR).
     Qaytarır: bank etiketi → (uyğunlaşan say, cəm, uyğunlaşmayan say, cəm).
     """
-    name_to_voen = _build_name_voen_dict(name_pairs)
+    name_to_voen = _build_name_voen_dict(name_pairs, translit=translit)
     stats: dict[str, list[int | float]] = {}
 
     def _bump(label: str, ok: bool, amount: float) -> None:
@@ -2230,8 +2331,11 @@ def resolve_adonly_payments(
         if not r.get("ad_ile") or r.get("ad_yoxdur"):
             continue  # adsız sətirlər ad→VÖEN həllinə girmir
         label = r.get("bank", "")
-        norm = _norm_ad(r.get("ad", ""))
-        matched = _resolve_voen_by_name(norm, name_to_voen)
+        if translit:
+            matched = _resolve_voen_by_name_translit(r.get("ad", ""), name_to_voen)
+        else:
+            norm = _norm_ad(r.get("ad", ""))
+            matched = _resolve_voen_by_name(norm, name_to_voen)
         if matched:
             r["voen"] = matched
             _bump(label, True, r["mebleg"])
@@ -2867,7 +2971,9 @@ def generate_creditors_workbook(
     # Ad-only (VÖEN-siz) sətirləri ad üzrə VÖEN-ə bağla (match_by_voen-dən əvvəl)
     name_pairs = [(r["ad"], r["voen"]) for r in gelen_rows]
     name_pairs += parse_depozit_names(depozit_raw)
-    stat = resolve_adonly_payments(bank_rows, name_pairs)
+    stat = resolve_adonly_payments(
+        bank_rows, name_pairs, translit=_TRANSLIT_AD_HELLI_AKTIV.get("kreditor")
+    )
     for label, (ok, ok_sum, miss, miss_sum) in stat.items():
         warnings.append(
             f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "
@@ -2963,7 +3069,9 @@ def generate_debitors_workbook(
     # Ad-only (VÖEN-siz) sətirləri ad üzrə VÖEN-ə bağla (match_by_voen-dən əvvəl)
     name_pairs = [(r["ad"], r["voen"]) for r in geden_rows]
     name_pairs += parse_depozit_names(depozit_raw)
-    stat = resolve_adonly_payments(bank_rows, name_pairs)
+    stat = resolve_adonly_payments(
+        bank_rows, name_pairs, translit=_TRANSLIT_AD_HELLI_AKTIV.get("debitor")
+    )
     for label, (ok, ok_sum, miss, miss_sum) in stat.items():
         warnings.append(
             f"{label}: {ok} əməliyyat ad üzrə uyğunlaşdırıldı (VÖEN yoxdur), "

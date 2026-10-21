@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """DEBİTORLAR (GEDƏN / mədaxil / KREDİT) — paritet və xüsusi qaydalar testləri.
 
 Real fixture-lar: GEDƏN.xlsx (göndərilən qaimələr), DEPOZİT.xlsx (mədaxil),
@@ -72,7 +72,7 @@ def _sheet_by_prefix(wb, prefix):
 
 
 def _cell_for_ref(ws, seriya, nomre):
-    """Qaimə sətrinin nömrəsini qaytarır (A/B/C = tarix/seriya/nömre)."""
+    """Qaimə sətrinin nömrəsini qaytarır (A/B/C = tarix/seriya/nomre)."""
     for r in range(6, ws.max_row + 1):
         if ws.cell(row=r, column=2).value == seriya and str(
             ws.cell(row=r, column=3).value
@@ -453,3 +453,137 @@ def test_bank_debet_debitorlarda_sayilmir():
         for c in (7, 8):
             v = iron.cell(row=r, column=c).value
             assert v != 1350, (r, c)
+
+
+# ===== Transliterasiya ad-həlli (Bölmə 2) =====
+
+GELEN = (FIXTURES / "GƏLƏN.xlsx").read_bytes()
+
+
+def test_translit_norm_variantlari():
+    v = C._norm_ad_translit_variants('"FAMN" Məhdud Məsuliyyətli Cəmiyyəti')
+    assert "famn" in v
+    v = C._norm_ad_translit_variants("FAMN MAHDUD MASULIYYATLI CAMIYYATI")
+    assert "famn" in v
+    # Kəsilmiş son token (CAMIY) atılır
+    v = C._norm_ad_translit_variants("AMAZONE MAHDUD MASULIYYATLI CAMIY")
+    assert v == ["amazone"], v
+    # Köhnə _norm_ad transliterasiyanı tanımır (açar bağlı olduqda fərq)
+    assert C._norm_ad("FAMN MAHDUD MASULIYYATLI CAMIYYATI") != "famn"
+
+
+def test_translit_famn_hell_olunur():
+    pairs = [('"FAMN" Məhdud Məsuliyyətli Cəmiyyəti', "1605283051")]
+    rows = [{"ad": "FAMN MAHDUD MASULIYYATLI CAMIYYATI", "mebleg": 100.0,
+             "ad_ile": True, "bank": "YK"}]
+    stat = C.resolve_adonly_payments(rows, pairs, translit=True)
+    assert rows[0]["voen"] == "1605283051"
+    assert stat["YK"][0] == 1
+
+
+def test_translit_kesilmis_ad_amazone():
+    pairs = [('"AMAZONE" Məhdud Məsuliyyətli Cəmiyyəti', "1402350191")]
+    rows = [{"ad": "AMAZONE MAHDUD MASULIYYATLI CAMIY", "mebleg": 10.0,
+             "ad_ile": True, "bank": "YK"}]
+    C.resolve_adonly_payments(rows, pairs, translit=True)
+    assert rows[0]["voen"] == "1402350191"
+
+
+def test_translit_yanlis_musbet_yoxdur():
+    pairs = [
+        ('"FAMN" Məhdud Məsuliyyətli Cəmiyyəti', "1605283051"),
+        ('"AMAZONE" Məhdud Məsuliyyətli Cəmiyyəti', "1402350191"),
+    ]
+    for ad in ["ORXAN PİRİYEV", "CAUCASİAN SUPPLY AND SERVİCES",
+               "ALINCA QALA LLC", "FASTTECH MAHDUD MASULIYYATLI CAMIYYATI"]:
+        rows = [{"ad": ad, "mebleg": 5.0, "ad_ile": True, "bank": "YK"}]
+        C.resolve_adonly_payments(rows, pairs, translit=True)
+        assert rows[0].get("voen") is None, ad
+
+
+def test_translit_cox_namizad_hell_olunmur():
+    pairs = [
+        ('"TEST" Məhdud Məsuliyyətli Cəmiyyəti', "1111111111"),
+        ('"TEST" Məhdud Məsuliyyətli Cəmiyyəti', "2222222222"),
+    ]
+    rows = [{"ad": "TEST MAHDUD MASULIYYATLI CAMIYYATI", "mebleg": 5.0,
+             "ad_ile": True, "bank": "YK"}]
+    C.resolve_adonly_payments(rows, pairs, translit=True)
+    assert rows[0].get("voen") is None
+
+
+def test_famn_bank_odenisleri_varaqe_kecir():
+    wb = _debit_wb()
+    famn = _sheet_by_prefix(wb, "FAMN")
+    sr = famn.max_row
+    assert abs(_formula_eval(famn, f"G{sr}") - 220000.00) < 0.01
+    assert abs(_formula_eval(famn, f"H{sr}") - 39600.00) < 0.01
+    assert abs(_formula_eval(famn, f"I{sr}") - 0.0) < 0.01
+    assert abs(_formula_eval(famn, f"J{sr}") - 0.0) < 0.01
+    # 3 AA ödənişi zəncir qeydi ilə
+    chain_notes = [
+        str(famn.cell(row=r, column=12).value or "")
+        for r in range(6, famn.max_row)
+    ]
+    assert sum("Avans zənciri: AA" in n for n in chain_notes) == 3
+    # FAMN Uyğunsuzda qalmır
+    unm = wb[UNMATCHED_SHEET_NAME]
+    assert not any(
+        "FAMN" in str(unm.cell(row=r, column=2).value or "").upper()
+        for r in range(2, unm.max_row + 1)
+    )
+
+
+def test_amazone_odenisleri_varaqe_kecir():
+    wb = _debit_wb()
+    az = _sheet_by_prefix(wb, "AMAZONE")
+    # Blok sətrinə qədər G (qaimələrə düşən) = 28954.15
+    block = None
+    for r in range(6, az.max_row + 1):
+        if az.cell(row=r, column=1).value == "Qaimə ilə əlaqələndirilməyən ödənişlər":
+            block = r
+            break
+    assert block is not None
+    allocated = 0.0
+    for r in range(6, block):
+        v = az.cell(row=r, column=7).value
+        if isinstance(v, (int, float)):
+            allocated += v
+    assert abs(allocated - 28954.15) < 0.01
+    # Blokda 8867.52 (I = −G)
+    blocked = [az.cell(row=r, column=7).value for r in range(block + 1, az.max_row)]
+    assert 8867.52 in blocked
+
+
+def test_yapikredi_debitor_xulase_ve_invariant():
+    wb = _debit_wb()
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    row = next(
+        r for r in range(2, ws.max_row + 1)
+        if "Yapı" in str(ws.cell(row=r, column=1).value or "")
+    )
+    cem = ws.cell(row=row, column=4).value
+    uy = ws.cell(row=row, column=5).value
+    uyg = ws.cell(row=row, column=6).value
+    adsiz = ws.cell(row=row, column=7).value
+    naz = ws.cell(row=row, column=10).value
+    assert cem == 593069.97
+    assert uy == 422218.61
+    assert uyg == 109320.0
+    assert adsiz == 61531.36
+    assert naz == 0.0
+    assert abs((uy + uyg + adsiz + naz) - cem) < 0.01
+
+
+def test_kreditor_translit_default_baglidir():
+    """Açar KREDİTORLAR üçün bağlıdır → köhnə nəticə dəyişmir."""
+    assert C._TRANSLIT_AD_HELLI_AKTIV == {"debitor": True, "kreditor": False}
+    out = generate_creditors_workbook(GELEN, DEPOZIT, BANKS4)
+    wb = _wb(out)
+    ws = wb[BANK_SUMMARY_SHEET_NAME]
+    row = next(
+        r for r in range(2, ws.max_row + 1)
+        if "Yapı" in str(ws.cell(row=r, column=1).value or "")
+    )
+    # Köhnə (translit bağlı) nəticə saxlanılır
+    assert ws.cell(row=row, column=5).value == 441074.31
