@@ -1567,12 +1567,26 @@ def test_split_ref_qismen_nomre_birlesmir():
     ]
 
 
-def test_split_ref_11_reqem_hell_olunmur():
+def test_split_ref_11_reqem_prefiks_tamamlanir():
+    """Kəsilmiş 11 rəqəm (nömrənin ilk 7 rəqəmi) TƏK namizədlə tamamlanır.
+
+    Əvvəlki "11 rəqəm → həll olunmur" davranışı Bölmə D ilə DƏYİŞDİ: prefiks
+    tamamlama yalnız həmin VÖEN-in həmin seriyalı TƏK qaiməsi bu prefikslə
+    başlayanda işə düşür; çox/heç namizəd → həll olunmur.
+    """
     from app.services.deterministic.creditors import _extract_invoice_refs
 
-    # 11 rəqəm (12-yə çatmır) → birləşmə yox, istinad tapılmır
-    known = {("MT2601", "10649691")}  # yalnız tam 12 üçün nəzəri
-    assert _extract_invoice_refs("MT26011064969", {}, known) == []
+    known = {("MT2601", "10649695")}
+    assert _extract_invoice_refs("MT26011064969", {}, known) == [
+        ("MT2601", "10649695")
+    ]
+    # Çox namizəd → həll olunmur
+    known2 = {("MT2601", "10649695"), ("MT2601", "10649699")}
+    assert _extract_invoice_refs("MT26011064969", {}, known2) == []
+    # Heç biri prefikslə başlamır → həll olunmur
+    assert _extract_invoice_refs(
+        "MT26011064969", {}, {("MT2602", "99999999")}
+    ) == []
 
 
 def test_split_ref_bilinmeyen_qaimeye_baglanmir():

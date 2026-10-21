@@ -59,6 +59,15 @@ DOC_PAYMENT = "PAYMENT"
 #             "Avans (AA qaiməyə istinad)" yazılır.
 _CIXARILMIS_QAIME_ODENIS_REJIMI = "cixar"
 
+# Avans zənciri (Bölmə C): çıxarılmış AA avansına istinad edən ödənişin, həmin
+# AA-nı "Avans Seriası/Nömrəsi" sütunlarında göstərən MT qaiməyə yazılması.
+# İstiqamət üzrə açar: DEBİTORLAR aktivdir, KREDİTORLAR default BAĞLIDIR
+# (KREDİTORLAR nəticələri dəyişməsin).
+_AVANS_ZENCIRI_AKTIV = {"debitor": True, "kreditor": False}
+# (2) rejimi: istinadsız ödənişin məbləği AA-nın komponentinə bərabər və tarixi
+# AA tarixinin ±N günündədirsə istinad kimi qəbul olunur.
+_AVANS_TARIX_PENCERESI_GUN = 7
+
 # Excel sheet adı qadağanları (spec: : \ / ? * [ ]) + formula/hiperlink
 # təhlükəsizliyi üçün əlavə " ' simvolları da atılır.
 _INVALID_SHEET_CHARS = set(':\\/?*[]\'"')
@@ -96,6 +105,10 @@ _GELEN_FIELDS = {
     "qaimeaktnovleri": "nov",
     "malinedvsizumumideyeri": "esas",
     "malinedvmeblegi": "edv",
+    # Avans sütunları (GƏLƏN/GEDƏN): MT qaimə hansı AA avansına bağlıdır.
+    "avansserias": "avans_seriya",
+    "avansnomresi": "avans_nomre",
+    "avansmeblegi": "avans_mebleg",
 }
 _GELEN_REQUIRED = ("voen", "qaimetarixi")
 
@@ -105,11 +118,18 @@ _QAIME_PASSIV_ACAR = "passiv"
 # Növ mətnində bu açar varsa → avans qaiməsi (çıxarılır).
 _QAIME_AVANS_ACAR = "avans"
 # Seriya bu prefikslərdən biri ilə başlamalıdır; "AA" həmişə çıxarılır.
+# "MQ" (Malların qaytarılması) SAXLANILIR və "Qaytarma qaiməsi" kimi işarələnir.
 _QAIME_AA_PREFIX = "AA"
 _QAIME_MT_PREFIX = "MT"
-_QAIME_MELUM_PREFIKSLER = (_QAIME_MT_PREFIX, _QAIME_AA_PREFIX)
-# Vəziyyət bu açar ilə uyğun gələrsə saxlanılır, lakin xəbərdarlıq yazılır.
-_QAIME_VEZIYYET_GOZLEYEN = "tesdiqgozleyen"
+_QAIME_MQ_PREFIX = "MQ"
+_QAIME_MELUM_PREFIKSLER = (_QAIME_MT_PREFIX, _QAIME_AA_PREFIX, _QAIME_MQ_PREFIX)
+_QAIME_QAYTARMA_QEYD = "Qaytarma qaiməsi"
+# Vəziyyət bu açar ilə UYĞUN GƏLƏRSƏ saxlanılır, lakin xabərdarlıq yazılır.
+# "Təsdiq gözləyən" və "Təsdiq gözləyir" hər ikisi normallaşdırılmış
+# "tesdiqgozle" prefiksi ilə tutulur.
+_QAIME_VEZIYYET_GOZLEYEN = "tesdiqgozle"
+# "Ləğvə göndərildi" → saxlanılır + xəbərdarlıq (məruzədə say).
+_QAIME_VEZIYYET_LEGVE = "legvegonderildi"
 
 # İstinad nişanəsi: MT/AA + rəqəm (natamam/dövr xarici aşkarlaması üçün).
 _INVOICE_HINT_RE = re.compile(r"(?<![A-Za-z])(MT|AA)\s?\d")
@@ -119,6 +139,10 @@ _INVOICE_REF_RE = re.compile(
 )
 # Fallback: 8 rəqəmli nömrə (yalnız həmin VÖEN-in qaimə nömrələri arasında).
 _BARE_INVOICE_NO_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+# Kəsilmiş istinad: prefiks (MT/AA/MQ) + 4 rəqəm (seriya) + 7 rəqəm (nömrənin
+# ilk hissəsi). Cəm 11 rəqəm — tam 12-yə çatmır; yalnız həmin VÖEN-in həmin
+# seriyalı TƏK qaiməsi bu prefikslə başlayırsa həll olunur.
+_PARTIAL_REF_RE = re.compile(r"(?<![A-Za-z0-9])([A-Z]{2})\s?(\d{4})\s?(\d{7})(?!\d)")
 
 # DEPOZİT.xlsx: başlıq 10-11-ci sətirdə (VÖEN, Vergi ödəyicisinin adı,
 # Əməliyyat tarixi, Mədaxil, Məxaric). "Məxaric" = VÖEN-ə ödənilən ƏDV.
@@ -588,6 +612,35 @@ def _extract_voen_from_text(text: str) -> str | None:
 _SELF_VOEN_RE = re.compile(r"(?<!\d)(\d{7,12})(?!\d)")
 
 
+def _extract_self_identity(raw: bytes) -> tuple[set[str], set[str]]:
+    """Qaimə faylının preamble-indən öz şirkətin VÖEN-i və adını çıxarır.
+
+    GƏLƏN/GEDƏN preamble sətrində `1506275021/"ASLANLI-H GROUP" ...` formasında
+    öz VÖEN və adı olur. Qaytarır: (voen set, normallaşdırılmış ad set).
+    """
+    voens: set[str] = set()
+    names: set[str] = set()
+    try:
+        rows_list = _load_rows(raw)
+    except ValueError:
+        return voens, names
+    for rows in rows_list:
+        found = _find_header(rows, _GELEN_REQUIRED, _GELEN_FIELDS)
+        if found is None:
+            continue
+        header_idx, _ = found
+        for row in rows[:header_idx]:
+            for cell in row:
+                text = _cell_text(cell)
+                m = re.match(r"^\s*(\d{7,12})\s*/\s*(.+)$", text)
+                if m:
+                    voens.add(m.group(1))
+                    nm = _norm_ad(m.group(2))
+                    if nm:
+                        names.add(nm)
+    return voens, names
+
+
 def _detect_preamble_family(preamble_rows: list[list[Any]]) -> str | None:
     """Preamble-dən bank ailəsini təyin edir: `"vtb"` | `"atb"` | `"ziraat"` | `None`."""
     normalized = " ".join(
@@ -815,6 +868,9 @@ def parse_gelen(raw: bytes) -> list[dict[str, Any]]:
                     "nov": _cell_text(_get(row, col_map, "nov")),
                     "esas": _to_float(_get(row, col_map, "esas")) or 0.0,
                     "edv": _to_float(_get(row, col_map, "edv")) or 0.0,
+                    "avans_seriya": _cell_text(_get(row, col_map, "avans_seriya")),
+                    "avans_nomre": _cell_text(_get(row, col_map, "avans_nomre")),
+                    "avans_mebleg": _to_float(_get(row, col_map, "avans_mebleg")),
                 }
             )
         return result
@@ -837,6 +893,7 @@ def _filter_invoices(
     warnings: list[str] = []
     unknown_series: set[str] = set()
     pending: list[str] = []
+    legve: list[str] = []
     for g in rows:
         veziyyet = normalize_text(g.get("veziyyet", ""))
         nov = normalize_text(g.get("nov", ""))
@@ -868,6 +925,12 @@ def _filter_invoices(
             unknown_series.add(seriya)
         if _QAIME_VEZIYYET_GOZLEYEN in veziyyet:
             pending.append(f"{seriya}/{g.get('nomre','')}")
+        if _QAIME_VEZIYYET_LEGVE in veziyyet:
+            legve.append(f"{seriya}/{g.get('nomre','')}")
+        if prefix == _QAIME_MQ_PREFIX:
+            # MQ (Malların qaytarılması) adi müsbət borc qaiməsi kimi saxlanılır,
+            # qaimə sətrində "Qaytarma qaiməsi" kimi işarələnir.
+            g = {**g, "qeyd": _QAIME_QAYTARMA_QEYD}
         kept.append(g)
     if unknown_series:
         warnings.append(
@@ -876,6 +939,10 @@ def _filter_invoices(
     if pending:
         warnings.append(
             "Təsdiq gözləyən qaimə (saxlanıldı): " + ", ".join(pending)
+        )
+    if legve:
+        warnings.append(
+            "Ləğvə göndərilmiş qaimə (saxlanıldı): " + ", ".join(legve)
         )
     if removed:
         warnings.append(f"{len(removed)} qaimə nəzərə alınmadı (passiv/avans).")
@@ -925,6 +992,31 @@ def _collapse_split_refs(
     return out
 
 
+def _complete_partial_refs(
+    norm: str,
+    known_refs: set[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Kəsilmiş istinadı (prefiks + seriya + nömrənin ilk 7 rəqəmi) tamamlayır.
+
+    Yalnız həmin VÖEN-in həmin seriyalı qaimələri arasında nömrəsi bu prefiksdən
+    başlayan TƏK qaimə varsa həll olunur. Birdən çox və ya heç biri → həll
+    olunmur (mövcud məbləğ uyğunluğu/blok qaydaları davam edir).
+    """
+    if not known_refs:
+        return []
+    by_series: dict[str, list[str]] = {}
+    for ser, nom in known_refs:
+        by_series.setdefault(ser, []).append(nom)
+    out: list[tuple[str, str]] = []
+    for m in _PARTIAL_REF_RE.finditer(norm):
+        seriya = m.group(1) + m.group(2)
+        partial = m.group(3)
+        cands = [n for n in by_series.get(seriya, []) if n.startswith(partial)]
+        if len(cands) == 1:
+            out.append((seriya, cands[0]))
+    return out
+
+
 def _extract_invoice_refs(
     text: str,
     qaime_by_nomre: dict[str, tuple[str, str]],
@@ -932,9 +1024,10 @@ def _extract_invoice_refs(
 ) -> list[tuple[str, str]]:
     """Ödəniş mətnindən (seriya, nömrə) qaimə istinadlarını çıxarır.
 
-    Sıra: (B1) əsas regex `MT/AA + 4 + 8 rəqəm`; (B1) parçalanmış yazılış
-    `_collapse_split_refs`; fallback — yalnız həmin VÖEN-in məlum qaimə
-    nömrələri arasından 8 rəqəmli uyğunluq.
+    Sıra: (B1) əsas regex `MT/AA/MQ + 4 + 8 rəqəm`; (B1) parçalanmış yazılış
+    `_collapse_split_refs`; (B1c) kəsilmiş nömrə `_complete_partial_refs`;
+    fallback — yalnız həmin VÖEN-in məlum qaimə nömrələri arasından 8 rəqəmli
+    uyğunluq.
     """
     norm = _norm_refs_text(text)
     if not norm:
@@ -942,6 +1035,7 @@ def _extract_invoice_refs(
     refs = [(g1 + g2, g3) for g1, g2, g3 in _INVOICE_REF_RE.findall(norm)]
     if known_refs:
         refs += _collapse_split_refs(norm, known_refs)
+        refs += _complete_partial_refs(norm, known_refs)
     refs = list(dict.fromkeys(refs))
     if refs:
         return refs
@@ -951,9 +1045,18 @@ def _extract_invoice_refs(
 
 
 def _allocate_supplier(
-    s: dict[str, Any], removed_refs: frozenset = frozenset()
+    s: dict[str, Any],
+    removed_refs: frozenset = frozenset(),
+    direction: str = "kreditor",
+    removed_meta: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bir təsərrüfat subyektinin ödənişlərini qaimələrə bölüşdürür.
+
+    `direction="kreditor"` (default) — mövcud (dəyişməz) davranış; tie-break
+    ödəniş tarixinə ƏN YAXIN qaiməni seçir.
+    `direction="debitor"` — müştəri ödənişi qaimədən SONRA gəldiyi üçün tie-break
+    əvvəlcə qaimə tarixi ≤ ödəniş tarixi olanlardan ƏN KÖHNƏSİNİ, yoxdursa
+    ödəniş tarixinə ən yaxınını seçir.
 
     Qaytarır: {
       "groups": [{"qaimə": q, "payments": [row]}],
@@ -1014,9 +1117,13 @@ def _allocate_supplier(
         }
 
     def _pick_by_amount(comp: str, amt: float, pdt: Any) -> dict[str, Any] | None:
-        """Tam məbləğ uyğunluğu: qalığı ±0.01 bərabər qaimələrdən tarixə ən yaxın.
+        """Tam məbləğ uyğunluğu: qalığı ±0.01 bərabər qaimələrdən seçim.
 
-        Yalnız TƏK namizəd varsa da qaytarır (tarix seçimi ilə). Tolerans vermir.
+        Namizədlər TƏKDİRSƏ və ya `pdt` yoxdursa — tarixə görə ən köhnə.
+        Kreditorlarda çox namizəd → ödəniş tarixinə ƏN YAXIN.
+        Debitorlarda çox namizəd → əvvəlcə qaimə tarixi ≤ ödəniş tarixi
+        olanların ƏN KÖHNƏSİ; beləsi yoxdursa → ödəniş tarixinə ən yaxın.
+        Tolerans vermir.
         """
         cands = [
             st for st in state
@@ -1027,10 +1134,21 @@ def _allocate_supplier(
         if pdt is not None and len(cands) > 1:
             pdt_parsed = pdt if isinstance(pdt, date) else _parse_date(pdt)
             if pdt_parsed is not None:
-                def _dist(st):
-                    qd = st["q"].get("tarix_dt") or _parse_date(
+                def _qdate(st):
+                    return st["q"].get("tarix_dt") or _parse_date(
                         st["q"].get("tarix", "")
                     )
+
+                if direction == "debitor":
+                    not_after = [
+                        st for st in cands
+                        if _qdate(st) is not None and _qdate(st) <= pdt_parsed
+                    ]
+                    if not_after:
+                        return min(not_after, key=_qdate)
+
+                def _dist(st):
+                    qd = _qdate(st)
                     if qd is None:
                         return 10**6
                     return abs((qd - pdt_parsed).days)
@@ -1060,6 +1178,51 @@ def _allocate_supplier(
     # Birləşdirmə üçün məlum ref-lər: qüvvədə olan + çıxarılmış (həmin VÖEN).
     known_refs: set[tuple[str, str]] = set(idx_by_ref) | set(removed_refs)
 
+    # Avans zənciri: (AA seriya, AA nömrə) → (MT seriya, MT nömrə) — MT qaimənin
+    # "Avans Seriası/Nömrəsi" sütunlarından (eyni VÖEN, MT qüvvədədir).
+    chain: dict[tuple[str, str], tuple[str, str]] = {}
+    if _AVANS_ZENCIRI_AKTIV.get(direction) and removed_meta:
+        for st in state:
+            q = st["q"]
+            a_ser = str(q.get("avans_seriya") or "").strip().upper()
+            a_nom = str(q.get("avans_nomre") or "").strip()
+            if a_ser and a_nom:
+                chain[(a_ser, a_nom)] = (
+                    str(q.get("seriya") or "").strip().upper(),
+                    str(q.get("nomre") or "").strip(),
+                )
+
+    def _chain_target(removed_hit_: list[tuple[str, str]]):
+        """Çıxarılmış AA ref-lərindən zənciri olan ilkini qaytarır."""
+        for r in removed_hit_:
+            if r in chain and chain[r] in idx_by_ref:
+                return r, chain[r]
+        return None
+
+    def _match_removed_aa_by_amount_date(comp_: str, amt_: float, pdt_: Any):
+        """(2): istinadsız ödənişi AA komponenti + tarix pəncərəsi ilə bağlayır."""
+        if not chain or not removed_meta:
+            return None
+        pdt_parsed = pdt_ if isinstance(pdt_, date) else _parse_date(pdt_)
+        for aa_ref, mt_ref in chain.items():
+            aa = removed_meta.get(aa_ref)
+            if aa is None or mt_ref not in idx_by_ref:
+                continue
+            st = idx_by_ref[mt_ref]
+            if st[comp_] <= 0:
+                continue
+            comp_amount = float(
+                (aa.get("edv") if comp_ == "edv" else aa.get("esas")) or 0.0
+            )
+            if comp_amount <= 0 or abs(comp_amount - amt_) > 0.01:
+                continue
+            if pdt_parsed is not None:
+                aa_dt = aa.get("tarix_dt")
+                if aa_dt is None or abs((pdt_parsed - aa_dt).days) > _AVANS_TARIX_PENCERESI_GUN:
+                    continue
+            return aa_ref, mt_ref
+        return None
+
     for p in pays:
         comp = p["component"]
         amt = p["mebleg"]
@@ -1069,6 +1232,15 @@ def _allocate_supplier(
         unresolved = [r for r in refs if r not in idx_by_ref and r not in removed_refs]
         norm_text = _norm_refs_text(p.get("text", ""))
         if removed_hit and not resolved:
+            # (1) Avans zənciri: çıxarılmış AA-ya istinad VAR və zəncir varsa →
+            # həmin MT qaiməyə yaz.
+            target = _chain_target(removed_hit)
+            if target is not None:
+                aa_ref, mt_ref = target
+                st = idx_by_ref[mt_ref]
+                st[comp] = round(st[comp] - amt, 4)
+                _emit(st, p, amt, f"Avans zənciri: {aa_ref[0]}/{aa_ref[1]}")
+                continue
             if _CIXARILMIS_QAIME_ODENIS_REJIMI == "avans":
                 # Avans rejimi: istinadsız avans kimi işlənir → məbləğ/FIFO/blok.
                 # refs təmizlənir ki, çıxarılmış qaimə istinad sayılmasın.
@@ -1079,6 +1251,7 @@ def _allocate_supplier(
                     "voen": s.get("voen", ""), "ad": s.get("ad", ""),
                     "tarix": p["tarix"], "tarix_dt": p.get("tarix_dt"),
                     "menbe": p.get("bank", ""),
+                    "bank": p.get("bank", ""),
                     "istiqamet": "Məxaric" if comp == "esas" else "Mədaxil",
                     "mebleg": amt, "teyinat": p.get("text", ""),
                     "sebeb": "Passiv/avans (AA) qaiməyə istinad edən ödəniş",
@@ -1150,6 +1323,16 @@ def _allocate_supplier(
                 ),
             ))
             continue
+        # (2) İstinadsız: çıxarılmış AA-nın komponentinə məbləğ + tarix uyğunluğu
+        # (yalnız zəncir varsa) → həmin MT qaiməyə yaz.
+        if not refs:
+            aa_target = _match_removed_aa_by_amount_date(comp, amt, p.get("tarix_dt") or p.get("tarix"))
+            if aa_target is not None:
+                aa_ref, mt_ref = aa_target
+                st = idx_by_ref[mt_ref]
+                st[comp] = round(st[comp] - amt, 4)
+                _emit(st, p, amt, "Avans zənciri (məbləğ+tarix)")
+                continue
         if _INVOICE_HINT_RE.search(norm_text):
             # Natamam istinad nişanəsi: bloka atmazdan ƏVVƏL (ii) tam məbləğ
             # uyğunluğu — qalığı ödəniş məbləğinə bərabər TƏK qaimə.
@@ -1215,20 +1398,31 @@ def _drop_removed_invoice_payments(
     removed_refs: frozenset,
     menbe: str,
     istiqamet: str = "Məxaric",
+    avans_chain: set[tuple[str, str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Yalnız çıxarılmış (AA/passiv) qaiməyə istinad edən ödənişləri ayırır.
 
     Həm çıxarılmış, həm qüvvədə olan qaiməyə istinad varsa ödəniş saxlanılır.
+    `avans_chain` verilibsə və çıxarılmış AA-nın (VÖEN, seriya, nömrə) zənciri
+    varsa, ödəniş buradan çıxarılmır (bölüşdürmə mərhələsində MT qaiməyə yazılır).
     """
     kept: list[dict[str, Any]] = []
     removed: list[dict[str, Any]] = []
     for p in rows:
         byn = ref_map.get(p.get("voen") or "", {})
         text = p.get("text") or p.get("teyinat", "")
-        refs = _extract_invoice_refs(text, byn)
+        # Çıxarılmış AA ref-ləri də məlum ref sayılır ki, bölünmüş ("AA260212 160090")
+        # və kəsilmiş yazılışlar erkən mərhələdə tutulsun.
+        known = set(byn.values()) | set(removed_refs)
+        refs = _extract_invoice_refs(text, byn, known)
         removed_hit = [r for r in refs if r in removed_refs]
         resolved = [r for r in refs if r in set(byn.values())]
         if removed_hit and not resolved:
+            if avans_chain is not None:
+                voen = p.get("voen") or ""
+                if any((voen, r[0], r[1]) in avans_chain for r in removed_hit):
+                    kept.append(p)  # avans zənciri var → MT qaiməyə yazılacaq
+                    continue
             removed.append(
                 {
                     "voen": p.get("voen") or "",
@@ -1236,6 +1430,7 @@ def _drop_removed_invoice_payments(
                     "tarix": p.get("tarix", ""),
                     "tarix_dt": p.get("tarix_dt"),
                     "menbe": menbe,
+                    "bank": p.get("bank", ""),
                     "istiqamet": istiqamet,
                     "mebleg": p.get("mebleg", p.get("mexaric", 0.0)),
                     "teyinat": text,
@@ -1327,7 +1522,10 @@ def parse_depozit_names(raw: bytes) -> list[tuple[str, str]]:
 
 
 def parse_bank_statement(
-    raw: bytes, direction: str = "debit"
+    raw: bytes,
+    direction: str = "debit",
+    self_voens: set[str] | None = None,
+    self_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Çoxbanklı bank çıxarışı parseri (dinamik auto-detection).
 
@@ -1369,7 +1567,8 @@ def parse_bank_statement(
         has_voen_col = "voen" in col_map
         preamble = rows[:header_idx]
         # VTB/ATB/Ziraat kimi fayllarda bank/müştəri öz VÖEN-lərini kreditor sayma
-        self_voens = _detect_self_voens(preamble)
+        self_voens = _detect_self_voens(preamble) | set(self_voens or ())
+        self_names_norm = {_norm_ad(n) for n in (self_names or ()) if n}
         family = _detect_preamble_family(preamble)
         is_atb = family == "atb"
         is_ziraat = family == "ziraat"
@@ -1484,6 +1683,8 @@ def parse_bank_statement(
                 continue  # bank/müştəri öz VÖEN-i → kreditor deyil (VTB/ATB/Ziraat)
             if not ad:
                 ad = re.sub(r"_x000D_", " ", desc_text).strip()  # təyinatdan ad (Turan)
+            if ad and self_names_norm and _norm_ad(ad) in self_names_norm:
+                continue  # öz şirkət adı ilə köçürmə → ödəniş deyil
             result.append(
                 {
                     "doc_type": DOC_PAYMENT,
@@ -1753,7 +1954,10 @@ def _normalize_banks(
 
 
 def _parse_banks(
-    banks: Any, direction: str
+    banks: Any,
+    direction: str,
+    self_voens: set[str] | None = None,
+    self_names: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """Çoxlu bank faylını tək-tək parse edib birləşdirir.
 
@@ -1786,6 +1990,7 @@ def _parse_banks(
                     "cem": 0.0,
                     "uygunlasan": 0.0,
                     "uygunsuz": 0.0,
+                    "nezere_alinmayan": 0.0,
                     "adsiz_say": 0,
                     "adsiz_cem": 0.0,
                     "qeyd": "Dublikat, sayılmadı",
@@ -1796,7 +2001,12 @@ def _parse_banks(
 
         label = _bank_source_label(filename, raw, used_labels)
         try:
-            rows = parse_bank_statement(raw, direction=direction)
+            rows = parse_bank_statement(
+                raw,
+                direction=direction,
+                self_voens=self_voens,
+                self_names=self_names,
+            )
         except ValueError as exc:
             raise ValueError(f"'{filename or label}' faylı oxunmadı: {exc}")
 
@@ -1823,6 +2033,7 @@ def _parse_banks(
                 "cem": round(total, 4),
                 "uygunlasan": 0.0,
                 "uygunsuz": 0.0,
+                "nezere_alinmayan": 0.0,
                 "adsiz_say": 0,
                 "adsiz_cem": 0.0,
                 "qeyd": "",
@@ -1870,20 +2081,50 @@ def _parse_banks_all(
 def _finalize_bank_summary(
     summary: list[dict[str, Any]],
     matched: dict[str, Any],
+    uncounted: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Uyğunlaşan/uyğunsuz məbləğləri bank etiketi üzrə doldurur (hesablama dəyişmir)."""
+    """Uyğunlaşan/uyğunsuz/nəzərə alınmayan məbləğləri bank etiketi üzrə doldurur.
+
+    `uygunlasan` YALNIZ vərəqlərə həqiqətən düşən bank (Əsas) ödənişlərindən
+    hesablanır — çıxarılmış (AA) ödənişlər vərəqə düşmədiyi üçün buraya aid
+    edilmir (əks halda xülase vərəqlərdən böyük görünür).
+    """
     by_label = {r["bank"]: r for r in summary if r.get("qeyd") != "Dublikat, sayılmadı"}
     for s in matched["suppliers"]:
-        for p in s["odenis_esas"]:
-            label = p.get("bank", "")
-            if label in by_label:
-                by_label[label]["uygunlasan"] += p["mebleg"]
+        alloc = s.get("_alloc")
+        if alloc is not None:
+            # Vərəqə düşən HƏR bank ödənişi: həm qaimə altına bölüşdürülənlər,
+            # həm də "Qaimə ilə əlaqələndirilməyən ödənişlər" blokundakılar.
+            pay_entries = [
+                p for g in alloc["groups"] for p in g["payments"]
+            ] + list(alloc.get("unallocated", []))
+            for p in pay_entries:
+                if p.get("esas") is None:  # yalnız bank (Əsas) ödənişləri
+                    continue
+                label = p.get("bank", "")
+                if label in by_label:
+                    by_label[label]["uygunlasan"] += p["esas"]
+        else:
+            # Ehtiyat: birbaşa qurulmuş match (alloc olmadan).
+            for p in s.get("odenis_esas", []):
+                label = p.get("bank", "")
+                if label in by_label:
+                    by_label[label]["uygunlasan"] += p["mebleg"]
     for u in matched["unmatched"]:
         if u.get("menbe") != "Bank":
             continue  # Depozit uyğunsuzları bank xülasəsinə düşmür
         label = u.get("bank", "")
         if label in by_label:
             by_label[label]["uygunsuz"] += u["mebleg"]
+    for u in (uncounted or []):
+        if u.get("menbe") != "Bank":
+            continue
+        label = u.get("bank", "")
+        if label in by_label:
+            by_label[label]["nezere_alinmayan"] = (
+                by_label[label].get("nezere_alinmayan", 0.0)
+                + float(u.get("mebleg") or 0.0)
+            )
     for a in matched.get("ad_yoxdur", []):
         label = a.get("bank", "")
         if label in by_label:
@@ -1892,6 +2133,7 @@ def _finalize_bank_summary(
     for r in summary:
         r["uygunlasan"] = round(r["uygunlasan"], 4)
         r["uygunsuz"] = round(r["uygunsuz"], 4)
+        r["nezere_alinmayan"] = round(r.get("nezere_alinmayan", 0.0), 4)
         r["adsiz_cem"] = round(r.get("adsiz_cem", 0.0), 4)
 
 
@@ -2305,7 +2547,7 @@ def _build_supplier_sheet(
         else:
             ws.cell(row=invoice_row, column=9, value=f"=E{invoice_row}")
             ws.cell(row=invoice_row, column=10, value=f"=F{invoice_row}")
-        # Artıq ödəmə qeydi qaimə sətrinin L sütununda
+        # Artıq ödəmə qeydi + qaimə qeydi (məs. "Qaytarma qaiməsi") L sütununda
         paid_esas = sum((p.get("esas") or 0.0) for p in st["payments"])
         paid_edv = sum((p.get("edv") or 0.0) for p in st["payments"])
         flags = []
@@ -2313,9 +2555,13 @@ def _build_supplier_sheet(
             flags.append("Əsas")
         if paid_edv - (q.get("edv") or 0.0) > 0.004:
             flags.append("ƏDV")
+        invoice_notes = []
+        if q.get("qeyd"):
+            invoice_notes.append(str(q["qeyd"]))
         if flags:
-            ws.cell(row=invoice_row, column=12,
-                    value="Artıq ödəmə: " + ", ".join(flags))
+            invoice_notes.append("Artıq ödəmə: " + ", ".join(flags))
+        if invoice_notes:
+            ws.cell(row=invoice_row, column=12, value="; ".join(invoice_notes))
 
     unallocated = [p for p in alloc.get("unallocated", []) if p.get("esas") or p.get("edv")]
     if unallocated:
@@ -2471,6 +2717,7 @@ def _build_bank_summary_sheet(
             "Adsız (qarşı tərəf yoxdur)",
             "Adsız sayı",
             "Qeyd",
+            "Nəzərə alınmayan",
         ]
     )
     for r in bank_summary:
@@ -2485,6 +2732,7 @@ def _build_bank_summary_sheet(
                 r.get("adsiz_cem", 0.0),
                 r.get("adsiz_say", 0),
                 r.get("qeyd", ""),
+                r.get("nezere_alinmayan", 0.0),
             ]
         )
 
@@ -2493,7 +2741,7 @@ def _build_bank_summary_sheet(
     total_row = last_data + 1
     ws.cell(row=total_row, column=1, value="ÜMUMİ")
     if last_data >= first_data:
-        for col in (3, 4, 5, 6, 7, 8):
+        for col in (3, 4, 5, 6, 7, 8, 10):
             letter = get_column_letter(col)
             ws[f"{letter}{total_row}"] = f"=SUM({letter}{first_data}:{letter}{last_data})"
 
@@ -2509,11 +2757,11 @@ def _build_bank_summary_sheet(
     a1.value = "Banklar üzrə xülasə"
     _set_link(a1, main_sheet_name + "!A1", display="Banklar üzrə xülasə")
 
-    _style_header_row(ws, 1, 9)
-    _style_money(ws, first_data, total_row, [4, 5, 6, 7])
+    _style_header_row(ws, 1, 10)
+    _style_money(ws, first_data, total_row, [4, 5, 6, 7, 10])
     _apply_text_alignment(ws, first_data, total_row, [1, 2, 9])
-    _apply_borders(ws, 1, total_row, 1, 9)
-    _auto_fit_columns(ws, money_cols=(4, 5, 6, 7))
+    _apply_borders(ws, 1, total_row, 1, 10)
+    _auto_fit_columns(ws, money_cols=(4, 5, 6, 7, 10))
 
 
 def build_workbook(
@@ -2632,20 +2880,49 @@ def generate_creditors_workbook(
     )
     # Çıxarılmış (passiv/AA) qaiməyə istinad edən ödənişlər ödəniş sayılmır
     ref_map = _qaime_ref_map(gelen_rows)
+    # Avans zənciri KREDİTORLAR üçün default BAĞLIDIR; yalnız açar açıqdırsa
+    # (test/konfiq) tətbiq olunur. Bağlı halda nəticələr dəyişmir.
+    avans_chain = None
+    if _AVANS_ZENCIRI_AKTIV.get("kreditor"):
+        avans_chain = set()
+        for g in gelen_rows:
+            a_ser = str(g.get("avans_seriya") or "").strip().upper()
+            a_nom = str(g.get("avans_nomre") or "").strip()
+            if a_ser and a_nom:
+                avans_chain.add((g.get("voen") or "", a_ser, a_nom))
     depozit_rows, dz_removed = _drop_removed_invoice_payments(
-        depozit_rows, ref_map, removed_refs, "Depozit"
+        depozit_rows, ref_map, removed_refs, "Depozit", avans_chain=avans_chain
     )
     bank_rows, bk_removed = _drop_removed_invoice_payments(
-        bank_rows, ref_map, removed_refs, "Bank"
+        bank_rows, ref_map, removed_refs, "Bank", avans_chain=avans_chain
     )
     reversals = reversals + dz_removed + bk_removed
+    matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
+    removed_meta_by_voen: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    if avans_chain is not None:
+        for r in removed_invoices:
+            v = r.get("voen")
+            if not v:
+                continue
+            key = (
+                str(r.get("seriya") or "").strip().upper(),
+                str(r.get("nomre") or "").strip(),
+            )
+            removed_meta_by_voen.setdefault(v, {})[key] = r
+    for s in matched["suppliers"]:
+        s["_alloc"] = _allocate_supplier(
+            s,
+            removed_refs,
+            direction="kreditor",
+            removed_meta=removed_meta_by_voen.get(s["voen"], {}),
+        )
+        # `_allocate_supplier`-də tutulan çıxarılmış (AA) ödənişlər də məruzəyə
+        # düşməlidir (əks halda xülasedə "Uyğunlaşan" vərəqlərdən böyük olur).
+        reversals = reversals + s["_alloc"].get("removed", [])
     warnings.append(
         f"{len(reversals)} əməliyyat nəzərə alınmadı (səhv köçürmə/geri qaytarma)."
     )
-    matched = match_by_voen(gelen_rows, depozit_rows, bank_rows)
-    for s in matched["suppliers"]:
-        s["_alloc"] = _allocate_supplier(s, removed_refs)
-    _finalize_bank_summary(summary, matched)
+    _finalize_bank_summary(summary, matched, reversals)
     return build_workbook(
         matched,
         bank_summary=summary,
@@ -2674,7 +2951,14 @@ def generate_debitors_workbook(
         for r in removed_invoices
     )
     depozit_rows = parse_depozit(depozit_raw, direction="income")
-    bank_rows, summary, bank_warnings = _parse_banks(banks, direction="credit")
+    # Öz şirkət VÖEN-i/adı ilə daxil olan bank köçürmələri ödəniş sayılmır.
+    self_voens, self_names = _extract_self_identity(geden_raw)
+    bank_rows, summary, bank_warnings = _parse_banks(
+        banks,
+        direction="credit",
+        self_voens=self_voens,
+        self_names=self_names,
+    )
     warnings = list(inv_warnings) + list(bank_warnings)
     # Ad-only (VÖEN-siz) sətirləri ad üzrə VÖEN-ə bağla (match_by_voen-dən əvvəl)
     name_pairs = [(r["ad"], r["voen"]) for r in geden_rows]
@@ -2690,20 +2974,46 @@ def generate_debitors_workbook(
         depozit_rows, bank_rows, depozit_raw, banks, target_direction="medaxil"
     )
     ref_map = _qaime_ref_map(geden_rows)
+    # Avans zənciri olan çıxarılmış AA ödənişləri burada çıxarılmır (aşağıda
+    # bölüşdürmə mərhələsində MT qaiməyə yazılır).
+    avans_chain: set[tuple[str, str, str]] | None = None
+    if _AVANS_ZENCIRI_AKTIV.get("debitor"):
+        avans_chain = set()
+        for g in geden_rows:
+            a_ser = str(g.get("avans_seriya") or "").strip().upper()
+            a_nom = str(g.get("avans_nomre") or "").strip()
+            if a_ser and a_nom:
+                avans_chain.add((g.get("voen") or "", a_ser, a_nom))
     depozit_rows, dz_removed = _drop_removed_invoice_payments(
-        depozit_rows, ref_map, removed_refs, "Depozit", istiqamet="Mədaxil"
+        depozit_rows, ref_map, removed_refs, "Depozit", istiqamet="Mədaxil",
+        avans_chain=avans_chain,
     )
     bank_rows, bk_removed = _drop_removed_invoice_payments(
-        bank_rows, ref_map, removed_refs, "Bank", istiqamet="Mədaxil"
+        bank_rows, ref_map, removed_refs, "Bank", istiqamet="Mədaxil",
+        avans_chain=avans_chain,
     )
     reversals = reversals + dz_removed + bk_removed
+    matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
+    # Avans zənciri üçün çıxarılmış AA qaimələrinin VÖEN üzrə metadata-sı.
+    removed_meta_by_voen: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    for r in removed_invoices:
+        v = r.get("voen")
+        if not v:
+            continue
+        key = (str(r.get("seriya") or "").strip().upper(), str(r.get("nomre") or "").strip())
+        removed_meta_by_voen.setdefault(v, {})[key] = r
+    for s in matched["suppliers"]:
+        s["_alloc"] = _allocate_supplier(
+            s,
+            removed_refs,
+            direction="debitor",
+            removed_meta=removed_meta_by_voen.get(s["voen"], {}),
+        )
+        reversals = reversals + s["_alloc"].get("removed", [])
     warnings.append(
         f"{len(reversals)} əməliyyat nəzərə alınmadı (səhv köçürmə/geri qaytarma)."
     )
-    matched = match_by_voen(geden_rows, depozit_rows, bank_rows)
-    for s in matched["suppliers"]:
-        s["_alloc"] = _allocate_supplier(s, removed_refs)
-    _finalize_bank_summary(summary, matched)
+    _finalize_bank_summary(summary, matched, reversals)
     return build_workbook(
         matched,
         sheet_title=DEBITOR_MAIN_SHEET_NAME,

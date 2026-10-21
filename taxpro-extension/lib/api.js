@@ -65,11 +65,25 @@
     return wrapped;
   }
 
-  async function fetchWithBase(base, path, options) {
+  // Uzun çəkən generasiya sorğuları üçün vaxt aşımı (ms).
+  const DEFAULT_TIMEOUT_MS = 180000;
+
+  async function fetchWithBase(base, path, options, timeoutMs) {
+    const ctrl = new AbortController();
+    const ms = timeoutMs || DEFAULT_TIMEOUT_MS;
+    const timer = setTimeout(() => ctrl.abort(), ms);
     try {
-      return await fetch(base + path, options);
+      return await fetch(base + path, { ...options, signal: ctrl.signal });
     } catch (err) {
+      if (err && err.name === "AbortError") {
+        const timeout = new Error("Sorğu vaxt aşımına uğradı.");
+        timeout.name = "TimeoutError";
+        timeout.cause = err;
+        throw timeout;
+      }
       throw connectionError(base, err);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
